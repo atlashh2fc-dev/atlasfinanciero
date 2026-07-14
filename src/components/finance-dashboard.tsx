@@ -19,13 +19,14 @@ import {
 import { facturasEmitidas2026, type InvoiceRecord } from "@/data/facturas-emitidas-2026";
 import { forecastMonthly2026 } from "@/data/forecast-2026";
 import { BillingOperations } from "@/components/billing-operations";
+import { AccountsReceivable } from "@/components/accounts-receivable";
 import { createClient } from "@/lib/supabase/client";
 import { AdministrationConsole } from "@/components/administration-console";
 
 const calendarMonths = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const pieColors = ["#18a877", "#eeb34d", "#5968df", "#d85f6c", "#8b97aa", "#2a8aa6", "#9d72d7"];
 
-type Module = "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Gastos y proveedores" | "Remuneraciones" | "Administración";
+type Module = "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Recurrentes" | "Gastos y proveedores" | "Remuneraciones" | "Administración";
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
 type AccessProfile = {
   user: { email: string | null };
@@ -116,7 +117,7 @@ function statusClass(status: string | null) {
   return "status neutral";
 }
 
-function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Administración"> }) {
+function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Recurrentes" | "Administración"> }) {
   const detail: Record<typeof module, string> = {
     "Gastos y proveedores": "Preparado para documentos recibidos, órdenes de compra, centros de costo y proveedores. Requiere fuente de gastos aprobada.",
     Remuneraciones: "La integración con PeopleWork está preparada para cargar costos consolidados por período, categoría y centro de costo. No replica liquidaciones ni datos personales; su activación requiere el contrato técnico del API de PeopleWork.",
@@ -149,22 +150,34 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
     return () => { active = false; };
   }, []);
 
-  const currentDate = new Date().toISOString().slice(0, 10);
+  const asOf = new Date();
+  const currentDate = asOf.toISOString().slice(0, 10);
+  const currentMonthIndex = asOf.getMonth();
+  const currentMonthStart = `${currentDate.slice(0, 8)}01`;
+  const ytdRecords = records.filter((record) => Boolean(record.issueDate) && record.issueDate! <= currentDate);
+  const closedMonthRecords = records.filter((record) => Boolean(record.issueDate) && record.issueDate! < currentMonthStart);
   const netDocumented = sum(records, "netAmount");
-  const overdue = records.filter((record) => record.status === "Pendiente" && Boolean(record.dueDate) && record.dueDate! < currentDate);
+  const netDocumentedYtd = sum(ytdRecords, "netAmount");
+  const netDocumentedClosedMonths = sum(closedMonthRecords, "netAmount");
+  const pending = records.filter((record) => record.status?.toLowerCase().includes("pendiente"));
+  const pendingAmount = sum(pending, "netAmount");
+  const overdue = pending.filter((record) => Boolean(record.dueDate) && record.dueDate! < currentDate);
   const overdueAmount = sum(overdue, "netAmount");
   const paymentObserved = records.filter((record) => record.issueDate && record.paymentDate);
   const observedPaymentDays = paymentObserved.map((record) => Math.round((new Date(`${record.paymentDate}T00:00:00`).getTime() - new Date(`${record.issueDate}T00:00:00`).getTime()) / 86400000));
   const averagePaymentDays = observedPaymentDays.length ? observedPaymentDays.reduce((total, days) => total + days, 0) / observedPaymentDays.length : null;
   const customers = buildCustomerEvolution(records);
   const topCustomer = customers[0];
-  const topCustomerShare = topCustomer && netDocumented ? topCustomer.total / netDocumented : 0;
-  const forecastResult = forecastMonthly2026.reduce((total, item) => total + item.projectedRevenue - item.projectedExpense, 0);
+  const topFiveShare = netDocumented ? customers.slice(0, 5).reduce((total, customer) => total + customer.total, 0) / netDocumented : 0;
+  const budgetClosedMonths = forecastMonthly2026.slice(0, currentMonthIndex).reduce((total, item) => total + item.projectedRevenue, 0);
+  const annualBudget = forecastMonthly2026.reduce((total, item) => total + item.projectedRevenue, 0);
+  const planExecution = budgetClosedMonths ? netDocumentedClosedMonths / budgetClosedMonths : null;
+  const closingBase = netDocumentedYtd + forecastMonthly2026.slice(currentMonthIndex + 1).reduce((total, item) => total + item.projectedRevenue, 0);
+  const plannedResult = forecastMonthly2026.reduce((total, item) => total + item.projectedRevenue - item.projectedExpense, 0);
   const monthlyExecutive = calendarMonths.map((month, index) => ({
     month: month.slice(0, 3),
-    documented: records.filter((record) => record.month === month).reduce((total, record) => total + (record.netAmount ?? 0), 0),
+    documented: index < currentMonthIndex ? closedMonthRecords.filter((record) => record.month === month).reduce((total, record) => total + (record.netAmount ?? 0), 0) : null,
     budget: forecastMonthly2026[index]?.projectedRevenue ?? 0,
-    expense: forecastMonthly2026[index]?.projectedExpense ?? 0,
   }));
   const clientRanking = customers.slice(0, 6).map((customer) => ({ client: customer.client, montoNeto: customer.total }));
   const visibleIndicators = ["uf", "utm", "dolar", "euro", "ipc", "tpm"].map((code) => marketData?.indicators.find((item) => item.code === code)).filter((item): item is MarketIndicator => Boolean(item));
@@ -172,22 +185,31 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
   return (
     <main className="dashboard executive-dashboard">
       <section className="headline">
-        <div><span className="eyebrow">RESUMEN EJECUTIVO · 2026</span><h1>Panorama financiero</h1><p>Ingresos documentados, exposición de cartera, comportamiento de clientes y referencia de mercado en una sola vista.</p></div>
-        <div className="headline-actions"><span className="refresh">● Actualizado con datos operativos</span></div>
+        <div><span className="eyebrow">COCKPIT EJECUTIVO · 2026</span><h1>Panorama para decisión</h1><p>Lectura de crecimiento, cobranza, concentración y cierre base. Cada métrica se deriva de documentos y proyecciones disponibles.</p></div>
+        <div className="headline-actions"><span className="refresh">● Corte {formatDate(currentDate)}</span></div>
       </section>
 
       <section className="kpis kpis-five" aria-label="Indicadores ejecutivos">
-        <article className="kpi-card"><span>Facturado neto</span><strong>{formatMoney(netDocumented)}</strong><small>Documentos emitidos 2026</small></article>
-        <article className="kpi-card accent"><span>Cartera vencida</span><strong>{formatMoney(overdueAmount)}</strong><small>{number.format(overdue.length)} pendiente(s) vencido(s)</small></article>
-        <article className="kpi-card"><span>Plazo observado de pago</span><strong>{averagePaymentDays === null ? "—" : `${number.format(averagePaymentDays)} días`}</strong><small>Documentos con emisión y pago registrados</small></article>
-        <article className="kpi-card"><span>Concentración mayor cliente</span><strong>{topCustomer ? `${new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(topCustomerShare)}` : "—"}</strong><small>{topCustomer?.client ?? "Sin cliente informado"}</small></article>
-        <article className="kpi-card"><span>Resultado planificado</span><strong>{formatMoney(forecastResult)}</strong><small>Ingresos proyectados menos gastos proyectados</small></article>
+        <article className="kpi-card"><span>Facturado neto acumulado</span><strong>{formatMoney(netDocumentedYtd)}</strong><small>Documentos emitidos hasta la fecha de corte</small></article>
+        <article className="kpi-card"><span>Ejecución del plan cerrado</span><strong>{planExecution === null ? "—" : new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(planExecution)}</strong><small>{formatMoney(netDocumentedClosedMonths - budgetClosedMonths)} frente a meses ya cerrados</small></article>
+        <article className="kpi-card"><span>Cierre anual base</span><strong>{formatMoney(closingBase)}</strong><small>{formatMoney(closingBase - annualBudget)} contra el plan anual</small></article>
+        <article className="kpi-card accent"><span>Cartera vencida</span><strong>{formatMoney(overdueAmount)}</strong><small>{pendingAmount ? new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(overdueAmount / pendingAmount) : "0%"} de la cartera pendiente</small></article>
+        <article className="kpi-card"><span>Concentración Top 5</span><strong>{new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(topFiveShare)}</strong><small>{topCustomer ? `Mayor cliente: ${topCustomer.client}` : "Sin cliente informado"}</small></article>
+      </section>
+
+      <section className="analysis-strip executive-insights" aria-label="Lecturas prioritarias de gerencia">
+        <article><span>CRECIMIENTO</span><strong>{planExecution !== null && planExecution >= 1 ? "Sobre el plan cerrado" : "Bajo el plan cerrado"}</strong><p>{formatMoney(netDocumentedClosedMonths)} documentados frente a {formatMoney(budgetClosedMonths)} en meses cerrados.</p></article>
+        <article><span>COBRANZA</span><strong>{overdue.length ? `${overdue.length} documento(s) vencido(s)` : "Sin vencimientos pendientes"}</strong><p>{overdue.length ? `${formatMoney(overdueAmount)} requiere gestión prioritaria.` : "La cartera pendiente no registra vencimientos superados."}</p></article>
+        <article><span>CLIENTES</span><strong>{topCustomer?.client ?? "Sin cliente informado"}</strong><p>El Top 5 representa {new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(topFiveShare)} del monto documentado.</p></article>
+        <article><span>LIQUIDEZ</span><strong>{averagePaymentDays === null ? "Sin ciclo observado" : `${number.format(averagePaymentDays)} días de cobro observado`}</strong><p>Basado sólo en documentos que registran emisión y fecha de pago; saldo bancario y gastos reales aún no están integrados.</p></article>
       </section>
 
       <section className="executive-grid">
-        <article className="panel executive-chart"><div className="panel-heading"><div><span className="panel-label">EJECUCIÓN VS. PLAN</span><h2>Ingresos documentados y presupuesto</h2></div><span className="unit">CLP neto</span></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><BarChart data={monthlyExecutive} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}><XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fill: "#7e8ba0", fontSize: 12 }} /><YAxis hide /><Tooltip formatter={(value) => formatMoney(Number(value))} contentStyle={{ borderRadius: 12, border: "1px solid #e6e9ef" }} /><Bar dataKey="documented" name="Documentado" fill="#5867db" radius={[5, 5, 0, 0]} /><Bar dataKey="budget" name="Presupuesto" fill="#9eabc7" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></div></article>
+        <article className="panel executive-chart"><div className="panel-heading"><div><span className="panel-label">EJECUCIÓN VS. PLAN</span><h2>Meses cerrados y presupuesto</h2></div><span className="unit">CLP neto</span></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><BarChart data={monthlyExecutive} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}><XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fill: "#7e8ba0", fontSize: 12 }} /><YAxis hide /><Tooltip formatter={(value) => formatMoney(Number(value))} contentStyle={{ borderRadius: 12, border: "1px solid #e6e9ef" }} /><Bar dataKey="documented" name="Documentado en mes cerrado" fill="#5867db" radius={[5, 5, 0, 0]} /><Bar dataKey="budget" name="Presupuesto" fill="#9eabc7" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></div></article>
         <article className="panel executive-chart"><div className="panel-heading"><div><span className="panel-label">CONCENTRACIÓN</span><h2>Clientes por monto documentado</h2></div><span className="unit">Top 6</span></div><div className="ranking-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={clientRanking} layout="vertical" margin={{ left: 0, right: 24 }}><XAxis type="number" hide /><YAxis type="category" dataKey="client" width={150} tickLine={false} axisLine={false} tick={{ fill: "#58657a", fontSize: 11 }} /><Tooltip formatter={(value) => formatMoney(Number(value))} cursor={{ fill: "#f6f7fb" }} contentStyle={{ borderRadius: 12, border: "1px solid #e6e9ef" }} /><Bar dataKey="montoNeto" radius={[0, 6, 6, 0]} fill="#20a67a" /></BarChart></ResponsiveContainer></div></article>
       </section>
+
+      <section className="panel executive-decision-panel"><div className="panel-heading"><div><span className="panel-label">LECTURA DE CIERRE</span><h2>Escenario base del año</h2><p>Facturación documentada a la fecha más presupuesto de los meses posteriores. No es una probabilidad ni una estimación de caja.</p></div><span className="unit">CLP neto</span></div><div className="decision-grid"><article><span>Base de cierre</span><strong>{formatMoney(closingBase)}</strong><small>No incorpora saldo no documentado del mes en curso</small></article><article><span>Resultado planificado</span><strong>{formatMoney(plannedResult)}</strong><small>Ingresos proyectados menos gastos proyectados</small></article><article><span>Dato pendiente</span><strong>Banco y gastos reales</strong><small>Requeridos para cobertura de caja, margen real y runway.</small></article></div></section>
 
       <section className="market-panel">
         <div className="panel-heading"><div><span className="panel-label">REFERENCIAS DE MERCADO</span><h2>Indicadores públicos</h2><p>Se actualizan desde una fuente pública; cada tarjeta muestra su propia fecha de referencia.</p></div>{marketData && <a className="market-source" href={marketData.source.url} target="_blank" rel="noreferrer">Ver fuente ↗</a>}</div>
@@ -461,7 +483,7 @@ export function FinanceDashboard() {
     if (response.ok) window.location.assign("/");
   }
 
-  const navigation: Module[] = ["Inicio", "Facturas", "Proyecciones", "Clientes", "Cuentas por cobrar", "Gastos y proveedores", "Remuneraciones", "Administración"];
+  const navigation: Module[] = ["Inicio", "Facturas", "Recurrentes", "Clientes", "Cuentas por cobrar", "Proyecciones", "Gastos y proveedores", "Remuneraciones", "Administración"];
   const visibleNavigation = navigation.filter((item) => item !== "Administración" || access?.membership.role === "administrator");
 
   return (
@@ -475,7 +497,7 @@ export function FinanceDashboard() {
         <nav aria-label="Navegación principal">
           {visibleNavigation.map((item) => (
             <button key={item} type="button" className={`nav-item ${activeModule === item ? "active" : ""}`} onClick={() => setActiveModule(item)}>
-              <span className="nav-icon">{item === "Inicio" ? "⌂" : item === "Facturas" ? "▤" : item === "Proyecciones" ? "⌁" : item === "Clientes" ? "◉" : item === "Cuentas por cobrar" ? "◷" : item === "Gastos y proveedores" ? "▣" : item === "Remuneraciones" ? "◫" : "⚙"}</span>{item}
+              <span className="nav-icon">{item === "Inicio" ? "⌂" : item === "Facturas" ? "▤" : item === "Recurrentes" ? "↻" : item === "Proyecciones" ? "⌁" : item === "Clientes" ? "◉" : item === "Cuentas por cobrar" ? "◷" : item === "Gastos y proveedores" ? "▣" : item === "Remuneraciones" ? "◫" : "⚙"}</span>{item}
               {item === "Facturas" && <span className="nav-count">{records.length}</span>}
             </button>
           ))}
@@ -494,7 +516,7 @@ export function FinanceDashboard() {
           </div>
         </header>
 
-        {activeModule === "Inicio" ? <ExecutiveDashboard records={records} /> : activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} /> : activeModule === "Cuentas por cobrar" ? <BillingOperations /> : activeModule === "Administración" ? (access?.membership.role === "administrator" ? <AdministrationConsole activeOrganizationId={access.membership.organizationId} /> : null) : activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
+        {activeModule === "Inicio" ? <ExecutiveDashboard records={records} /> : activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} /> : activeModule === "Cuentas por cobrar" ? <AccountsReceivable records={records} organizationId={access?.membership.organizationId ?? null} canManage={hasEditPermission} isPersisted={Boolean(databaseRecords)} /> : activeModule === "Recurrentes" ? <BillingOperations /> : activeModule === "Administración" ? (access?.membership.role === "administrator" ? <AdministrationConsole activeOrganizationId={access.membership.organizationId} /> : null) : activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
           <main className="dashboard">
             <section className="headline">
               <div><span className="eyebrow">OPERACIÓN · 2026</span><h1>Facturas emitidas</h1><p>Gestión documental, estados, vencimientos y trazabilidad por documento.</p></div>
