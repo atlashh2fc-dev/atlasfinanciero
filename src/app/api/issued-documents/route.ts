@@ -66,11 +66,18 @@ export async function POST(request: NextRequest) {
     .eq("user_id", user.id);
   if (membershipsError) return NextResponse.json({ error: "unable_to_read_memberships" }, { status: 500 });
 
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("active_organization_id")
+    .eq("id", user.id)
+    .maybeSingle();
+  if (profileError) return NextResponse.json({ error: "unable_to_read_active_organization" }, { status: 500 });
+
   const eligibleMemberships = (memberships ?? []).filter((membership) => writeRoles.has(membership.role));
   const requestedOrganizationId = body?.organizationId;
   const membership = isUuid(requestedOrganizationId)
     ? eligibleMemberships.find((item) => item.organization_id === requestedOrganizationId)
-    : eligibleMemberships.length === 1 ? eligibleMemberships[0] : null;
+    : eligibleMemberships.find((item) => item.organization_id === profile?.active_organization_id) ?? (eligibleMemberships.length === 1 ? eligibleMemberships[0] : null);
 
   if (!membership) {
     return NextResponse.json({ error: eligibleMemberships.length > 1 ? "organization_selection_required" : "document_write_not_authorized" }, { status: 403 });
@@ -108,19 +115,22 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "authentication_required" }, { status: 401 });
 
-  const { data: memberships, error: membershipsError } = await supabase
-    .from("organization_memberships")
-    .select("organization_id")
-    .eq("user_id", user.id);
-  if (membershipsError) return NextResponse.json({ error: "unable_to_read_memberships" }, { status: 500 });
+  const [{ data: memberships, error: membershipsError }, { data: profile, error: profileError }] = await Promise.all([
+    supabase.from("organization_memberships").select("organization_id").eq("user_id", user.id),
+    supabase.from("profiles").select("active_organization_id").eq("id", user.id).maybeSingle(),
+  ]);
+  if (membershipsError || profileError) return NextResponse.json({ error: "unable_to_read_memberships" }, { status: 500 });
 
   const organizationIds = (memberships ?? []).map((membership) => membership.organization_id);
-  if (organizationIds.length !== 1) return NextResponse.json({ error: organizationIds.length ? "organization_selection_required" : "organization_membership_required" }, { status: 403 });
+  const organizationId = profile?.active_organization_id && organizationIds.includes(profile.active_organization_id)
+    ? profile.active_organization_id
+    : organizationIds.length === 1 ? organizationIds[0] : null;
+  if (!organizationId) return NextResponse.json({ error: organizationIds.length ? "organization_selection_required" : "organization_membership_required" }, { status: 403 });
 
   const { data, error } = await supabase
     .from("issued_documents")
     .select("id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_date, payment_method, origin_account_or_tax_id, destination_bank, destination_account, source_file_name, source_sheet_name, source_row")
-    .eq("organization_id", organizationIds[0])
+    .eq("organization_id", organizationId)
     .order("issue_date", { ascending: false });
   if (error) return NextResponse.json({ error: "unable_to_load_documents" }, { status: 500 });
 

@@ -20,15 +20,17 @@ import { facturasEmitidas2026, type InvoiceRecord } from "@/data/facturas-emitid
 import { forecastMonthly2026 } from "@/data/forecast-2026";
 import { BillingOperations } from "@/components/billing-operations";
 import { createClient } from "@/lib/supabase/client";
+import { AdministrationConsole } from "@/components/administration-console";
 
 const calendarMonths = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const pieColors = ["#18a877", "#eeb34d", "#5968df", "#d85f6c", "#8b97aa", "#2a8aa6", "#9d72d7"];
 
-type Module = "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Gastos y proveedores" | "Remuneraciones";
+type Module = "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Gastos y proveedores" | "Remuneraciones" | "Administración";
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
 type AccessProfile = {
   user: { email: string | null };
   membership: { organizationId: string; organizationName: string; role: OrganizationRole };
+  organizations: Array<{ id: string; name: string; role: OrganizationRole }>;
 };
 
 type InvoiceDraft = {
@@ -114,7 +116,7 @@ function statusClass(status: string | null) {
   return "status neutral";
 }
 
-function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar"> }) {
+function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Administración"> }) {
   const detail: Record<typeof module, string> = {
     "Gastos y proveedores": "Preparado para documentos recibidos, órdenes de compra, centros de costo y proveedores. Requiere fuente de gastos aprobada.",
     Remuneraciones: "La integración con PeopleWork está preparada para cargar costos consolidados por período, categoría y centro de costo. No replica liquidaciones ni datos personales; su activación requiere el contrato técnico del API de PeopleWork.",
@@ -449,18 +451,31 @@ export function FinanceDashboard() {
     window.location.assign("/login");
   }
 
-  const navigation: Module[] = ["Inicio", "Facturas", "Proyecciones", "Clientes", "Cuentas por cobrar", "Gastos y proveedores", "Remuneraciones"];
+  async function changeActiveOrganization(organizationId: string) {
+    if (!organizationId || organizationId === access?.membership.organizationId) return;
+    const response = await fetch("/api/session/active-organization", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ organizationId }),
+    });
+    if (response.ok) window.location.assign("/");
+  }
+
+  const navigation: Module[] = ["Inicio", "Facturas", "Proyecciones", "Clientes", "Cuentas por cobrar", "Gastos y proveedores", "Remuneraciones", "Administración"];
+  const visibleNavigation = navigation.filter((item) => item !== "Administración" || access?.membership.role === "administrator");
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">A</span><span>Atlas <b>Financiero</b></span></div>
         <div className="workspace-label">ESPACIO DE TRABAJO</div>
-        <button className="workspace-switcher" type="button" aria-label="Organización activa">{access?.membership.organizationName ?? "Cargando"}</button>
+        <select className="workspace-switcher" value={access?.membership.organizationId ?? ""} onChange={(event) => void changeActiveOrganization(event.target.value)} disabled={!access || access.organizations.length < 2} aria-label="Organización activa">
+          {access ? access.organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>) : <option>Cargando</option>}
+        </select>
         <nav aria-label="Navegación principal">
-          {navigation.map((item) => (
+          {visibleNavigation.map((item) => (
             <button key={item} type="button" className={`nav-item ${activeModule === item ? "active" : ""}`} onClick={() => setActiveModule(item)}>
-              <span className="nav-icon">{item === "Inicio" ? "⌂" : item === "Facturas" ? "▤" : item === "Proyecciones" ? "⌁" : item === "Clientes" ? "◉" : item === "Cuentas por cobrar" ? "◷" : item === "Gastos y proveedores" ? "▣" : "◫"}</span>{item}
+              <span className="nav-icon">{item === "Inicio" ? "⌂" : item === "Facturas" ? "▤" : item === "Proyecciones" ? "⌁" : item === "Clientes" ? "◉" : item === "Cuentas por cobrar" ? "◷" : item === "Gastos y proveedores" ? "▣" : item === "Remuneraciones" ? "◫" : "⚙"}</span>{item}
               {item === "Facturas" && <span className="nav-count">{records.length}</span>}
             </button>
           ))}
@@ -479,7 +494,7 @@ export function FinanceDashboard() {
           </div>
         </header>
 
-        {activeModule === "Inicio" ? <ExecutiveDashboard records={records} /> : activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} /> : activeModule === "Cuentas por cobrar" ? <BillingOperations /> : activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
+        {activeModule === "Inicio" ? <ExecutiveDashboard records={records} /> : activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} /> : activeModule === "Cuentas por cobrar" ? <BillingOperations /> : activeModule === "Administración" ? (access?.membership.role === "administrator" ? <AdministrationConsole activeOrganizationId={access.membership.organizationId} /> : null) : activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
           <main className="dashboard">
             <section className="headline">
               <div><span className="eyebrow">OPERACIÓN · 2026</span><h1>Facturas emitidas</h1><p>Gestión documental, estados, vencimientos y trazabilidad por documento.</p></div>

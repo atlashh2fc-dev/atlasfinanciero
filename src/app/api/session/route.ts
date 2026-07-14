@@ -12,22 +12,20 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "authentication_required" }, { status: 401 });
 
-  const { data, error } = await supabase
+  const [{ data, error }, { data: profile, error: profileError }] = await Promise.all([
+    supabase
     .from("organization_memberships")
     .select("organization_id, role, organizations (legal_name)")
-    .eq("user_id", user.id);
+    .eq("user_id", user.id),
+    supabase.from("profiles").select("active_organization_id").eq("id", user.id).maybeSingle(),
+  ]);
 
-  if (error) return NextResponse.json({ error: "unable_to_read_memberships" }, { status: 500 });
+  if (error || profileError) return NextResponse.json({ error: "unable_to_read_memberships" }, { status: 500 });
 
   const memberships = (data ?? []) as Membership[];
-  if (memberships.length !== 1) {
-    return NextResponse.json(
-      { error: memberships.length ? "organization_selection_required" : "organization_membership_required" },
-      { status: 403 },
-    );
-  }
+  const membership = memberships.find((item) => item.organization_id === profile?.active_organization_id) ?? memberships[0];
+  if (!membership) return NextResponse.json({ error: "organization_membership_required" }, { status: 403 });
 
-  const membership = memberships[0];
   return NextResponse.json({
     user: { email: user.email ?? null },
     membership: {
@@ -35,5 +33,10 @@ export async function GET() {
       organizationName: membership.organizations[0]?.legal_name ?? "Organización",
       role: membership.role,
     },
+    organizations: memberships.map((item) => ({
+      id: item.organization_id,
+      name: item.organizations[0]?.legal_name ?? "Organización",
+      role: item.role,
+    })),
   });
 }
