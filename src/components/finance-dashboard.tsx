@@ -22,6 +22,7 @@ import { BillingOperations } from "@/components/billing-operations";
 import { AccountsReceivable } from "@/components/accounts-receivable";
 import { createClient } from "@/lib/supabase/client";
 import { AdministrationConsole } from "@/components/administration-console";
+import { PayrollDashboard } from "@/components/payroll-dashboard";
 
 const calendarMonths = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const pieColors = ["#18a877", "#eeb34d", "#5968df", "#d85f6c", "#8b97aa", "#2a8aa6", "#9d72d7"];
@@ -117,10 +118,9 @@ function statusClass(status: string | null) {
   return "status neutral";
 }
 
-function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Recurrentes" | "Administración"> }) {
+function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Recurrentes" | "Remuneraciones" | "Administración"> }) {
   const detail: Record<typeof module, string> = {
     "Gastos y proveedores": "Preparado para documentos recibidos, órdenes de compra, centros de costo y proveedores. Requiere fuente de gastos aprobada.",
-    Remuneraciones: "La integración con PeopleWork está preparada para cargar costos consolidados por período, categoría y centro de costo. No replica liquidaciones ni datos personales; su activación requiere el contrato técnico del API de PeopleWork.",
   };
 
   return (
@@ -516,7 +516,7 @@ export function FinanceDashboard() {
           </div>
         </header>
 
-        {activeModule === "Inicio" ? <ExecutiveDashboard records={records} /> : activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} /> : activeModule === "Cuentas por cobrar" ? <AccountsReceivable records={records} organizationId={access?.membership.organizationId ?? null} canManage={hasEditPermission} isPersisted={Boolean(databaseRecords)} /> : activeModule === "Recurrentes" ? <BillingOperations /> : activeModule === "Administración" ? (access?.membership.role === "administrator" ? <AdministrationConsole activeOrganizationId={access.membership.organizationId} /> : null) : activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
+        {activeModule === "Inicio" ? <ExecutiveDashboard records={records} /> : activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} /> : activeModule === "Cuentas por cobrar" ? <AccountsReceivable records={records} organizationId={access?.membership.organizationId ?? null} canManage={hasEditPermission} isPersisted={Boolean(databaseRecords)} /> : activeModule === "Recurrentes" ? <BillingOperations /> : activeModule === "Remuneraciones" ? <PayrollDashboard organizationId={access?.membership.organizationId ?? null} canSynchronize={access?.membership.role === "administrator"} /> : activeModule === "Administración" ? (access?.membership.role === "administrator" ? <AdministrationConsole activeOrganizationId={access.membership.organizationId} /> : null) : activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
           <main className="dashboard">
             <section className="headline">
               <div><span className="eyebrow">OPERACIÓN · 2026</span><h1>Facturas emitidas</h1><p>Gestión documental, estados, vencimientos y trazabilidad por documento.</p></div>
