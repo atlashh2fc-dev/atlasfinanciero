@@ -293,6 +293,40 @@ function ForecastModule() {
   );
 }
 
+type StoredDocument = {
+  id: string; document_number: string | null; issue_date: string | null; document_type: string | null; issuer_name: string | null; issuer_tax_id: string | null; client_name: string | null; recipient_name: string | null; recipient_tax_id: string | null; net_amount: number | null; vat_amount: number | null; total_amount: number | null; notes: string | null; payment_term_days: number | null; due_date: string | null; due_month: string | null; payment_status: string | null; payment_date: string | null; payment_method: string | null; origin_account_or_tax_id: string | null; destination_bank: string | null; destination_account: string | null; source_file_name: string | null; source_sheet_name: string | null; source_row: number | null;
+};
+
+function mapStoredDocument(document: StoredDocument): InvoiceRecord {
+  return {
+    id: document.id,
+    invoiceNumber: document.document_number,
+    year: document.issue_date ? Number(document.issue_date.slice(0, 4)) : null,
+    month: document.issue_date ? monthFromDate(document.issue_date) : null,
+    issueDate: document.issue_date,
+    documentType: document.document_type,
+    issuer: document.issuer_name,
+    issuerRut: document.issuer_tax_id,
+    client: document.client_name,
+    recipient: document.recipient_name,
+    recipientRut: document.recipient_tax_id,
+    netAmount: document.net_amount === null ? null : Number(document.net_amount),
+    vatAmount: document.vat_amount === null ? null : Number(document.vat_amount),
+    totalAmount: document.total_amount === null ? null : Number(document.total_amount),
+    notes: document.notes,
+    paymentTermDays: document.payment_term_days === null ? null : Number(document.payment_term_days),
+    dueDate: document.due_date,
+    dueMonth: document.due_month,
+    status: document.payment_status,
+    paymentDate: document.payment_date,
+    paymentMethod: document.payment_method,
+    originAccountRut: document.origin_account_or_tax_id,
+    destinationBank: document.destination_bank,
+    destinationAccount: document.destination_account,
+    source: { file: document.source_file_name ?? "Atlas Financiero", sheet: document.source_sheet_name ?? "Registro manual", row: document.source_row ?? 0 },
+  };
+}
+
 export function FinanceDashboard() {
   const [activeModule, setActiveModule] = useState<Module>("Inicio");
   const [role, setRole] = useState<Role>("Administrador");
@@ -302,8 +336,18 @@ export function FinanceDashboard() {
   const [draft, setDraft] = useState<InvoiceDraft>(blankDraft);
   const [formError, setFormError] = useState("");
   const [sessionRecords, setSessionRecords] = useState<InvoiceRecord[]>([]);
+  const [databaseRecords, setDatabaseRecords] = useState<InvoiceRecord[] | null>(null);
 
-  const records = useMemo(() => [...facturasEmitidas2026, ...sessionRecords], [sessionRecords]);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/issued-documents", { cache: "no-store" })
+      .then((response) => response.ok ? response.json() as Promise<{ documents: StoredDocument[] }> : null)
+      .then((payload) => { if (active && payload) setDatabaseRecords(payload.documents.map(mapStoredDocument)); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  const records = useMemo(() => databaseRecords ?? [...facturasEmitidas2026, ...sessionRecords], [databaseRecords, sessionRecords]);
   const months = useMemo(
     () => calendarMonths.filter((item) => records.some((record) => record.month === item)),
     [records],
@@ -345,40 +389,26 @@ export function FinanceDashboard() {
     setDraft((current) => ({ ...current, [field]: value }));
   }
 
-  function submitEntry(event: FormEvent<HTMLFormElement>) {
+  async function submitEntry(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!draft.issueDate || !draft.documentType || !draft.issuer || !draft.client || !draft.netAmount || !draft.totalAmount || !draft.status) {
       setFormError("Completa fecha, tipo, emisor, cliente, montos y estado. No se crearán valores de relleno.");
       return;
     }
-    const created: InvoiceRecord = {
-      id: `manual-${crypto.randomUUID()}`,
-      invoiceNumber: draft.invoiceNumber || null,
-      year: Number(draft.issueDate.slice(0, 4)),
-      month: monthFromDate(draft.issueDate),
-      issueDate: draft.issueDate,
-      documentType: draft.documentType,
-      issuer: draft.issuer,
-      issuerRut: draft.issuerRut || null,
-      client: draft.client,
-      recipient: draft.recipient || null,
-      recipientRut: draft.recipientRut || null,
-      netAmount: Number(draft.netAmount),
-      vatAmount: draft.vatAmount ? Number(draft.vatAmount) : null,
-      totalAmount: Number(draft.totalAmount),
-      notes: null,
-      paymentTermDays: null,
-      dueDate: null,
-      dueMonth: null,
-      status: draft.status,
-      paymentDate: null,
-      paymentMethod: null,
-      originAccountRut: null,
-      destinationBank: null,
-      destinationAccount: null,
-      source: { file: "Registro manual en sesión", sheet: "No persistido", row: 0 },
-    };
-    setSessionRecords((current) => [created, ...current]);
+    const response = await fetch("/api/issued-documents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null) as { error?: string } | null;
+      setFormError(payload?.error === "authentication_required" ? "Inicia sesión con un usuario autorizado para guardar el documento." : payload?.error === "organization_selection_required" ? "Selecciona la empresa activa antes de registrar documentos." : "No fue posible guardar el documento. Revisa tus permisos y los datos ingresados.");
+      return;
+    }
+    const payload = await response.json() as { document: { id: string; document_number: string | null; issue_date: string; document_type: string; issuer_name: string; issuer_tax_id: string | null; client_name: string; recipient_name: string | null; recipient_tax_id: string | null; net_amount: number; vat_amount: number | null; total_amount: number; payment_status: string; source_file_name: string; source_sheet_name: string; source_row: number } };
+    const created = mapStoredDocument({ ...payload.document, notes: null, payment_term_days: null, due_date: null, due_month: null, payment_date: null, payment_method: null, origin_account_or_tax_id: null, destination_bank: null, destination_account: null, source_file_name: payload.document.source_file_name, source_sheet_name: payload.document.source_sheet_name, source_row: payload.document.source_row });
+    if (databaseRecords) setDatabaseRecords((current) => current ? [created, ...current] : [created]);
+    else setSessionRecords((current) => [created, ...current]);
     setDraft(blankDraft);
     setFormError("");
     setShowEntry(false);
@@ -431,7 +461,7 @@ export function FinanceDashboard() {
             </section>
 
             <section className="kpis kpis-five" aria-label="Indicadores principales">
-              <article className="kpi-card"><span>Documentos emitidos</span><strong>{number.format(records.length)}</strong><small>{sessionRecords.length ? `${sessionRecords.length} registro(s) de esta sesión` : "Año 2026"}</small></article>
+              <article className="kpi-card"><span>Documentos emitidos</span><strong>{number.format(records.length)}</strong><small>{databaseRecords ? "Registros persistidos en Atlas" : sessionRecords.length ? `${sessionRecords.length} registro(s) guardado(s) en Atlas` : "Año 2026"}</small></article>
               <article className="kpi-card"><span>Monto neto documentado</span><strong>{formatMoney(sum(records, "netAmount"))}</strong><small>Suma literal de “Monto Neto”</small></article>
               <article className="kpi-card"><span>Monto total documentado</span><strong>{formatMoney(sum(records, "totalAmount"))}</strong><small>Suma literal de “Monto total Facturado”</small></article>
               <article className="kpi-card accent"><span>Estado “Pendiente”</span><strong>{number.format(pendingCount)}</strong><small>Documentos con ese estado exacto</small></article>
@@ -453,7 +483,7 @@ export function FinanceDashboard() {
         )}
       </section>
 
-      {showEntry && <div className="modal-backdrop" role="presentation"><section className="entry-modal" role="dialog" aria-modal="true" aria-labelledby="entry-title"><div className="modal-header"><div><span className="eyebrow">REGISTRO MANUAL</span><h2 id="entry-title">Agregar documento a la sesión</h2><p>No se guardará en Excel ni en una base de datos hasta integrar persistencia.</p></div><button type="button" className="close-button" onClick={() => setShowEntry(false)} aria-label="Cerrar">×</button></div><form onSubmit={submitEntry}><div className="form-grid"><label>N° documento<input value={draft.invoiceNumber} onChange={(event) => updateDraft("invoiceNumber", event.target.value)} /></label><label>Fecha emisión *<input type="date" value={draft.issueDate} onChange={(event) => updateDraft("issueDate", event.target.value)} /></label><label>Tipo documento *<input value={draft.documentType} onChange={(event) => updateDraft("documentType", event.target.value)} placeholder="Ej. Factura" /></label><label>Estado *<input value={draft.status} onChange={(event) => updateDraft("status", event.target.value)} placeholder="Valor definido por el usuario" /></label><label>Empresa emisora *<input value={draft.issuer} onChange={(event) => updateDraft("issuer", event.target.value)} /></label><label>RUT emisor<input value={draft.issuerRut} onChange={(event) => updateDraft("issuerRut", event.target.value)} /></label><label>Cliente *<input value={draft.client} onChange={(event) => updateDraft("client", event.target.value)} /></label><label>Destinatario<input value={draft.recipient} onChange={(event) => updateDraft("recipient", event.target.value)} /></label><label>RUT destinatario<input value={draft.recipientRut} onChange={(event) => updateDraft("recipientRut", event.target.value)} /></label><label>Monto neto *<input type="number" min="0" value={draft.netAmount} onChange={(event) => updateDraft("netAmount", event.target.value)} /></label><label>IVA<input type="number" min="0" value={draft.vatAmount} onChange={(event) => updateDraft("vatAmount", event.target.value)} /></label><label>Monto total *<input type="number" min="0" value={draft.totalAmount} onChange={(event) => updateDraft("totalAmount", event.target.value)} /></label></div>{formError && <p className="form-error">{formError}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={() => setShowEntry(false)}>Cancelar</button><button type="submit" className="primary-button">Agregar a esta sesión</button></div></form></section></div>}
+      {showEntry && <div className="modal-backdrop" role="presentation"><section className="entry-modal" role="dialog" aria-modal="true" aria-labelledby="entry-title"><div className="modal-header"><div><span className="eyebrow">REGISTRO MANUAL</span><h2 id="entry-title">Registrar documento</h2><p>El documento se guarda en Atlas sólo con una sesión y membresía autorizadas.</p></div><button type="button" className="close-button" onClick={() => setShowEntry(false)} aria-label="Cerrar">×</button></div><form onSubmit={submitEntry}><div className="form-grid"><label>N° documento<input value={draft.invoiceNumber} onChange={(event) => updateDraft("invoiceNumber", event.target.value)} /></label><label>Fecha emisión *<input type="date" value={draft.issueDate} onChange={(event) => updateDraft("issueDate", event.target.value)} /></label><label>Tipo documento *<input value={draft.documentType} onChange={(event) => updateDraft("documentType", event.target.value)} placeholder="Ej. Factura" /></label><label>Estado *<input value={draft.status} onChange={(event) => updateDraft("status", event.target.value)} placeholder="Valor definido por el usuario" /></label><label>Empresa emisora *<input value={draft.issuer} onChange={(event) => updateDraft("issuer", event.target.value)} /></label><label>RUT emisor<input value={draft.issuerRut} onChange={(event) => updateDraft("issuerRut", event.target.value)} /></label><label>Cliente *<input value={draft.client} onChange={(event) => updateDraft("client", event.target.value)} /></label><label>Destinatario<input value={draft.recipient} onChange={(event) => updateDraft("recipient", event.target.value)} /></label><label>RUT destinatario<input value={draft.recipientRut} onChange={(event) => updateDraft("recipientRut", event.target.value)} /></label><label>Monto neto *<input type="number" min="0" value={draft.netAmount} onChange={(event) => updateDraft("netAmount", event.target.value)} /></label><label>IVA<input type="number" min="0" value={draft.vatAmount} onChange={(event) => updateDraft("vatAmount", event.target.value)} /></label><label>Monto total *<input type="number" min="0" value={draft.totalAmount} onChange={(event) => updateDraft("totalAmount", event.target.value)} /></label></div>{formError && <p className="form-error">{formError}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={() => setShowEntry(false)}>Cancelar</button><button type="submit" className="primary-button">Guardar documento</button></div></form></section></div>}
     </div>
   );
 }
