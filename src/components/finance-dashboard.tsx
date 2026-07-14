@@ -7,6 +7,8 @@ import {
   Bar,
   BarChart,
   Cell,
+  Line,
+  LineChart,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -15,12 +17,13 @@ import {
   YAxis,
 } from "recharts";
 import { facturasEmitidas2026, type InvoiceRecord } from "@/data/facturas-emitidas-2026";
+import { forecastMonthly2026 } from "@/data/forecast-2026";
 
 const calendarMonths = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const pieColors = ["#18a877", "#eeb34d", "#5968df", "#d85f6c", "#8b97aa", "#2a8aa6", "#9d72d7"];
 
 type Role = "Administrador" | "Finanzas" | "Operación" | "Auditor";
-type Module = "Inicio" | "Facturas" | "Terceros" | "Cuentas por cobrar" | "Gastos y proveedores" | "Remuneraciones";
+type Module = "Inicio" | "Facturas" | "Proyecciones" | "Terceros" | "Cuentas por cobrar" | "Gastos y proveedores" | "Remuneraciones";
 
 type InvoiceDraft = {
   invoiceNumber: string;
@@ -87,7 +90,7 @@ function statusClass(status: string | null) {
   return "status neutral";
 }
 
-function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas"> }) {
+function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas" | "Proyecciones"> }) {
   const detail: Record<typeof module, string> = {
     Terceros: "Clientes, proveedores, contactos, RUT y condiciones comerciales vivirán aquí. El libro fuente no trae un maestro de proveedores.",
     "Cuentas por cobrar": "Este módulo usará las fechas de vencimiento y pago de facturas, sin inferir saldos ni reglas de cobranza que no estén definidas.",
@@ -105,6 +108,48 @@ function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas"
         <article><strong>Responsable</strong><span>Definido en la matriz de permisos</span></article>
         <article><strong>Salida</strong><span>Tablas, trazabilidad y KPI sin datos inventados</span></article>
       </div>
+    </main>
+  );
+}
+
+function ForecastModule() {
+  const rows = forecastMonthly2026.map((item) => ({
+    ...item,
+    month: calendarMonths[new Date(`${item.period}T00:00:00`).getMonth()] ?? item.period,
+    projectedMargin: item.projectedRevenue - item.projectedExpense,
+  }));
+  const totals = rows.reduce((total, item) => ({
+    projectedRevenue: total.projectedRevenue + item.projectedRevenue,
+    actualRevenue: total.actualRevenue + item.actualRevenue,
+    projectedExpense: total.projectedExpense + item.projectedExpense,
+    projectedMargin: total.projectedMargin + item.projectedMargin,
+  }), { projectedRevenue: 0, actualRevenue: 0, projectedExpense: 0, projectedMargin: 0 });
+
+  return (
+    <main className="dashboard forecast-dashboard">
+      <section className="headline">
+        <div><span className="eyebrow">PRESUPUESTO Y FORECAST · 2026</span><h1>Proyecciones</h1><p>Visualización literal de las hojas “Presupuesto 2026” y “Gastos Proyectados 2026”. No se completan meses ni se aplican probabilidades.</p></div>
+        <div className="headline-actions"><span className="refresh">● 501 líneas normalizadas en Supabase</span></div>
+      </section>
+
+      <section className="source-banner"><span>↳</span><div><strong>Lectura sin supuestos.</strong> “Ingresos proyectados”, “Ingresos reales” y “Gastos proyectados” conservan la hoja, fila y columna de origen. Las filas de total y conciliación quedan resguardadas en el libro, pero no se vuelven a sumar.</div></section>
+
+      <section className="kpis" aria-label="Indicadores de proyección">
+        <article className="kpi-card"><span>Ingresos proyectados</span><strong>{formatMoney(totals.projectedRevenue)}</strong><small>Presupuesto 2026 · monto neto</small></article>
+        <article className="kpi-card"><span>Gastos proyectados</span><strong>{formatMoney(totals.projectedExpense)}</strong><small>Gastos Proyectados 2026</small></article>
+        <article className="kpi-card accent"><span>Diferencia simple proyectada</span><strong>{formatMoney(totals.projectedMargin)}</strong><small>Ingresos proyectados menos gastos proyectados</small></article>
+        <article className="kpi-card"><span>Bloque “Real 2026”</span><strong>{formatMoney(totals.actualRevenue)}</strong><small>Tal como está registrado en el libro</small></article>
+      </section>
+
+      <section className="panel forecast-chart-panel">
+        <div className="panel-heading"><div><span className="panel-label">COMPARATIVO MENSUAL</span><h2>Forecast de ingresos y gastos</h2></div><span className="unit">CLP neto</span></div>
+        <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><LineChart data={rows} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}><XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fill: "#7e8ba0", fontSize: 12 }} /><YAxis hide /><Tooltip formatter={(value) => formatMoney(Number(value))} contentStyle={{ borderRadius: 12, border: "1px solid #e6e9ef" }} /><Line type="monotone" dataKey="projectedRevenue" name="Ingresos proyectados" stroke="#5968df" strokeWidth={2.5} dot={false} /><Line type="monotone" dataKey="projectedExpense" name="Gastos proyectados" stroke="#d85f6c" strokeWidth={2.5} dot={false} /><Line type="monotone" dataKey="actualRevenue" name="Bloque Real 2026" stroke="#20a67a" strokeWidth={2.5} strokeDasharray="5 4" dot={false} /></LineChart></ResponsiveContainer></div>
+      </section>
+
+      <section className="table-section">
+        <div className="table-heading"><div><span className="panel-label">DETALLE MENSUAL</span><h2>Plan de caja visible</h2><p>La diferencia es una resta aritmética entre dos series fuente; no es una proyección adicional.</p></div></div>
+        <div className="table-scroll"><table className="forecast-table"><thead><tr><th>Mes</th><th className="money-col">Ingresos proyectados</th><th className="money-col">Gastos proyectados</th><th className="money-col">Diferencia simple</th><th className="money-col">Bloque “Real 2026”</th></tr></thead><tbody>{rows.map((row) => <tr key={row.period}><td><strong>{row.month}</strong><small>2026</small></td><td className="money-col">{formatMoney(row.projectedRevenue)}</td><td className="money-col">{formatMoney(row.projectedExpense)}</td><td className="money-col">{formatMoney(row.projectedMargin)}</td><td className="money-col">{formatMoney(row.actualRevenue)}</td></tr>)}</tbody></table></div>
+      </section>
     </main>
   );
 }
@@ -198,7 +243,7 @@ export function FinanceDashboard() {
     setActiveModule("Facturas");
   }
 
-  const navigation: Module[] = ["Inicio", "Facturas", "Terceros", "Cuentas por cobrar", "Gastos y proveedores", "Remuneraciones"];
+  const navigation: Module[] = ["Inicio", "Facturas", "Proyecciones", "Terceros", "Cuentas por cobrar", "Gastos y proveedores", "Remuneraciones"];
 
   return (
     <div className="app-shell">
@@ -209,13 +254,13 @@ export function FinanceDashboard() {
         <nav aria-label="Navegación principal">
           {navigation.map((item) => (
             <button key={item} type="button" className={`nav-item ${activeModule === item ? "active" : ""}`} onClick={() => setActiveModule(item)}>
-              <span className="nav-icon">{item === "Inicio" ? "⌂" : item === "Facturas" ? "▤" : item === "Terceros" ? "◉" : item === "Cuentas por cobrar" ? "◷" : item === "Gastos y proveedores" ? "▣" : "◫"}</span>{item}
+              <span className="nav-icon">{item === "Inicio" ? "⌂" : item === "Facturas" ? "▤" : item === "Proyecciones" ? "⌁" : item === "Terceros" ? "◉" : item === "Cuentas por cobrar" ? "◷" : item === "Gastos y proveedores" ? "▣" : "◫"}</span>{item}
               {item === "Facturas" && <span className="nav-count">{records.length}</span>}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="source-note"><span className="status-dot" />Fuente activa<br /><strong>Facturas Emitidas.xlsx</strong><br />Hoja: Facturas emitidas 2026</div>
+          <div className="source-note"><span className="status-dot" />Libro respaldado<br /><strong>Facturas Emitidas.xlsx</strong><br />9 hojas · Supabase privado</div>
           <button className="settings-button" type="button">⚙ Configuración</button>
           <p>v0.1 · MVP trazable</p>
         </div>
@@ -234,7 +279,7 @@ export function FinanceDashboard() {
           </div>
         </header>
 
-        {activeModule !== "Inicio" && activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
+        {activeModule === "Proyecciones" ? <ForecastModule /> : activeModule !== "Inicio" && activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
           <main className="dashboard">
             <section className="headline">
               <div><span className="eyebrow">CONTROL FINANCIERO · 2026</span><h1>{activeModule === "Facturas" ? "Facturas emitidas" : "Panorama financiero"}</h1><p>Vista calculada desde la hoja fuente. Los importes no aplican ajustes ni clasificaciones adicionales.</p></div>
@@ -244,7 +289,7 @@ export function FinanceDashboard() {
               </div>
             </section>
 
-            <section className="source-banner"><span>↳</span><div><strong>Regla de trazabilidad activa.</strong> Cada fila heredada indica su hoja y fila de Excel. Los nuevos registros de este MVP son sólo de sesión; aún no existe una base de datos conectada.</div></section>
+            <section className="source-banner"><span>↳</span><div><strong>Regla de trazabilidad activa.</strong> El libro completo está preservado en Supabase: cada registro analítico indica hoja y fila. Esta vista inicial mantiene el detalle 2026 y los nuevos registros siguen siendo sólo de sesión hasta habilitar al primer usuario con rol.</div></section>
 
             <section className="kpis" aria-label="Indicadores principales">
               <article className="kpi-card"><span>Documentos fuente</span><strong>{number.format(records.length)}</strong><small>{sessionRecords.length ? `${sessionRecords.length} registro(s) manual(es) en sesión` : "57 importados desde Excel"}</small></article>

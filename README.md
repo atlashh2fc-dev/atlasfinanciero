@@ -1,14 +1,15 @@
-# Atlas Financiero · MVP trazable
+# Atlas Financiero · base trazable
 
 Aplicación web en Next.js, TypeScript, Tailwind CSS y Recharts para sustituir la lectura manual de la hoja de facturas por una vista operacional y auditable.
 
-## Estado del MVP
+## Estado actual
 
-- Importa como fuente inicial los 57 registros de `Facturas emitidas 2026` del archivo entregado `Facturas Emitidas.xlsx`.
-- Cada registro conserva la referencia `archivo → hoja → fila`.
-- Los KPI son sumas directas de las columnas `Monto Neto` y `Monto total Facturado`; no reclasifican ni compensan notas de crédito.
+- Se importó el libro completo `Facturas Emitidas.xlsx` al proyecto Supabase `bydhikcehslzyxhwtrac` y el archivo original quedó en un bucket privado.
+- La carga conserva 11.071 celdas fuente, incluidas fórmulas, 126 documentos emitidos históricos, 19 contrapartes y cuatro lotes por hoja de facturas.
+- Proyecciones normaliza únicamente líneas de detalle: 192 de ingresos proyectados, 132 del bloque `Real 2026` y 177 de gastos proyectados. Totales y conciliaciones permanecen intactos en la fuente, pero no se duplican en los gráficos.
+- Cada registro conserva la referencia `archivo → hoja → fila` y cada proyección también su columna de origen.
 - El formulario crea registros sólo en la sesión del navegador. No afirma persistencia ni modifica el libro Excel.
-- No se incorporan datos de proveedores, gastos o remuneraciones, porque no estaban en la fuente analizada.
+- Hay modelos, RLS, bitácora e importaciones para documentos, terceros, forecast y archivos fuente. El primer usuario administrador aún debe ser definido explícitamente antes de habilitar escritura real desde la interfaz.
 
 ## Ejecutar
 
@@ -26,9 +27,11 @@ pnpm build
 
 ## Conexión con Supabase
 
-La integración está preparada, pero no queda conectada hasta cargar las credenciales del proyecto. Copia `.env.example` a `.env.local` y completa únicamente la URL y Publishable Key pública. Nunca pongas `service_role` en variables `NEXT_PUBLIC_`.
+La aplicación usa la URL y Publishable Key pública en `.env.local` (archivo ignorado por Git). Nunca pongas `service_role` en variables `NEXT_PUBLIC_`.
 
-La primera migración está en `supabase/migrations/` e incluye organizaciones, usuarios, membresías con roles, terceros, documentos emitidos, lotes de importación y auditoría. Antes de aplicarla al proyecto remoto se debe enlazar el proyecto y verificar las políticas RLS con usuarios de cada rol.
+Las migraciones incluyen organizaciones, perfiles, membresías por rol, terceros, documentos emitidos, lotes de importación, forecast, almacenamiento privado del libro y auditoría. Las políticas RLS impiden lectura y edición fuera de la organización.
+
+Para incorporar el primer usuario, crea o confirma su cuenta en Supabase Auth y asígnala a GEIMSER con el rol `administrator`. No se asigna este permiso automáticamente a una dirección de correo supuesta.
 
 ## Arquitectura objetivo
 
@@ -59,7 +62,7 @@ PostgreSQL
 3. **Cuentas por cobrar**: calendario de vencimientos, pagos, abonos, factoring y cartera; sus reglas deben configurarse antes de calcular saldos.
 4. **Gastos y proveedores**: documentos recibidos, órdenes de compra, centros de costo y aprobaciones.
 5. **Remuneraciones**: importación de costos de personal a centros de costo y períodos, sin exponer liquidaciones a roles no autorizados.
-6. **Presupuesto y gestión**: versión de presupuesto, real, forecast, variaciones y cierre de período.
+6. **Proyecciones**: visualización del presupuesto, bloque `Real 2026`, gastos proyectados y diferencia simple, sin modificar sus valores fuente.
 
 ### Roles iniciales
 
@@ -80,7 +83,7 @@ Antes de pasar a producción se deben acordar explícitamente: signo y efecto de
 
 ## Reimportar el libro
 
-El importador está en `scripts/import-facturas-2026.py`. Usa sólo XML estándar del `.xlsx`, porque el libro fuente incluye metadatos de comentarios que el lector de Excel usado para inspección no acepta. Ejecutar:
+El importador operativo está preparado como migración reproducible en `supabase/migrations/20260714170811_import_full_facturacion_workbook.sql`; el libro completo se lee por XML estándar del `.xlsx`, porque contiene metadatos de comentarios que algunos lectores de Excel no aceptan. Para una próxima versión del proceso de carga, se debe generar un lote nuevo: nunca sobrescribir la carga histórica ni sus referencias de origen.
 
 ```bash
 python3 scripts/import-facturas-2026.py "/ruta/Facturas Emitidas.xlsx"
