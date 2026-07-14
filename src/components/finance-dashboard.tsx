@@ -303,6 +303,7 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
     null,
   );
   const [marketError, setMarketError] = useState(false);
+  const [year, setYear] = useState(String(new Date().getFullYear()));
 
   useEffect(() => {
     let active = true;
@@ -327,17 +328,38 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
   const currentDate = asOf.toISOString().slice(0, 10);
   const currentMonthIndex = asOf.getMonth();
   const currentMonthStart = `${currentDate.slice(0, 8)}01`;
-  const ytdRecords = records.filter(
-    (record) => Boolean(record.issueDate) && record.issueDate! <= currentDate,
+  const availableYears = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          records
+            .map((record) => record.year)
+            .filter((value): value is number => typeof value === "number"),
+        ),
+      ).sort((first, second) => second - first),
+    [records],
   );
-  const closedMonthRecords = records.filter(
+  const selectedYear = Number(year);
+  const recordsForYear = useMemo(
+    () => records.filter((record) => record.year === selectedYear),
+    [records, selectedYear],
+  );
+  const isCurrentYear = selectedYear === asOf.getFullYear();
+  const hasForecastPlan = selectedYear === 2026;
+  const periodRecords = recordsForYear.filter(
     (record) =>
-      Boolean(record.issueDate) && record.issueDate! < currentMonthStart,
+      !isCurrentYear || !record.issueDate || record.issueDate <= currentDate,
   );
-  const netDocumented = sumRecognizedNet(records);
-  const netDocumentedYtd = sumRecognizedNet(ytdRecords);
+  const closedMonthRecords = recordsForYear.filter(
+    (record) =>
+      !isCurrentYear ||
+      !record.issueDate ||
+      record.issueDate < currentMonthStart,
+  );
+  const netDocumented = sumRecognizedNet(periodRecords);
+  const netDocumentedYtd = sumRecognizedNet(periodRecords);
   const netDocumentedClosedMonths = sumRecognizedNet(closedMonthRecords);
-  const pending = records.filter(
+  const pending = periodRecords.filter(
     (record) =>
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
@@ -348,7 +370,7 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
     (record) => Boolean(record.dueDate) && record.dueDate! < currentDate,
   );
   const overdueAmount = sum(overdue, "netAmount");
-  const paymentObserved = records.filter(
+  const paymentObserved = periodRecords.filter(
     (record) => record.issueDate && record.paymentDate,
   );
   const observedPaymentDays = paymentObserved.map((record) =>
@@ -362,41 +384,44 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
     ? observedPaymentDays.reduce((total, days) => total + days, 0) /
       observedPaymentDays.length
     : null;
-  const customers = buildCustomerEvolution(records);
+  const customers = buildCustomerEvolution(periodRecords);
   const topCustomer = customers[0];
   const topFiveShare = netDocumented
     ? customers
         .slice(0, 5)
         .reduce((total, customer) => total + customer.total, 0) / netDocumented
     : 0;
-  const budgetClosedMonths = forecastMonthly2026
-    .slice(0, currentMonthIndex)
+  const budgetClosedMonths = (hasForecastPlan ? forecastMonthly2026 : [])
+    .slice(0, isCurrentYear ? currentMonthIndex : 12)
     .reduce((total, item) => total + item.projectedRevenue, 0);
-  const annualBudget = forecastMonthly2026.reduce(
+  const annualBudget = (hasForecastPlan ? forecastMonthly2026 : []).reduce(
     (total, item) => total + item.projectedRevenue,
     0,
   );
   const planExecution = budgetClosedMonths
     ? netDocumentedClosedMonths / budgetClosedMonths
     : null;
-  const closingBase =
-    netDocumentedYtd +
-    forecastMonthly2026
-      .slice(currentMonthIndex + 1)
-      .reduce((total, item) => total + item.projectedRevenue, 0);
-  const plannedResult = forecastMonthly2026.reduce(
+  const closingBase = hasForecastPlan
+    ? netDocumentedYtd +
+      forecastMonthly2026
+        .slice(isCurrentYear ? currentMonthIndex + 1 : 12)
+        .reduce((total, item) => total + item.projectedRevenue, 0)
+    : null;
+  const plannedResult = (hasForecastPlan ? forecastMonthly2026 : []).reduce(
     (total, item) => total + item.projectedRevenue - item.projectedExpense,
     0,
   );
   const monthlyExecutive = calendarMonths.map((month, index) => ({
     month: month.slice(0, 3),
     documented:
-      index < currentMonthIndex
+      !isCurrentYear || index < currentMonthIndex
         ? sumRecognizedNet(
             closedMonthRecords.filter((record) => record.month === month),
           )
         : null,
-    budget: forecastMonthly2026[index]?.projectedRevenue ?? 0,
+    budget: hasForecastPlan
+      ? (forecastMonthly2026[index]?.projectedRevenue ?? 0)
+      : null,
   }));
   const clientRanking = customers.slice(0, 6).map((customer) => ({
     client: customer.client,
@@ -410,7 +435,7 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
     <main className="dashboard executive-dashboard">
       <section className="headline">
         <div>
-          <span className="eyebrow">COCKPIT EJECUTIVO · 2026</span>
+          <span className="eyebrow">COCKPIT EJECUTIVO · {year}</span>
           <h1>Panorama para decisión</h1>
           <p>
             Lectura de crecimiento, cobranza, concentración y cierre base. Cada
@@ -418,7 +443,25 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
           </p>
         </div>
         <div className="headline-actions">
-          <span className="refresh">● Corte {formatDate(currentDate)}</span>
+          <label className="period-picker">
+            Año
+            <select
+              value={year}
+              onChange={(event) => setYear(event.target.value)}
+            >
+              {availableYears.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="refresh">
+            ●{" "}
+            {isCurrentYear
+              ? `Corte ${formatDate(currentDate)}`
+              : "Período completo"}
+          </span>
         </div>
       </section>
 
@@ -456,9 +499,13 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
           data-help="Facturación neta observada a la fecha más el presupuesto de los meses futuros. Es un escenario base, no una predicción de caja."
         >
           <span>Cierre anual base</span>
-          <strong>{formatMoney(closingBase)}</strong>
+          <strong>
+            {closingBase === null ? "—" : formatMoney(closingBase)}
+          </strong>
           <small>
-            {formatMoney(closingBase - annualBudget)} contra el plan anual
+            {hasForecastPlan && closingBase !== null
+              ? `${formatMoney(closingBase - annualBudget)} contra el plan anual`
+              : "Sin presupuesto cargado para este año"}
           </small>
         </article>
         <article
@@ -503,13 +550,16 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
         <article>
           <span>CRECIMIENTO</span>
           <strong>
-            {planExecution !== null && planExecution >= 1
-              ? "Sobre el plan cerrado"
-              : "Bajo el plan cerrado"}
+            {!hasForecastPlan
+              ? "Sin plan cargado"
+              : planExecution !== null && planExecution >= 1
+                ? "Sobre el plan cerrado"
+                : "Bajo el plan cerrado"}
           </strong>
           <p>
-            {formatMoney(netDocumentedClosedMonths)} documentados frente a{" "}
-            {formatMoney(budgetClosedMonths)} en meses cerrados.
+            {hasForecastPlan
+              ? `${formatMoney(netDocumentedClosedMonths)} documentados frente a ${formatMoney(budgetClosedMonths)} en meses cerrados.`
+              : "Carga presupuesto anual para comparar la ejecución del período."}
           </p>
         </article>
         <article>
@@ -650,13 +700,25 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
         <div className="decision-grid">
           <article>
             <span>Base de cierre</span>
-            <strong>{formatMoney(closingBase)}</strong>
-            <small>No incorpora saldo no documentado del mes en curso</small>
+            <strong>
+              {closingBase === null ? "—" : formatMoney(closingBase)}
+            </strong>
+            <small>
+              {hasForecastPlan
+                ? "No incorpora saldo no documentado del mes en curso"
+                : "Sin presupuesto anual cargado"}
+            </small>
           </article>
           <article>
             <span>Resultado planificado</span>
-            <strong>{formatMoney(plannedResult)}</strong>
-            <small>Ingresos proyectados menos gastos proyectados</small>
+            <strong>
+              {hasForecastPlan ? formatMoney(plannedResult) : "—"}
+            </strong>
+            <small>
+              {hasForecastPlan
+                ? "Ingresos proyectados menos gastos proyectados"
+                : "Sin plan de ingresos y gastos para este año"}
+            </small>
           </article>
           <article>
             <span>Dato pendiente</span>
