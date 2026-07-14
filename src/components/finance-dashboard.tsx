@@ -29,6 +29,18 @@ import { isCreditNoteDocument, isPurchaseOrderDocument, recognizedNetAmount } fr
 
 const calendarMonths = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const pieColors = ["#18a877", "#eeb34d", "#5968df", "#d85f6c", "#8b97aa", "#2a8aa6", "#9d72d7"];
+const modulePreviews: Record<Module, string> = {
+  Inicio: "Cockpit ejecutivo: crecimiento, cobranza, concentración y referencias de mercado.",
+  Facturas: "Documentos emitidos, estados, pagos, notas de crédito y evolución neta por período.",
+  "Órdenes de compra": "Compromisos recibidos y saldo disponible después de cada facturación parcial.",
+  Recurrentes: "Calendario y alertas para que las facturas periódicas estén listas antes de su fecha límite.",
+  Clientes: "Evolución comercial y ficha tributaria, facturación y contactos por área de cada cliente.",
+  "Cuentas por cobrar": "Cartera pendiente por vencimiento, gestión, compromisos de pago y factoring.",
+  Proyecciones: "Presupuesto mensual, forecast y diferencia contra la información real disponible.",
+  "Gastos y proveedores": "Próximamente: documentos recibidos, rendiciones, pagos y conciliación bancaria.",
+  Remuneraciones: "Costo laboral y dotación sincronizados desde PeopleWork.",
+  Administración: "Organizaciones, usuarios, roles e invitaciones de acceso.",
+};
 
 type Module = "Inicio" | "Facturas" | "Órdenes de compra" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Recurrentes" | "Gastos y proveedores" | "Remuneraciones" | "Administración";
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
@@ -208,11 +220,11 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
       </section>
 
       <section className="kpis kpis-five" aria-label="Indicadores ejecutivos">
-        <article className="kpi-card"><span>Facturado neto acumulado</span><strong>{formatMoney(netDocumentedYtd)}</strong><small>Facturas y exentos, menos notas de crédito. OCs excluidas.</small></article>
-        <article className="kpi-card"><span>Ejecución del plan cerrado</span><strong>{planExecution === null ? "—" : new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(planExecution)}</strong><small>{formatMoney(netDocumentedClosedMonths - budgetClosedMonths)} frente a meses ya cerrados</small></article>
-        <article className="kpi-card"><span>Cierre anual base</span><strong>{formatMoney(closingBase)}</strong><small>{formatMoney(closingBase - annualBudget)} contra el plan anual</small></article>
-        <article className="kpi-card accent"><span>Cartera vencida</span><strong>{formatMoney(overdueAmount)}</strong><small>{pendingAmount ? new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(overdueAmount / pendingAmount) : "0%"} de la cartera pendiente</small></article>
-        <article className="kpi-card"><span>Concentración Top 5</span><strong>{new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(topFiveShare)}</strong><small>{topCustomer ? `Mayor cliente: ${topCustomer.client}` : "Sin cliente informado"}</small></article>
+        <article className="kpi-card" data-help="Suma neta documentada hasta la fecha de corte: facturas y exentos menos notas de crédito; no considera órdenes de compra."><span>Facturado neto acumulado</span><strong>{formatMoney(netDocumentedYtd)}</strong><small>Facturas y exentos, menos notas de crédito. OCs excluidas.</small></article>
+        <article className="kpi-card" data-help="Facturación neta de meses cerrados dividida por el presupuesto de esos mismos meses. Mide avance, no caja."><span>Ejecución del plan cerrado</span><strong>{planExecution === null ? "—" : new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(planExecution)}</strong><small>{formatMoney(netDocumentedClosedMonths - budgetClosedMonths)} frente a meses ya cerrados</small></article>
+        <article className="kpi-card" data-help="Facturación neta observada a la fecha más el presupuesto de los meses futuros. Es un escenario base, no una predicción de caja."><span>Cierre anual base</span><strong>{formatMoney(closingBase)}</strong><small>{formatMoney(closingBase - annualBudget)} contra el plan anual</small></article>
+        <article className="kpi-card accent" data-help="Documentos pendientes cuya fecha de vencimiento ya pasó. Se calcula en neto/exento y requiere gestión de cobranza."><span>Cartera vencida</span><strong>{formatMoney(overdueAmount)}</strong><small>{pendingAmount ? new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(overdueAmount / pendingAmount) : "0%"} de la cartera pendiente</small></article>
+        <article className="kpi-card" data-help="Proporción del facturado neto que concentran los cinco clientes de mayor monto. Indica dependencia comercial."><span>Concentración Top 5</span><strong>{new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(topFiveShare)}</strong><small>{topCustomer ? `Mayor cliente: ${topCustomer.client}` : "Sin cliente informado"}</small></article>
       </section>
 
       <section className="analysis-strip executive-insights" aria-label="Lecturas prioritarias de gerencia">
@@ -472,6 +484,7 @@ export function FinanceDashboard() {
   const currentDate = new Date().toISOString().slice(0, 10);
   const overdueRecords = yearFilteredRecords.filter((record) => !isPurchaseOrderDocument(record) && !isCreditNoteDocument(record) && record.status === "Pendiente" && Boolean(record.dueDate) && record.dueDate! < currentDate);
   const overdueAmount = sumRecognizedNet(overdueRecords);
+  const creditNotesAmount = yearFilteredRecords.filter(isCreditNoteDocument).reduce((total, record) => total + Math.abs(record.netAmount ?? 0), 0);
   const hasEditPermission = access !== null && ["administrator", "finance", "operations"].includes(access.membership.role);
 
   function updateDraft(field: keyof InvoiceDraft, value: string) {
@@ -560,9 +573,10 @@ export function FinanceDashboard() {
         </select>
         <nav aria-label="Navegación principal">
           {visibleNavigation.map((item) => (
-            <button key={item} type="button" className={`nav-item ${activeModule === item ? "active" : ""}`} onClick={() => setActiveModule(item)}>
+            <button key={item} type="button" className={`nav-item ${activeModule === item ? "active" : ""}`} onClick={() => setActiveModule(item)} aria-describedby={`module-preview-${item.replaceAll(" ", "-")}`}>
               <span className="nav-icon">{item === "Inicio" ? "⌂" : item === "Facturas" ? "▤" : item === "Órdenes de compra" ? "⌑" : item === "Recurrentes" ? "↻" : item === "Proyecciones" ? "⌁" : item === "Clientes" ? "◉" : item === "Cuentas por cobrar" ? "◷" : item === "Gastos y proveedores" ? "▣" : item === "Remuneraciones" ? "◫" : "⚙"}</span>{item}
               {item === "Facturas" && <span className="nav-count">{records.length}</span>}
+              <span className="nav-preview" id={`module-preview-${item.replaceAll(" ", "-")}`} role="tooltip"><b>{item}</b>{modulePreviews[item]}</span>
             </button>
           ))}
         </nav>
@@ -591,11 +605,11 @@ export function FinanceDashboard() {
             </section>
 
             <section className="kpis kpis-five" aria-label="Indicadores principales">
-              <article className="kpi-card"><span>Documentos emitidos</span><strong>{number.format(records.length)}</strong><small>{databaseRecords ? "Registros persistidos en Atlas" : sessionRecords.length ? `${sessionRecords.length} registro(s) guardado(s) en Atlas` : "Año 2026"}</small></article>
-              <article className="kpi-card"><span>Facturado neto</span><strong>{formatMoney(sumRecognizedNet(yearFilteredRecords))}</strong><small>Facturas y exentos, menos notas de crédito. OCs excluidas.</small></article>
-              <article className="kpi-card"><span>Monto total documentado</span><strong>{formatMoney(sum(records, "totalAmount"))}</strong><small>Suma literal de “Monto total Facturado”</small></article>
-              <article className="kpi-card accent"><span>Estado “Pendiente”</span><strong>{number.format(pendingCount)}</strong><small>Documentos con ese estado exacto</small></article>
-              <article className="kpi-card"><span>Cartera vencida</span><strong>{formatMoney(overdueAmount)}</strong><small>{number.format(overdueRecords.length)} pendiente(s) vencido(s) a la fecha</small></article>
+              <article className="kpi-card" data-help="Cantidad de documentos emitidos para el período filtrado. Incluye facturas, exentos, notas de crédito y órdenes de compra registradas."><span>Documentos emitidos</span><strong>{number.format(records.length)}</strong><small>{databaseRecords ? "Registros persistidos en Atlas" : sessionRecords.length ? `${sessionRecords.length} registro(s) guardado(s) en Atlas` : "Año 2026"}</small></article>
+              <article className="kpi-card" data-help="Ingreso reconocido: facturas y documentos exentos, menos notas de crédito. Las órdenes de compra no son venta facturada."><span>Facturado neto</span><strong>{formatMoney(sumRecognizedNet(yearFilteredRecords))}</strong><small>Facturas y exentos, menos notas de crédito. OCs excluidas.</small></article>
+              <article className="kpi-card" data-help="Valor neto que rebajó el ingreso por notas de crédito emitidas en el período filtrado."><span>Notas de crédito emitidas</span><strong>{formatMoney(creditNotesAmount)}</strong><small>Rebaja ya incorporada en facturado neto</small></article>
+              <article className="kpi-card accent" data-help="Número de documentos cuyo estado actual es Pendiente. El importe asociado se revisa en Cuentas por cobrar."><span>Estado “Pendiente”</span><strong>{number.format(pendingCount)}</strong><small>Documentos con ese estado exacto</small></article>
+              <article className="kpi-card" data-help="Monto neto/exento de documentos pendientes cuya fecha de vencimiento ya pasó. Requiere gestión prioritaria."><span>Cartera vencida</span><strong>{formatMoney(overdueAmount)}</strong><small>{number.format(overdueRecords.length)} pendiente(s) vencido(s) a la fecha</small></article>
             </section>
 
             <section className="visual-grid">
