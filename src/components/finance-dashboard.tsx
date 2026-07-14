@@ -1,0 +1,274 @@
+"use client";
+
+import { FormEvent, useMemo, useState } from "react";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { facturasEmitidas2026, type InvoiceRecord } from "@/data/facturas-emitidas-2026";
+
+const calendarMonths = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+const pieColors = ["#18a877", "#eeb34d", "#5968df", "#d85f6c", "#8b97aa", "#2a8aa6", "#9d72d7"];
+
+type Role = "Administrador" | "Finanzas" | "Operación" | "Auditor";
+type Module = "Inicio" | "Facturas" | "Terceros" | "Cuentas por cobrar" | "Gastos y proveedores" | "Remuneraciones";
+
+type InvoiceDraft = {
+  invoiceNumber: string;
+  issueDate: string;
+  documentType: string;
+  issuer: string;
+  issuerRut: string;
+  client: string;
+  recipient: string;
+  recipientRut: string;
+  netAmount: string;
+  vatAmount: string;
+  totalAmount: string;
+  status: string;
+};
+
+const blankDraft: InvoiceDraft = {
+  invoiceNumber: "",
+  issueDate: "",
+  documentType: "",
+  issuer: "",
+  issuerRut: "",
+  client: "",
+  recipient: "",
+  recipientRut: "",
+  netAmount: "",
+  vatAmount: "",
+  totalAmount: "",
+  status: "",
+};
+
+const money = new Intl.NumberFormat("es-CL", {
+  style: "currency",
+  currency: "CLP",
+  maximumFractionDigits: 0,
+});
+
+const number = new Intl.NumberFormat("es-CL", { maximumFractionDigits: 0 });
+
+function formatMoney(value: number) {
+  return money.format(value);
+}
+
+function formatDate(value: string | null) {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(
+    new Date(`${value}T00:00:00`),
+  );
+}
+
+function monthFromDate(value: string) {
+  return calendarMonths[new Date(`${value}T00:00:00`).getMonth()] ?? null;
+}
+
+function sum(records: InvoiceRecord[], field: "netAmount" | "totalAmount") {
+  return records.reduce((total, record) => total + (record[field] ?? 0), 0);
+}
+
+function statusClass(status: string | null) {
+  const normalized = status?.toLowerCase() ?? "";
+  if (normalized.includes("pagada")) return "status paid";
+  if (normalized.includes("pendiente")) return "status pending";
+  if (normalized.includes("anulada") || normalized.includes("credito")) return "status cancelled";
+  return "status neutral";
+}
+
+function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas"> }) {
+  const detail: Record<typeof module, string> = {
+    Terceros: "Clientes, proveedores, contactos, RUT y condiciones comerciales vivirán aquí. El libro fuente no trae un maestro de proveedores.",
+    "Cuentas por cobrar": "Este módulo usará las fechas de vencimiento y pago de facturas, sin inferir saldos ni reglas de cobranza que no estén definidas.",
+    "Gastos y proveedores": "Preparado para documentos recibidos, órdenes de compra, centros de costo y proveedores. Requiere fuente de gastos aprobada.",
+    Remuneraciones: "Integración futura para costo de personal. Los datos de remuneraciones no están en el archivo analizado, por lo que esta vista aún no muestra montos.",
+  };
+
+  return (
+    <main className="module-placeholder">
+      <span className="eyebrow">Módulo en preparación</span>
+      <h1>{module}</h1>
+      <p>{detail[module]}</p>
+      <div className="placeholder-grid">
+        <article><strong>Fuente requerida</strong><span>Importación validada o registro autorizado</span></article>
+        <article><strong>Responsable</strong><span>Definido en la matriz de permisos</span></article>
+        <article><strong>Salida</strong><span>Tablas, trazabilidad y KPI sin datos inventados</span></article>
+      </div>
+    </main>
+  );
+}
+
+export function FinanceDashboard() {
+  const [activeModule, setActiveModule] = useState<Module>("Inicio");
+  const [role, setRole] = useState<Role>("Administrador");
+  const [month, setMonth] = useState("Todos");
+  const [status, setStatus] = useState("Todos");
+  const [showEntry, setShowEntry] = useState(false);
+  const [draft, setDraft] = useState<InvoiceDraft>(blankDraft);
+  const [formError, setFormError] = useState("");
+  const [sessionRecords, setSessionRecords] = useState<InvoiceRecord[]>([]);
+
+  const records = useMemo(() => [...facturasEmitidas2026, ...sessionRecords], [sessionRecords]);
+  const months = useMemo(
+    () => calendarMonths.filter((item) => records.some((record) => record.month === item)),
+    [records],
+  );
+  const statuses = useMemo(() => {
+    const values = records.map((record) => record.status).filter((item): item is string => Boolean(item));
+    return Array.from(new Set(values)).sort();
+  }, [records]);
+  const filtered = useMemo(
+    () => records.filter((record) => (month === "Todos" || record.month === month) && (status === "Todos" || record.status === status)),
+    [records, month, status],
+  );
+
+  const monthly = useMemo(
+    () => months.map((item) => {
+      const matching = records.filter((record) => record.month === item);
+      return { month: item.slice(0, 3), montoNeto: sum(matching, "netAmount"), documentos: matching.length };
+    }),
+    [months, records],
+  );
+  const statusesChart = useMemo(() => statuses.map((item) => ({
+    name: item,
+    value: records.filter((record) => record.status === item).length,
+  })), [records, statuses]);
+  const clientRanking = useMemo(() => Object.values(records.reduce<Record<string, { client: string; montoNeto: number }>>((accumulator, record) => {
+    const client = record.client || "No informado";
+    accumulator[client] ??= { client, montoNeto: 0 };
+    accumulator[client].montoNeto += record.netAmount ?? 0;
+    return accumulator;
+  }, {})).sort((a, b) => b.montoNeto - a.montoNeto).slice(0, 6), [records]);
+
+  const pendingCount = records.filter((record) => record.status === "Pendiente").length;
+  const hasEditPermission = role === "Administrador" || role === "Finanzas" || role === "Operación";
+
+  function updateDraft(field: keyof InvoiceDraft, value: string) {
+    setDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  function submitEntry(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!draft.issueDate || !draft.documentType || !draft.issuer || !draft.client || !draft.netAmount || !draft.totalAmount || !draft.status) {
+      setFormError("Completa fecha, tipo, emisor, cliente, montos y estado. No se crearán valores de relleno.");
+      return;
+    }
+    const created: InvoiceRecord = {
+      id: `manual-${crypto.randomUUID()}`,
+      invoiceNumber: draft.invoiceNumber || null,
+      year: Number(draft.issueDate.slice(0, 4)),
+      month: monthFromDate(draft.issueDate),
+      issueDate: draft.issueDate,
+      documentType: draft.documentType,
+      issuer: draft.issuer,
+      issuerRut: draft.issuerRut || null,
+      client: draft.client,
+      recipient: draft.recipient || null,
+      recipientRut: draft.recipientRut || null,
+      netAmount: Number(draft.netAmount),
+      vatAmount: draft.vatAmount ? Number(draft.vatAmount) : null,
+      totalAmount: Number(draft.totalAmount),
+      notes: null,
+      paymentTermDays: null,
+      dueDate: null,
+      dueMonth: null,
+      status: draft.status,
+      paymentDate: null,
+      paymentMethod: null,
+      originAccountRut: null,
+      destinationBank: null,
+      destinationAccount: null,
+      source: { file: "Registro manual en sesión", sheet: "No persistido", row: 0 },
+    };
+    setSessionRecords((current) => [created, ...current]);
+    setDraft(blankDraft);
+    setFormError("");
+    setShowEntry(false);
+    setActiveModule("Facturas");
+  }
+
+  const navigation: Module[] = ["Inicio", "Facturas", "Terceros", "Cuentas por cobrar", "Gastos y proveedores", "Remuneraciones"];
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand"><span className="brand-mark">A</span><span>Atlas <b>Financiero</b></span></div>
+        <div className="workspace-label">ESPACIO DE TRABAJO</div>
+        <button className="workspace-switcher" type="button">GEIMSER <span>⌄</span></button>
+        <nav aria-label="Navegación principal">
+          {navigation.map((item) => (
+            <button key={item} type="button" className={`nav-item ${activeModule === item ? "active" : ""}`} onClick={() => setActiveModule(item)}>
+              <span className="nav-icon">{item === "Inicio" ? "⌂" : item === "Facturas" ? "▤" : item === "Terceros" ? "◉" : item === "Cuentas por cobrar" ? "◷" : item === "Gastos y proveedores" ? "▣" : "◫"}</span>{item}
+              {item === "Facturas" && <span className="nav-count">{records.length}</span>}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="source-note"><span className="status-dot" />Fuente activa<br /><strong>Facturas Emitidas.xlsx</strong><br />Hoja: Facturas emitidas 2026</div>
+          <button className="settings-button" type="button">⚙ Configuración</button>
+          <p>v0.1 · MVP trazable</p>
+        </div>
+      </aside>
+
+      <section className="content-area">
+        <header className="topbar">
+          <div className="breadcrumb">Finanzas <span>/</span> {activeModule}</div>
+          <div className="topbar-actions">
+            <label className="role-picker">Vista de rol
+              <select value={role} onChange={(event) => setRole(event.target.value as Role)}>
+                <option>Administrador</option><option>Finanzas</option><option>Operación</option><option>Auditor</option>
+              </select>
+            </label>
+            <button className="avatar" type="button" aria-label="Perfil">GF</button>
+          </div>
+        </header>
+
+        {activeModule !== "Inicio" && activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
+          <main className="dashboard">
+            <section className="headline">
+              <div><span className="eyebrow">CONTROL FINANCIERO · 2026</span><h1>{activeModule === "Facturas" ? "Facturas emitidas" : "Panorama financiero"}</h1><p>Vista calculada desde la hoja fuente. Los importes no aplican ajustes ni clasificaciones adicionales.</p></div>
+              <div className="headline-actions">
+                <span className="refresh">● Datos importados del libro</span>
+                {hasEditPermission ? <button className="primary-button" type="button" onClick={() => setShowEntry(true)}>＋ Registrar documento</button> : <span className="permission-note">El rol Auditor no registra documentos</span>}
+              </div>
+            </section>
+
+            <section className="source-banner"><span>↳</span><div><strong>Regla de trazabilidad activa.</strong> Cada fila heredada indica su hoja y fila de Excel. Los nuevos registros de este MVP son sólo de sesión; aún no existe una base de datos conectada.</div></section>
+
+            <section className="kpis" aria-label="Indicadores principales">
+              <article className="kpi-card"><span>Documentos fuente</span><strong>{number.format(records.length)}</strong><small>{sessionRecords.length ? `${sessionRecords.length} registro(s) manual(es) en sesión` : "57 importados desde Excel"}</small></article>
+              <article className="kpi-card"><span>Monto neto documentado</span><strong>{formatMoney(sum(records, "netAmount"))}</strong><small>Suma literal de “Monto Neto”</small></article>
+              <article className="kpi-card"><span>Monto total documentado</span><strong>{formatMoney(sum(records, "totalAmount"))}</strong><small>Suma literal de “Monto total Facturado”</small></article>
+              <article className="kpi-card accent"><span>Estado “Pendiente”</span><strong>{number.format(pendingCount)}</strong><small>Documentos con ese estado exacto</small></article>
+            </section>
+
+            <section className="visual-grid">
+              <article className="panel trend-panel"><div className="panel-heading"><div><span className="panel-label">EVOLUCIÓN</span><h2>Monto neto por mes</h2></div><span className="unit">CLP</span></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={monthly} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}><defs><linearGradient id="netFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#5968df" stopOpacity={0.26} /><stop offset="100%" stopColor="#5968df" stopOpacity={0.01} /></linearGradient></defs><XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fill: "#7e8ba0", fontSize: 12 }} /><YAxis hide /><Tooltip formatter={(value) => formatMoney(Number(value))} contentStyle={{ borderRadius: 12, border: "1px solid #e6e9ef" }} /><Area type="monotone" dataKey="montoNeto" stroke="#5968df" strokeWidth={2.5} fill="url(#netFill)" /></AreaChart></ResponsiveContainer></div></article>
+              <article className="panel status-panel"><div className="panel-heading"><div><span className="panel-label">DISTRIBUCIÓN</span><h2>Documentos por estado</h2></div></div><div className="donut-row"><div className="donut"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={statusesChart} dataKey="value" nameKey="name" innerRadius={57} outerRadius={78} paddingAngle={3} stroke="none">{statusesChart.map((entry, index) => <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />)}</Pie><Tooltip formatter={(value) => `${value} documento(s)`} /></PieChart></ResponsiveContainer><div className="donut-center"><strong>{records.length}</strong><span>documentos</span></div></div><div className="legend">{statusesChart.map((item, index) => <div key={item.name}><i style={{ backgroundColor: pieColors[index % pieColors.length] }} /><span>{item.name}</span><b>{item.value}</b></div>)}</div></div></article>
+            </section>
+
+            <section className="panel ranking-panel"><div className="panel-heading"><div><span className="panel-label">CLIENTES</span><h2>Mayor monto neto documentado</h2></div><span className="unit">Top 6</span></div><div className="ranking-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={clientRanking} layout="vertical" margin={{ left: 0, right: 24 }}><XAxis type="number" hide /><YAxis type="category" dataKey="client" width={145} tickLine={false} axisLine={false} tick={{ fill: "#58657a", fontSize: 12 }} /><Tooltip formatter={(value) => formatMoney(Number(value))} cursor={{ fill: "#f6f7fb" }} contentStyle={{ borderRadius: 12, border: "1px solid #e6e9ef" }} /><Bar dataKey="montoNeto" radius={[0, 6, 6, 0]} fill="#20a67a" /></BarChart></ResponsiveContainer></div></section>
+
+            <section className="table-section" id="facturas">
+              <div className="table-heading"><div><span className="panel-label">REGISTRO TRAZABLE</span><h2>Documentos emitidos</h2><p>{filtered.length} resultado(s) con los filtros actuales</p></div><div className="filters"><label>Mes<select value={month} onChange={(event) => setMonth(event.target.value)}><option>Todos</option>{months.map((item) => <option key={item}>{item}</option>)}</select></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option>Todos</option>{statuses.map((item) => <option key={item}>{item}</option>)}</select></label></div></div>
+              <div className="table-scroll"><table><thead><tr><th>Documento</th><th>Emisión</th><th>Cliente</th><th>Tipo</th><th className="money-col">Neto</th><th className="money-col">Total</th><th>Estado</th><th>Origen</th></tr></thead><tbody>{filtered.map((record) => <tr key={record.id}><td><strong>N° {record.invoiceNumber ?? "—"}</strong><small>{record.issuer}</small></td><td>{formatDate(record.issueDate)}<small>{record.month ?? "—"}</small></td><td><strong>{record.client ?? "No informado"}</strong><small>{record.recipient ?? "—"}</small></td><td>{record.documentType ?? "—"}</td><td className="money-col">{formatMoney(record.netAmount ?? 0)}</td><td className="money-col">{formatMoney(record.totalAmount ?? 0)}</td><td><span className={statusClass(record.status)}>{record.status ?? "No informado"}</span></td><td><span className="origin">{record.source.sheet}<b>fila {record.source.row || "sesión"}</b></span></td></tr>)}</tbody></table></div>
+            </section>
+          </main>
+        )}
+      </section>
+
+      {showEntry && <div className="modal-backdrop" role="presentation"><section className="entry-modal" role="dialog" aria-modal="true" aria-labelledby="entry-title"><div className="modal-header"><div><span className="eyebrow">REGISTRO MANUAL</span><h2 id="entry-title">Agregar documento a la sesión</h2><p>No se guardará en Excel ni en una base de datos hasta integrar persistencia.</p></div><button type="button" className="close-button" onClick={() => setShowEntry(false)} aria-label="Cerrar">×</button></div><form onSubmit={submitEntry}><div className="form-grid"><label>N° documento<input value={draft.invoiceNumber} onChange={(event) => updateDraft("invoiceNumber", event.target.value)} /></label><label>Fecha emisión *<input type="date" value={draft.issueDate} onChange={(event) => updateDraft("issueDate", event.target.value)} /></label><label>Tipo documento *<input value={draft.documentType} onChange={(event) => updateDraft("documentType", event.target.value)} placeholder="Ej. Factura" /></label><label>Estado *<input value={draft.status} onChange={(event) => updateDraft("status", event.target.value)} placeholder="Valor definido por el usuario" /></label><label>Empresa emisora *<input value={draft.issuer} onChange={(event) => updateDraft("issuer", event.target.value)} /></label><label>RUT emisor<input value={draft.issuerRut} onChange={(event) => updateDraft("issuerRut", event.target.value)} /></label><label>Cliente *<input value={draft.client} onChange={(event) => updateDraft("client", event.target.value)} /></label><label>Destinatario<input value={draft.recipient} onChange={(event) => updateDraft("recipient", event.target.value)} /></label><label>RUT destinatario<input value={draft.recipientRut} onChange={(event) => updateDraft("recipientRut", event.target.value)} /></label><label>Monto neto *<input type="number" min="0" value={draft.netAmount} onChange={(event) => updateDraft("netAmount", event.target.value)} /></label><label>IVA<input type="number" min="0" value={draft.vatAmount} onChange={(event) => updateDraft("vatAmount", event.target.value)} /></label><label>Monto total *<input type="number" min="0" value={draft.totalAmount} onChange={(event) => updateDraft("totalAmount", event.target.value)} /></label></div>{formError && <p className="form-error">{formError}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={() => setShowEntry(false)}>Cancelar</button><button type="submit" className="primary-button">Agregar a esta sesión</button></div></form></section></div>}
+    </div>
+  );
+}
