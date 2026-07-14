@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isUuid, requireOrganizationAdministrator } from "@/lib/admin-access";
-import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
-import { asFiniteNumber, employeeFullName, fetchPeopleWorkSnapshot, normalizeIdentifier, normalizePeopleWorkDate, sanitizeCostCenters } from "@/lib/peoplework/client";
+import { asFiniteNumber, employeeFullName, fetchPeopleWorkSnapshot, normalizeIdentifier, normalizePeopleWorkDate, peopleWorkText, sanitizeCostCenters } from "@/lib/peoplework/client";
 import { getPeopleWorkConfig } from "@/lib/peoplework/config";
 
 export const dynamic = "force-dynamic";
@@ -22,13 +21,15 @@ export async function POST(request: NextRequest) {
   if (!isUuid(organizationId)) return NextResponse.json({ error: "invalid_organization" }, { status: 400 });
 
   const context = await requireOrganizationAdministrator(organizationId);
-  if (context.error || !context.user) return NextResponse.json({ error: context.error }, { status: context.status });
-  if (!hasSupabaseAdminKey()) return NextResponse.json({ error: "admin_provisioning_not_configured" }, { status: 503 });
+  if (context.error || !context.user || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
 
   const config = getPeopleWorkConfig();
   if (config.state !== "ready" || !config.apiBaseUrl) return NextResponse.json({ error: "peoplework_not_configured" }, { status: 503 });
 
-  const admin = createAdminClient();
+  // La escritura se ejecuta con la sesión del administrador que gatilla la
+  // sincronización. Las políticas RLS mantienen el aislamiento organizacional
+  // y evitan depender de una service key para esta operación interactiva.
+  const admin = context.supabase;
   const year = new Date().getFullYear();
   const month = periodMonth(year);
   const { data: integration, error: integrationError } = await admin
@@ -56,8 +57,8 @@ export async function POST(request: NextRequest) {
         national_identification: employee.national_identification?.trim() || null,
         full_name: employeeFullName(employee) || `Colaborador ${employee.id}`,
         is_active: employee.active !== false,
-        management_name: employee.job_management?.trim() || null,
-        job_title: employee.job_title?.trim() || null,
+        management_name: peopleWorkText(employee.job_management),
+        job_title: peopleWorkText(employee.job_title),
         source_updated_at: now,
       }));
 
@@ -87,16 +88,16 @@ export async function POST(request: NextRequest) {
         person_id: person.id,
         provider: "peoplework",
         external_contract_id: String(contract.id),
-        contract_status: contract.contract_status?.trim() || contract.status?.trim() || null,
-        contract_type: contract.contract_type?.trim() || null,
+        contract_status: peopleWorkText(contract.contract_status) ?? peopleWorkText(contract.status),
+        contract_type: peopleWorkText(contract.contract_type),
         start_date: normalizePeopleWorkDate(contract.start_date),
         end_date: normalizePeopleWorkDate(contract.end_date),
         monthly_gross_salary: asFiniteNumber(contract.salary),
         currency_code: "CLP",
         weekly_hours: asFiniteNumber(contract.weekly_hours),
-        payment_schedule: contract.payment_schedule?.trim() || null,
-        management_name: contract.job_management?.trim() || null,
-        job_title: contract.job_title?.trim() || null,
+        payment_schedule: peopleWorkText(contract.payment_schedule),
+        management_name: peopleWorkText(contract.job_management),
+        job_title: peopleWorkText(contract.job_title),
         cost_centers: sanitizeCostCenters(contract.cost_center),
         source_updated_at: now,
       }];

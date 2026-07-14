@@ -3,6 +3,7 @@ import { getPeopleWorkConfig } from "@/lib/peoplework/config";
 type PeopleWorkEnvelope<T> = { data?: T[] };
 
 export type PeopleWorkCostCenter = { code?: string | null; name?: string | null; percentage?: string | number | null };
+export type PeopleWorkLabelValue = string | number | { label?: string | null; value?: string | number | null } | null;
 export type PeopleWorkEmployee = {
   id: number | string;
   active?: boolean | null;
@@ -10,23 +11,23 @@ export type PeopleWorkEmployee = {
   first_last_name?: string | null;
   second_last_name?: string | null;
   national_identification?: string | null;
-  job_management?: string | null;
-  job_title?: string | null;
+  job_management?: PeopleWorkLabelValue;
+  job_title?: PeopleWorkLabelValue;
   cost_center?: PeopleWorkCostCenter[] | null;
 };
 export type PeopleWorkContract = {
   id: number | string;
   employee?: { id?: number | string | null; full_name?: string | null; national_identification?: string | null } | null;
-  contract_type?: string | null;
-  status?: string | null;
-  contract_status?: string | null;
+  contract_type?: PeopleWorkLabelValue;
+  status?: PeopleWorkLabelValue;
+  contract_status?: PeopleWorkLabelValue;
   start_date?: string | null;
   end_date?: string | null;
   salary?: number | string | null;
   weekly_hours?: number | string | null;
-  payment_schedule?: string | null;
-  job_management?: string | null;
-  job_title?: string | null;
+  payment_schedule?: PeopleWorkLabelValue;
+  job_management?: PeopleWorkLabelValue;
+  job_title?: PeopleWorkLabelValue;
   cost_center?: PeopleWorkCostCenter[] | null;
 };
 export type PeopleWorkAbsence = {
@@ -92,6 +93,17 @@ export function asFiniteNumber(value: unknown, fallback = 0) {
 
 export function normalizeIdentifier(value: string | null | undefined) {
   return value?.replace(/[^0-9kK]/g, "").toUpperCase() ?? "";
+}
+
+export function peopleWorkText(value: PeopleWorkLabelValue | undefined) {
+  if (typeof value === "string") return value.trim() || null;
+  if (typeof value === "number") return String(value);
+  if (value && typeof value === "object") {
+    if (typeof value.label === "string" && value.label.trim()) return value.label.trim();
+    if (typeof value.value === "string" && value.value.trim()) return value.value.trim();
+    if (typeof value.value === "number") return String(value.value);
+  }
+  return null;
 }
 
 export function employeeFullName(employee: PeopleWorkEmployee) {
