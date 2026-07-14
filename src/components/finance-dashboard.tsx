@@ -19,12 +19,17 @@ import {
 import { facturasEmitidas2026, type InvoiceRecord } from "@/data/facturas-emitidas-2026";
 import { forecastMonthly2026 } from "@/data/forecast-2026";
 import { BillingOperations } from "@/components/billing-operations";
+import { createClient } from "@/lib/supabase/client";
 
 const calendarMonths = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const pieColors = ["#18a877", "#eeb34d", "#5968df", "#d85f6c", "#8b97aa", "#2a8aa6", "#9d72d7"];
 
-type Role = "Administrador" | "Finanzas" | "Operación" | "Auditor";
 type Module = "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Gastos y proveedores" | "Remuneraciones";
+type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
+type AccessProfile = {
+  user: { email: string | null };
+  membership: { organizationId: string; organizationName: string; role: OrganizationRole };
+};
 
 type InvoiceDraft = {
   invoiceNumber: string;
@@ -82,6 +87,15 @@ function formatDate(value: string | null) {
   return new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(
     new Date(`${value}T00:00:00`),
   );
+}
+
+function roleLabel(role: OrganizationRole) {
+  return ({ administrator: "Administrador", finance: "Finanzas", operations: "Operación", auditor: "Auditor" })[role];
+}
+
+function initialsFromEmail(email: string | null) {
+  if (!email) return "AT";
+  return email.slice(0, 2).toUpperCase();
 }
 
 function monthFromDate(value: string) {
@@ -329,7 +343,6 @@ function mapStoredDocument(document: StoredDocument): InvoiceRecord {
 
 export function FinanceDashboard() {
   const [activeModule, setActiveModule] = useState<Module>("Inicio");
-  const [role, setRole] = useState<Role>("Administrador");
   const [month, setMonth] = useState("Todos");
   const [status, setStatus] = useState("Todos");
   const [showEntry, setShowEntry] = useState(false);
@@ -337,12 +350,28 @@ export function FinanceDashboard() {
   const [formError, setFormError] = useState("");
   const [sessionRecords, setSessionRecords] = useState<InvoiceRecord[]>([]);
   const [databaseRecords, setDatabaseRecords] = useState<InvoiceRecord[] | null>(null);
+  const [access, setAccess] = useState<AccessProfile | null>(null);
 
   useEffect(() => {
     let active = true;
     fetch("/api/issued-documents", { cache: "no-store" })
       .then((response) => response.ok ? response.json() as Promise<{ documents: StoredDocument[] }> : null)
       .then((payload) => { if (active && payload) setDatabaseRecords(payload.documents.map(mapStoredDocument)); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/session", { cache: "no-store" })
+      .then(async (response) => {
+        if (response.status === 401) {
+          window.location.assign("/login");
+          return null;
+        }
+        return response.ok ? response.json() as Promise<AccessProfile> : null;
+      })
+      .then((payload) => { if (active && payload) setAccess(payload); })
       .catch(() => undefined);
     return () => { active = false; };
   }, []);
@@ -383,7 +412,7 @@ export function FinanceDashboard() {
   const currentDate = new Date().toISOString().slice(0, 10);
   const overdueRecords = records.filter((record) => record.status === "Pendiente" && Boolean(record.dueDate) && record.dueDate! < currentDate);
   const overdueAmount = sum(overdueRecords, "netAmount");
-  const hasEditPermission = role === "Administrador" || role === "Finanzas" || role === "Operación";
+  const hasEditPermission = access !== null && ["administrator", "finance", "operations"].includes(access.membership.role);
 
   function updateDraft(field: keyof InvoiceDraft, value: string) {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -415,6 +444,11 @@ export function FinanceDashboard() {
     setActiveModule("Facturas");
   }
 
+  async function signOut() {
+    await createClient().auth.signOut();
+    window.location.assign("/login");
+  }
+
   const navigation: Module[] = ["Inicio", "Facturas", "Proyecciones", "Clientes", "Cuentas por cobrar", "Gastos y proveedores", "Remuneraciones"];
 
   return (
@@ -422,7 +456,7 @@ export function FinanceDashboard() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">A</span><span>Atlas <b>Financiero</b></span></div>
         <div className="workspace-label">ESPACIO DE TRABAJO</div>
-        <button className="workspace-switcher" type="button">GEIMSER <span>⌄</span></button>
+        <button className="workspace-switcher" type="button" aria-label="Organización activa">{access?.membership.organizationName ?? "Cargando"}</button>
         <nav aria-label="Navegación principal">
           {navigation.map((item) => (
             <button key={item} type="button" className={`nav-item ${activeModule === item ? "active" : ""}`} onClick={() => setActiveModule(item)}>
@@ -441,12 +475,7 @@ export function FinanceDashboard() {
         <header className="topbar">
           <div className="breadcrumb">Finanzas <span>/</span> {activeModule}</div>
           <div className="topbar-actions">
-            <label className="role-picker">Vista de rol
-              <select value={role} onChange={(event) => setRole(event.target.value as Role)}>
-                <option>Administrador</option><option>Finanzas</option><option>Operación</option><option>Auditor</option>
-              </select>
-            </label>
-            <button className="avatar" type="button" aria-label="Perfil">GF</button>
+            {access && <><span className="access-role">{roleLabel(access.membership.role)}</span><button className="avatar" type="button" onClick={signOut} aria-label="Cerrar sesión" title={`Cerrar sesión de ${access.user.email ?? "usuario"}`}>{initialsFromEmail(access.user.email)}</button></>}
           </div>
         </header>
 
