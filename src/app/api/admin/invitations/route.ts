@@ -21,10 +21,19 @@ export async function POST(request: NextRequest) {
   const { data: invitation, error: invitationError } = await admin.auth.admin.inviteUserByEmail(email.trim());
   if (invitationError || !invitation.user) return NextResponse.json({ error: "unable_to_send_invitation" }, { status: 422 });
 
-  const { error: membershipError } = await admin
-    .from("organization_memberships")
-    .upsert({ organization_id: organizationId, user_id: invitation.user.id, role }, { onConflict: "organization_id,user_id" });
-  if (membershipError) return NextResponse.json({ error: "invitation_sent_but_membership_failed" }, { status: 500 });
+  const { error: registrationError } = await admin
+    .from("user_invitations")
+    .upsert({
+      organization_id: organizationId,
+      auth_user_id: invitation.user.id,
+      email: email.trim(),
+      role,
+      status: "pending",
+      invited_by: context.user.id,
+      invited_at: new Date().toISOString(),
+      activated_at: null,
+    }, { onConflict: "organization_id,email_normalized" });
+  if (registrationError) return NextResponse.json({ error: "invitation_sent_but_registration_failed" }, { status: 500 });
 
-  return NextResponse.json({ invited: true }, { status: 201 });
+  return NextResponse.json({ invited: true, status: "pending" }, { status: 201 });
 }

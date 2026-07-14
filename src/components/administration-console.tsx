@@ -6,6 +6,7 @@ type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
 type Organization = { id: string; legal_name: string; tax_id: string | null };
 type AdminOrganization = { id: string; role: OrganizationRole; organization: Organization };
 type Member = { userId: string; role: OrganizationRole; createdAt: string; profile: { email: string | null; full_name: string | null } | null };
+type Invitation = { id: string; email: string; role: OrganizationRole; status: "pending"; invitedAt: string };
 
 const roleLabels: Record<OrganizationRole, string> = {
   administrator: "Administrador",
@@ -23,6 +24,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
   const [organizations, setOrganizations] = useState<AdminOrganization[]>([]);
   const [organizationId, setOrganizationId] = useState(activeOrganizationId);
   const [members, setMembers] = useState<Member[]>([]);
+  const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [legalName, setLegalName] = useState("");
   const [taxId, setTaxId] = useState("");
   const [newLegalName, setNewLegalName] = useState("");
@@ -49,11 +51,16 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
   }
 
   async function loadMembers(organization: string) {
-    if (!organization) return setMembers([]);
+    if (!organization) {
+      setMembers([]);
+      setInvitations([]);
+      return;
+    }
     const response = await fetch(`/api/admin/members?organizationId=${encodeURIComponent(organization)}`, { cache: "no-store" });
     if (!response.ok) return setMessage("No fue posible cargar los miembros de esta organización.");
-    const payload = await response.json() as { members: Member[] };
+    const payload = await response.json() as { members: Member[]; invitations: Invitation[] };
     setMembers(payload.members);
+    setInvitations(payload.invitations);
   }
 
   useEffect(() => { void loadOrganizations(); }, []);
@@ -104,7 +111,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
       return setMessage(error === "admin_provisioning_not_configured" ? "Para enviar invitaciones falta configurar SUPABASE_SECRET_KEY en el servidor. La clave nunca va al navegador." : "No fue posible enviar la invitación. Revisa el correo, la configuración de Auth o si la persona ya existe.");
     }
     setInviteEmail("");
-    setMessage("Invitación enviada y membresía asignada.");
+    setMessage("Invitación enviada. El acceso se habilitará cuando la persona acepte el correo.");
     await loadMembers(organizationId);
   }
 
@@ -156,7 +163,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
         </section>
 
         <section className="panel admin-invite-panel">
-          <div className="panel-heading"><div><span className="panel-label">INCORPORAR USUARIO</span><h2>Invitar y asignar responsabilidad</h2><p>La invitación crea la cuenta mediante Supabase Auth y asigna el rol elegido a esta organización.</p></div></div>
+          <div className="panel-heading"><div><span className="panel-label">INCORPORAR USUARIO</span><h2>Invitar y asignar responsabilidad</h2><p>La invitación queda pendiente hasta que la persona acepte el correo; recién entonces se habilita su acceso.</p></div></div>
           <form className="admin-invite-form" onSubmit={inviteMember}>
             <label>Correo<input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="nombre@empresa.cl" required /></label>
             <label>Rol<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as OrganizationRole)}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
@@ -165,9 +172,9 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
         </section>
 
         <section className="table-section">
-          <div className="table-heading"><div><span className="panel-label">MIEMBROS</span><h2>Accesos de {current?.legal_name ?? "la organización"}</h2><p>{members.length} miembro(s) con permiso vigente.</p></div></div>
-          <div className="table-scroll"><table className="admin-members-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Incorporado</th><th>Acción</th></tr></thead><tbody>{members.map((member) => <tr key={member.userId}><td><strong>{member.profile?.full_name || member.profile?.email || "Usuario"}</strong><small>{member.profile?.email ?? "Correo no disponible"}</small></td><td><select value={member.role} onChange={(event) => void changeRole(member.userId, event.target.value as OrganizationRole)} disabled={isSaving}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(member.createdAt))}</td><td><button type="button" className="text-button" disabled={isSaving} onClick={() => void removeMember(member.userId)}>Quitar</button></td></tr>)}</tbody></table></div>
-          {!members.length && <p className="billing-empty">Aún no hay miembros asociados a esta organización.</p>}
+          <div className="table-heading"><div><span className="panel-label">MIEMBROS</span><h2>Accesos de {current?.legal_name ?? "la organización"}</h2><p>{members.length} activo(s) · {invitations.length} invitación(es) pendiente(s).</p></div><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void loadMembers(organizationId)}>Actualizar</button></div>
+          <div className="table-scroll"><table className="admin-members-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th>Fecha</th><th>Acción</th></tr></thead><tbody>{invitations.map((invitation) => <tr key={`invitation-${invitation.id}`}><td><strong>{invitation.email}</strong><small>Invitación enviada por correo</small></td><td>{roleLabels[invitation.role]}</td><td><span className="status pending">Pendiente</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(invitation.invitedAt))}</td><td><span className="origin">Sin acceso hasta aceptar</span></td></tr>)}{members.map((member) => <tr key={member.userId}><td><strong>{member.profile?.full_name || member.profile?.email || "Usuario"}</strong><small>{member.profile?.email ?? "Correo no disponible"}</small></td><td><select value={member.role} onChange={(event) => void changeRole(member.userId, event.target.value as OrganizationRole)} disabled={isSaving}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td><span className="status paid">Activo</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(member.createdAt))}</td><td><button type="button" className="text-button" disabled={isSaving} onClick={() => void removeMember(member.userId)}>Quitar</button></td></tr>)}</tbody></table></div>
+          {!members.length && !invitations.length && <p className="billing-empty">Aún no hay accesos ni invitaciones para esta organización.</p>}
         </section>
       </>}
     </main>
