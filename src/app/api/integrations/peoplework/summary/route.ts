@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isUuid, requireOrganizationFinanceAccess } from "@/lib/admin-access";
+import { forecastMonthly2026 } from "@/data/forecast-2026";
 
 export const dynamic = "force-dynamic";
 
@@ -27,17 +28,21 @@ export async function GET(request: NextRequest) {
   const yearParam = Number(request.nextUrl.searchParams.get("year"));
   const year = Number.isInteger(yearParam) && yearParam >= 2000 && yearParam <= new Date().getFullYear() ? yearParam : new Date().getFullYear();
   const month = `${year}-01-01`;
-  const [integrationResult, peopleResult, contractsResult, metricsResult, payrollResult, documentsResult, centersResult, customerLinksResult] = await Promise.all([
+  const [integrationResult, peopleResult, contractsResult, metricsResult, payrollResult, documentsResult, receivablesResult, centersResult, customerLinksResult, purchaseOrdersResult, purchaseOrderBillingsResult, recurrenceRulesResult] = await Promise.all([
     supabase.from("payroll_integrations").select("is_active, last_sync_at, last_sync_status, last_period_month").eq("organization_id", organizationId).eq("provider", "peoplework").maybeSingle(),
     supabase.from("payroll_people").select("id, full_name, national_identification, is_active, management_name, job_title").eq("organization_id", organizationId).eq("provider", "peoplework").order("full_name"),
     supabase.from("payroll_contracts").select("person_id, contract_status, contract_type, start_date, end_date, monthly_gross_salary, currency_code, weekly_hours, payment_schedule, management_name, job_title, cost_centers").eq("organization_id", organizationId).eq("provider", "peoplework"),
     supabase.from("payroll_person_period_metrics").select("person_id, absence_days, vacation_days").eq("organization_id", organizationId).eq("period_month", month),
     supabase.from("payroll_cost_lines").select("period_month, amount, cost_center_code").eq("organization_id", organizationId).gte("period_month", `${year}-01-01`).lte("period_month", `${year}-12-01`),
     supabase.from("issued_documents").select("issue_date, document_type, net_amount, counterparty_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
+    supabase.from("issued_documents").select("issue_date, document_type, net_amount, payment_status, due_date, payment_date").eq("organization_id", organizationId),
     supabase.from("cost_centers").select("id, code, name").eq("organization_id", organizationId).eq("is_active", true),
     supabase.from("cost_center_customer_links").select("cost_center_id, counterparty_id, allocation_percentage, effective_from, effective_to").eq("organization_id", organizationId),
+    supabase.from("customer_purchase_orders").select("id, net_amount, status").eq("organization_id", organizationId).neq("status", "cancelled"),
+    supabase.from("customer_purchase_order_billings").select("purchase_order_id, allocated_net_amount").eq("organization_id", organizationId),
+    supabase.from("billing_recurrence_rules").select("expected_net_amount").eq("organization_id", organizationId).eq("status", "active"),
   ]);
-  if (integrationResult.error || peopleResult.error || contractsResult.error || metricsResult.error || payrollResult.error || documentsResult.error || centersResult.error || customerLinksResult.error) return NextResponse.json({ error: "unable_to_load_peoplework_summary" }, { status: 500 });
+  if (integrationResult.error || peopleResult.error || contractsResult.error || metricsResult.error || payrollResult.error || documentsResult.error || receivablesResult.error || centersResult.error || customerLinksResult.error || purchaseOrdersResult.error || purchaseOrderBillingsResult.error || recurrenceRulesResult.error) return NextResponse.json({ error: "unable_to_load_peoplework_summary" }, { status: 500 });
 
   const people = peopleResult.data ?? [];
   const activePeople = people.filter((person) => person.is_active);
@@ -98,10 +103,18 @@ export async function GET(request: NextRequest) {
     const key = document.issue_date.slice(0, 7);
     revenueByMonth.set(key, (revenueByMonth.get(key) ?? 0) + amount);
   }
+  const planByPeriod = new Map(year === 2026 ? forecastMonthly2026.map((item) => [item.period.slice(0, 7), item]) : []);
+  const currentMonthStart = new Date().toISOString().slice(0, 8) + "01";
   const incomeStatement = months.map((period) => {
     const revenue = revenueByMonth.get(period) ?? 0;
     const payroll = payrollByMonth.get(period) ?? 0;
-    return { period, revenue, payroll, operatingResultBeforeOtherExpenses: revenue - payroll, payrollAvailable: payrollByMonth.has(period) };
+    const plan = planByPeriod.get(period);
+    const budgetRevenue = plan?.projectedRevenue ?? null;
+    const budgetExpense = plan?.projectedExpense ?? null;
+    const isClosedPeriod = `${period}-01` < currentMonthStart;
+    const forecastRevenue = budgetRevenue === null ? null : isClosedPeriod ? revenue : budgetRevenue;
+    const forecastResult = budgetExpense === null || forecastRevenue === null ? null : forecastRevenue - budgetExpense;
+    return { period, revenue, payroll, operatingResultBeforeOtherExpenses: revenue - payroll, payrollAvailable: payrollByMonth.has(period), budgetRevenue, budgetExpense, budgetResult: budgetRevenue === null || budgetExpense === null ? null : budgetRevenue - budgetExpense, forecastRevenue, forecastResult, isClosedPeriod };
   });
   const centerById = new Map((centersResult.data ?? []).map((center) => [center.id, center]));
   const centerPerformance = new Map<string, { code: string; name: string; revenue: number; payroll: number }>();
@@ -124,6 +137,22 @@ export async function GET(request: NextRequest) {
       if (target) target.revenue += net * asNumber(link.allocation_percentage) / 100;
     }
   }
+  const today = new Date().toISOString().slice(0, 10);
+  const inSevenDays = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+  const isPending = (status: string | null) => normalizedType(status).includes("pendiente");
+  const receivables = (receivablesResult.data ?? []).filter((document) => {
+    const type = normalizedType(document.document_type);
+    return !type.includes("orden de compra") && !type.includes("nota de credito") && isPending(document.payment_status);
+  });
+  const totalReceivable = receivables.reduce((total, document) => total + asNumber(document.net_amount), 0);
+  const overdueReceivable = receivables.filter((document) => document.due_date && document.due_date < today).reduce((total, document) => total + asNumber(document.net_amount), 0);
+  const dueNextSevenDays = receivables.filter((document) => document.due_date && document.due_date >= today && document.due_date <= inSevenDays).reduce((total, document) => total + asNumber(document.net_amount), 0);
+  const observedPaymentDays = (receivablesResult.data ?? []).flatMap((document) => document.issue_date && document.payment_date ? [Math.round((new Date(`${document.payment_date}T00:00:00`).getTime() - new Date(`${document.issue_date}T00:00:00`).getTime()) / 86_400_000)] : []);
+  const averageCollectionDays = observedPaymentDays.length ? observedPaymentDays.reduce((total, item) => total + item, 0) / observedPaymentDays.length : null;
+  const allocationsByOrder = new Map<string, number>();
+  for (const billing of purchaseOrderBillingsResult.data ?? []) allocationsByOrder.set(billing.purchase_order_id, (allocationsByOrder.get(billing.purchase_order_id) ?? 0) + asNumber(billing.allocated_net_amount));
+  const openPurchaseOrderBalance = (purchaseOrdersResult.data ?? []).filter((order) => order.status === "open").reduce((total, order) => total + Math.max(0, asNumber(order.net_amount) - (allocationsByOrder.get(order.id) ?? 0)), 0);
+  const recurringMonthlyCommitment = (recurrenceRulesResult.data ?? []).reduce((total, rule) => total + asNumber(rule.expected_net_amount), 0);
 
   return NextResponse.json({
     integration: integrationResult.data ? { active: integrationResult.data.is_active, lastSyncAt: integrationResult.data.last_sync_at, lastSyncStatus: integrationResult.data.last_sync_status, lastPeriodMonth: integrationResult.data.last_period_month } : null,
@@ -132,5 +161,6 @@ export async function GET(request: NextRequest) {
     persons,
     incomeStatement,
     centerPerformance: [...centerPerformance.values()].map((item) => ({ ...item, result: item.revenue - item.payroll })).sort((a, b) => b.revenue - a.revenue),
+    commercial: { totalReceivable, overdueReceivable, dueNextSevenDays, pendingDocuments: receivables.length, averageCollectionDays, openPurchaseOrderBalance, recurringMonthlyCommitment },
   });
 }
