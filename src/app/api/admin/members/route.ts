@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isUuid, requireOrganizationAdministrator, type OrganizationRole } from "@/lib/admin-access";
+import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 
 const roles = new Set<OrganizationRole>(["administrator", "finance", "operations", "auditor"]);
 
@@ -11,15 +12,17 @@ export async function GET(request: NextRequest) {
   const organizationId = organizationFromUrl(request);
   if (!isUuid(organizationId)) return NextResponse.json({ error: "invalid_organization" }, { status: 400 });
   const context = await requireOrganizationAdministrator(organizationId);
-  if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
+  if (context.error || !context.user) return NextResponse.json({ error: context.error }, { status: context.status });
+  if (!hasSupabaseAdminKey()) return NextResponse.json({ error: "admin_provisioning_not_configured" }, { status: 503 });
 
+  const admin = createAdminClient();
   const [{ data, error }, { data: pendingData, error: pendingError }] = await Promise.all([
-    context.supabase
+    admin
       .from("organization_memberships")
       .select("user_id, role, created_at, profiles (email, full_name)")
       .eq("organization_id", organizationId)
       .order("created_at"),
-    context.supabase
+    admin
       .from("user_invitations")
       .select("id, email, role, status, invited_at")
       .eq("organization_id", organizationId)
