@@ -137,6 +137,7 @@ function buildCustomerEvolution(records: InvoiceRecord[]) {
 }
 
 function CustomerModule({ records }: { records: InvoiceRecord[] }) {
+  const [isEvolutionExpanded, setIsEvolutionExpanded] = useState(false);
   const customers = buildCustomerEvolution(records);
   const totalNet = sum(records, "netAmount");
   const topClient = customers[0];
@@ -150,8 +151,6 @@ function CustomerModule({ records }: { records: InvoiceRecord[] }) {
         <div className="headline-actions"><span className="refresh">● {number.format(records.length)} documentos trazables</span></div>
       </section>
 
-      <section className="source-banner"><span>↳</span><div><strong>Lectura por cliente.</strong> La matriz muestra monto neto documentado por mes; cada cliente se puede contrastar con sus documentos, estado, fecha de vencimiento y fecha de pago registrada en la fuente.</div></section>
-
       <section className="kpis" aria-label="Indicadores de clientes">
         <article className="kpi-card"><span>Clientes con documentos</span><strong>{number.format(customers.length)}</strong><small>Clientes o destinatarios informados</small></article>
         <article className="kpi-card"><span>Mayor cliente documentado</span><strong className="kpi-name">{topClient?.client ?? "—"}</strong><small>{topClient ? formatMoney(topClient.total) : "Sin datos"}</small></article>
@@ -160,8 +159,8 @@ function CustomerModule({ records }: { records: InvoiceRecord[] }) {
       </section>
 
       <section className="table-section evolution-matrix-section">
-        <div className="table-heading"><div><span className="panel-label">EVOLUCIÓN POR CLIENTE</span><h2>Monto neto documentado por mes</h2><p>Meses en columnas para comparar trayectoria, concentración y estacionalidad.</p></div><span className="unit">CLP neto</span></div>
-        <div className="table-scroll"><table className="evolution-matrix customer-matrix"><thead><tr><th>Cliente</th>{calendarMonths.map((month) => <th className="money-col" key={month}>{month.slice(0, 3)}</th>)}<th className="money-col total-column">Total</th><th className="money-col">Docs.</th><th>Seguimiento</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.client}><td><strong>{customer.client}</strong><small>{customer.pendingNet ? `Pendiente: ${formatMoney(customer.pendingNet)}` : "Sin pendiente exacto"}</small></td>{calendarMonths.map((month) => <td className="money-col matrix-value" key={month}>{customer.byMonth[month] ? formatMoney(customer.byMonth[month]) : "—"}</td>)}<td className="money-col total-column"><strong>{formatMoney(customer.total)}</strong></td><td className="money-col">{number.format(customer.documents)}</td><td><span className={customer.pendingNet ? "status pending" : "status paid"}>{customer.pendingNet ? "Revisar pendiente" : "Sin pendiente exacto"}</span></td></tr>)}</tbody><tfoot><tr><td><strong>Total documentado</strong></td>{calendarMonths.map((month) => <td className="money-col" key={month}>{formatMoney(records.filter((record) => record.month === month).reduce((total, record) => total + (record.netAmount ?? 0), 0))}</td>)}<td className="money-col total-column"><strong>{formatMoney(totalNet)}</strong></td><td className="money-col"><strong>{number.format(records.length)}</strong></td><td>Fuente 2026</td></tr></tfoot></table></div>
+        <div className="table-heading"><div><span className="panel-label">CLIENTES</span><h2>{isEvolutionExpanded ? "Evolución mensual por cliente" : "Resumen de clientes"}</h2><p>{isEvolutionExpanded ? "Meses en columnas para revisar trayectoria y estacionalidad." : "Despliega los meses sólo cuando necesites revisar el evolutivo."}</p></div><div className="table-actions"><span className="unit">CLP neto</span><button type="button" className="secondary-button matrix-toggle" aria-expanded={isEvolutionExpanded} onClick={() => setIsEvolutionExpanded((current) => !current)}>{isEvolutionExpanded ? "Ocultar meses" : "Ver evolución mensual"}</button></div></div>
+        {isEvolutionExpanded ? <div className="table-scroll"><table className="evolution-matrix customer-matrix"><thead><tr><th>Cliente</th>{calendarMonths.map((month) => <th className="money-col" key={month}>{month.slice(0, 3)}</th>)}<th className="money-col total-column">Total</th><th className="money-col">Docs.</th><th>Seguimiento</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.client}><td><strong>{customer.client}</strong><small>{customer.pendingNet ? `Pendiente: ${formatMoney(customer.pendingNet)}` : "Sin pendiente exacto"}</small></td>{calendarMonths.map((month) => <td className="money-col matrix-value" key={month}>{customer.byMonth[month] ? formatMoney(customer.byMonth[month]) : "—"}</td>)}<td className="money-col total-column"><strong>{formatMoney(customer.total)}</strong></td><td className="money-col">{number.format(customer.documents)}</td><td><span className={customer.pendingNet ? "status pending" : "status paid"}>{customer.pendingNet ? "Revisar pendiente" : "Sin pendiente exacto"}</span></td></tr>)}</tbody><tfoot><tr><td><strong>Total documentado</strong></td>{calendarMonths.map((month) => <td className="money-col" key={month}>{formatMoney(records.filter((record) => record.month === month).reduce((total, record) => total + (record.netAmount ?? 0), 0))}</td>)}<td className="money-col total-column"><strong>{formatMoney(totalNet)}</strong></td><td className="money-col"><strong>{number.format(records.length)}</strong></td><td>2026</td></tr></tfoot></table></div> : <div className="table-scroll"><table className="customer-summary"><thead><tr><th>Cliente</th><th className="money-col">Monto neto</th><th className="money-col">Documentos</th><th className="money-col">Pendiente exacto</th><th className="money-col">Fecha de pago registrada</th><th>Seguimiento</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.client}><td><strong>{customer.client}</strong></td><td className="money-col"><strong>{formatMoney(customer.total)}</strong></td><td className="money-col">{number.format(customer.documents)}</td><td className="money-col">{customer.pendingNet ? formatMoney(customer.pendingNet) : "—"}</td><td className="money-col">{number.format(customer.withPaymentDate)}</td><td><span className={customer.pendingNet ? "status pending" : "status paid"}>{customer.pendingNet ? "Revisar pendiente" : "Sin pendiente exacto"}</span></td></tr>)}</tbody><tfoot><tr><td><strong>Total documentado</strong></td><td className="money-col"><strong>{formatMoney(totalNet)}</strong></td><td className="money-col"><strong>{number.format(records.length)}</strong></td><td className="money-col">{formatMoney(pendingNet)}</td><td className="money-col">{number.format(paymentDateCount)}</td><td>2026</td></tr></tfoot></table></div>}
       </section>
     </main>
   );
@@ -196,8 +195,6 @@ function ForecastModule() {
         <div><span className="eyebrow">PRESUPUESTO Y FORECAST · 2026</span><h1>Proyecciones</h1><p>Visualización literal de las hojas “Presupuesto 2026” y “Gastos Proyectados 2026”. No se completan meses ni se aplican probabilidades.</p></div>
         <div className="headline-actions"><span className="refresh">● 501 líneas normalizadas en Supabase</span></div>
       </section>
-
-      <section className="source-banner"><span>↳</span><div><strong>Lectura sin supuestos.</strong> “Ingresos proyectados”, “Ingresos reales” y “Gastos proyectados” conservan la hoja, fila y columna de origen. Las filas de total y conciliación quedan resguardadas en el libro, pero no se vuelven a sumar.</div></section>
 
       <section className="kpis" aria-label="Indicadores de proyección">
         <article className="kpi-card"><span>Ingresos proyectados</span><strong>{formatMoney(totals.projectedRevenue)}</strong><small>Presupuesto 2026 · monto neto</small></article>
@@ -269,6 +266,9 @@ export function FinanceDashboard() {
   }, {})).sort((a, b) => b.montoNeto - a.montoNeto).slice(0, 6), [records]);
 
   const pendingCount = records.filter((record) => record.status === "Pendiente").length;
+  const currentDate = new Date().toISOString().slice(0, 10);
+  const overdueRecords = records.filter((record) => record.status === "Pendiente" && Boolean(record.dueDate) && record.dueDate! < currentDate);
+  const overdueAmount = sum(overdueRecords, "netAmount");
   const hasEditPermission = role === "Administrador" || role === "Finanzas" || role === "Operación";
 
   function updateDraft(field: keyof InvoiceDraft, value: string) {
@@ -332,9 +332,8 @@ export function FinanceDashboard() {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="source-note"><span className="status-dot" />Libro respaldado<br /><strong>Facturas Emitidas.xlsx</strong><br />9 hojas · Supabase privado</div>
           <button className="settings-button" type="button">⚙ Configuración</button>
-          <p>v0.1 · MVP trazable</p>
+          <p>v0.2</p>
         </div>
       </aside>
 
@@ -361,13 +360,12 @@ export function FinanceDashboard() {
               </div>
             </section>
 
-            <section className="source-banner"><span>↳</span><div><strong>Regla de trazabilidad activa.</strong> El libro completo está preservado en Supabase: cada registro analítico indica hoja y fila. Esta vista inicial mantiene el detalle 2026 y los nuevos registros siguen siendo sólo de sesión hasta habilitar al primer usuario con rol.</div></section>
-
-            <section className="kpis" aria-label="Indicadores principales">
-              <article className="kpi-card"><span>Documentos fuente</span><strong>{number.format(records.length)}</strong><small>{sessionRecords.length ? `${sessionRecords.length} registro(s) manual(es) en sesión` : "57 importados desde Excel"}</small></article>
+            <section className="kpis kpis-five" aria-label="Indicadores principales">
+              <article className="kpi-card"><span>Documentos emitidos</span><strong>{number.format(records.length)}</strong><small>{sessionRecords.length ? `${sessionRecords.length} registro(s) de esta sesión` : "Año 2026"}</small></article>
               <article className="kpi-card"><span>Monto neto documentado</span><strong>{formatMoney(sum(records, "netAmount"))}</strong><small>Suma literal de “Monto Neto”</small></article>
               <article className="kpi-card"><span>Monto total documentado</span><strong>{formatMoney(sum(records, "totalAmount"))}</strong><small>Suma literal de “Monto total Facturado”</small></article>
               <article className="kpi-card accent"><span>Estado “Pendiente”</span><strong>{number.format(pendingCount)}</strong><small>Documentos con ese estado exacto</small></article>
+              <article className="kpi-card"><span>Cartera vencida</span><strong>{formatMoney(overdueAmount)}</strong><small>{number.format(overdueRecords.length)} pendiente(s) vencido(s) a la fecha</small></article>
             </section>
 
             <section className="visual-grid">
