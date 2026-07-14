@@ -4,9 +4,10 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { InvoiceRecord } from "@/data/facturas-emitidas-2026";
 import { isAllocatableInvoice } from "@/lib/document-revenue";
 
-type PurchaseOrder = { id: string; purchase_order_number: string; customer_name: string; customer_tax_id: string | null; received_date: string; valid_until: string | null; net_amount: number | string; currency_code: string; notes: string | null; status: "open" | "closed" | "cancelled" };
+type PurchaseOrder = { id: string; purchase_order_number: string; customer_counterparty_id: string | null; customer_name: string; customer_tax_id: string | null; received_date: string; valid_until: string | null; net_amount: number | string; currency_code: string; notes: string | null; status: "open" | "closed" | "cancelled" };
 type Allocation = { id: string; purchase_order_id: string; issued_document_id: string; allocated_net_amount: number | string; created_at: string };
-type Payload = { purchaseOrders: PurchaseOrder[]; allocations: Allocation[] };
+type Customer = { id: string; legal_name: string; trade_name: string | null; tax_id: string | null };
+type Payload = { purchaseOrders: PurchaseOrder[]; allocations: Allocation[]; customers: Customer[] };
 
 const money = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 
@@ -18,7 +19,9 @@ export function CustomerPurchaseOrders({ organizationId, records, canManage }: {
   const [data, setData] = useState<Payload | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [order, setOrder] = useState({ purchaseOrderNumber: "", customerName: "", customerTaxId: "", receivedDate: "", validUntil: "", netAmount: "", notes: "" });
+  const [order, setOrder] = useState({ purchaseOrderNumber: "", customerId: "", receivedDate: "", validUntil: "", netAmount: "", notes: "" });
+  const [newCustomer, setNewCustomer] = useState({ legalName: "", taxId: "" });
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [allocation, setAllocation] = useState({ purchaseOrderId: "", issuedDocumentId: "", allocatedNetAmount: "" });
 
   async function load() {
@@ -49,8 +52,22 @@ export function CustomerPurchaseOrders({ organizationId, records, canManage }: {
     const response = await fetch("/api/customer-purchase-orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "purchase_order", organizationId, ...order }) });
     setSaving(false);
     if (!response.ok) { setMessage("No fue posible registrar la OC. Revisa número, cliente, fecha y monto neto/exento."); return; }
-    setOrder({ purchaseOrderNumber: "", customerName: "", customerTaxId: "", receivedDate: "", validUntil: "", netAmount: "", notes: "" });
+    setOrder({ purchaseOrderNumber: "", customerId: "", receivedDate: "", validUntil: "", netAmount: "", notes: "" });
     setMessage("OC recibida registrada. Su saldo se descontará sólo al asociar una factura emitida.");
+    await load();
+  }
+
+  async function createCustomer() {
+    if (!organizationId || !newCustomer.legalName.trim()) return;
+    setCreatingCustomer(true);
+    const response = await fetch("/api/customer-profiles", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save_profile", organizationId, profile: { legalName: newCustomer.legalName, taxId: newCustomer.taxId, isActive: true }, contacts: [] }) });
+    const payload = await response.json().catch(() => null) as { id?: string } | null;
+    setCreatingCustomer(false);
+    if (!response.ok || !payload?.id) { setMessage("No fue posible crear el cliente. Revisa la razón social y el RUT; si ya existe, selecciónalo desde la lista."); return; }
+    const customerId = payload.id;
+    setOrder((current) => ({ ...current, customerId }));
+    setNewCustomer({ legalName: "", taxId: "" });
+    setMessage("Cliente creado y seleccionado. Puedes continuar con la OC.");
     await load();
   }
 
@@ -77,7 +94,7 @@ export function CustomerPurchaseOrders({ organizationId, records, canManage }: {
     </section>
     {canManage && <section className="admin-grid">
       <section className="panel"><div className="panel-heading"><div><span className="panel-label">NUEVA OC</span><h2>Registrar OC recibida</h2></div><span className="unit">CLP neto/exento</span></div><form className="admin-form" onSubmit={createOrder}>
-        <label>Número de OC *<input value={order.purchaseOrderNumber} onChange={(event) => setOrder((current) => ({ ...current, purchaseOrderNumber: event.target.value }))} /></label><label>Cliente *<input value={order.customerName} onChange={(event) => setOrder((current) => ({ ...current, customerName: event.target.value }))} /></label><label>RUT cliente<input value={order.customerTaxId} onChange={(event) => setOrder((current) => ({ ...current, customerTaxId: event.target.value }))} /></label><label>Fecha recepción *<input type="date" value={order.receivedDate} onChange={(event) => setOrder((current) => ({ ...current, receivedDate: event.target.value }))} /></label><label>Vigencia<input type="date" value={order.validUntil} onChange={(event) => setOrder((current) => ({ ...current, validUntil: event.target.value }))} /></label><label>Monto neto/exento *<input min="1" type="number" value={order.netAmount} onChange={(event) => setOrder((current) => ({ ...current, netAmount: event.target.value }))} /></label><label>Observación<input value={order.notes} onChange={(event) => setOrder((current) => ({ ...current, notes: event.target.value }))} /></label><button className="primary-button" disabled={saving} type="submit">Registrar OC</button>
+        <label>Número de OC *<input value={order.purchaseOrderNumber} onChange={(event) => setOrder((current) => ({ ...current, purchaseOrderNumber: event.target.value }))} /></label><label>Cliente vigente *<select value={order.customerId} onChange={(event) => setOrder((current) => ({ ...current, customerId: event.target.value }))}><option value="">Selecciona un cliente</option>{data?.customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.trade_name || customer.legal_name}{customer.tax_id ? ` · ${customer.tax_id}` : ""}</option>)}<option value="__new__">＋ Crear nuevo cliente</option></select></label>{order.customerId === "__new__" && <section className="inline-customer-create"><span>ALTA RÁPIDA DE CLIENTE</span><p>Crea la ficha mínima ahora; luego podrás completar sus datos en Clientes.</p><div><label>Razón social *<input value={newCustomer.legalName} onChange={(event) => setNewCustomer((current) => ({ ...current, legalName: event.target.value }))} /></label><label>RUT<input value={newCustomer.taxId} onChange={(event) => setNewCustomer((current) => ({ ...current, taxId: event.target.value }))} /></label><button className="secondary-button" type="button" onClick={() => void createCustomer()} disabled={creatingCustomer}>{creatingCustomer ? "Creando…" : "Crear y seleccionar"}</button></div></section>}<label>Fecha recepción *<input type="date" value={order.receivedDate} onChange={(event) => setOrder((current) => ({ ...current, receivedDate: event.target.value }))} /></label><label>Vigencia<input type="date" value={order.validUntil} onChange={(event) => setOrder((current) => ({ ...current, validUntil: event.target.value }))} /></label><label>Monto neto/exento *<input min="1" type="number" value={order.netAmount} onChange={(event) => setOrder((current) => ({ ...current, netAmount: event.target.value }))} /></label><label>Observación<input value={order.notes} onChange={(event) => setOrder((current) => ({ ...current, notes: event.target.value }))} /></label><button className="primary-button" disabled={saving || !order.customerId || order.customerId === "__new__"} type="submit">Registrar OC</button>
       </form></section>
       <section className="panel"><div className="panel-heading"><div><span className="panel-label">IMPUTACIÓN PARCIAL</span><h2>Descontar facturación emitida</h2></div><span className="unit">Control de saldo</span></div><form className="admin-form" onSubmit={createAllocation}>
         <label>OC con saldo *<select value={allocation.purchaseOrderId} onChange={(event) => setAllocation((current) => ({ ...current, purchaseOrderId: event.target.value }))}><option value="">Selecciona OC</option>{availableOrders.map((item) => <option key={item.id} value={item.id}>{item.purchase_order_number} · saldo {money.format(item.remaining)}</option>)}</select></label><label>Factura emitida *<select value={allocation.issuedDocumentId} onChange={(event) => setAllocation((current) => ({ ...current, issuedDocumentId: event.target.value }))}><option value="">Selecciona factura</option>{unallocatedInvoices.map((item) => <option key={item.id} value={item.id}>N° {item.invoiceNumber ?? "—"} · {item.client ?? "Cliente"} · {money.format(item.netAmount ?? 0)}</option>)}</select></label><label>Monto neto/exento imputado *<input min="1" type="number" value={allocation.allocatedNetAmount} onChange={(event) => setAllocation((current) => ({ ...current, allocatedNetAmount: event.target.value }))} /></label><button className="primary-button" disabled={saving || !availableOrders.length || !unallocatedInvoices.length} type="submit">Imputar factura</button>

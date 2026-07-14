@@ -37,12 +37,13 @@ export async function GET(request: NextRequest) {
   const organizationId = await authorizedOrganization(supabase, request.nextUrl.searchParams.get("organizationId"), user.id);
   if (!organizationId) return NextResponse.json({ error: "organization_access_required" }, { status: 403 });
 
-  const [{ data: purchaseOrders, error: ordersError }, { data: allocations, error: allocationsError }] = await Promise.all([
-    supabase.from("customer_purchase_orders").select("id, purchase_order_number, customer_name, customer_tax_id, received_date, valid_until, net_amount, currency_code, notes, status").eq("organization_id", organizationId).order("received_date", { ascending: false }),
+  const [{ data: purchaseOrders, error: ordersError }, { data: allocations, error: allocationsError }, { data: customers, error: customersError }] = await Promise.all([
+    supabase.from("customer_purchase_orders").select("id, purchase_order_number, customer_counterparty_id, customer_name, customer_tax_id, received_date, valid_until, net_amount, currency_code, notes, status").eq("organization_id", organizationId).order("received_date", { ascending: false }),
     supabase.from("customer_purchase_order_billings").select("id, purchase_order_id, issued_document_id, allocated_net_amount, created_at").eq("organization_id", organizationId).order("created_at", { ascending: false }),
+    supabase.from("counterparties").select("id, legal_name, trade_name, tax_id").eq("organization_id", organizationId).in("kind", ["customer", "both"]).eq("is_active", true).order("legal_name"),
   ]);
-  if (ordersError || allocationsError) return NextResponse.json({ error: "unable_to_load_purchase_orders" }, { status: 500 });
-  return NextResponse.json({ purchaseOrders: purchaseOrders ?? [], allocations: allocations ?? [] });
+  if (ordersError || allocationsError || customersError) return NextResponse.json({ error: "unable_to_load_purchase_orders" }, { status: 500 });
+  return NextResponse.json({ purchaseOrders: purchaseOrders ?? [], allocations: allocations ?? [], customers: customers ?? [] });
 }
 
 export async function POST(request: NextRequest) {
@@ -55,11 +56,13 @@ export async function POST(request: NextRequest) {
 
   if (body?.action === "purchase_order") {
     const purchaseOrderNumber = text(body.purchaseOrderNumber, 100, true);
-    const customerName = text(body.customerName, 180, true);
+    const customerId = body.customerId;
     const receivedDate = date(body.receivedDate);
     const netAmount = amount(body.netAmount);
-    if (!purchaseOrderNumber || !customerName || !receivedDate || !netAmount) return NextResponse.json({ error: "invalid_purchase_order" }, { status: 400 });
-    const { data, error } = await supabase.from("customer_purchase_orders").insert({ organization_id: organizationId, purchase_order_number: purchaseOrderNumber, customer_name: customerName, customer_tax_id: text(body.customerTaxId, 40), received_date: receivedDate, valid_until: body.validUntil ? date(body.validUntil) : null, net_amount: netAmount, currency_code: "CLP", notes: text(body.notes, 2_000) }).select("id").single();
+    if (!purchaseOrderNumber || !isUuid(customerId) || !receivedDate || !netAmount) return NextResponse.json({ error: "invalid_purchase_order" }, { status: 400 });
+    const { data: customer, error: customerError } = await supabase.from("counterparties").select("id, legal_name, trade_name, tax_id").eq("id", customerId).eq("organization_id", organizationId).in("kind", ["customer", "both"]).eq("is_active", true).maybeSingle();
+    if (customerError || !customer) return NextResponse.json({ error: "customer_not_available" }, { status: 400 });
+    const { data, error } = await supabase.from("customer_purchase_orders").insert({ organization_id: organizationId, purchase_order_number: purchaseOrderNumber, customer_counterparty_id: customer.id, customer_name: customer.trade_name || customer.legal_name, customer_tax_id: customer.tax_id, received_date: receivedDate, valid_until: body.validUntil ? date(body.validUntil) : null, net_amount: netAmount, currency_code: "CLP", notes: text(body.notes, 2_000) }).select("id").single();
     if (error || !data) return NextResponse.json({ error: "unable_to_create_purchase_order" }, { status: 409 });
     return NextResponse.json({ id: data.id }, { status: 201 });
   }
