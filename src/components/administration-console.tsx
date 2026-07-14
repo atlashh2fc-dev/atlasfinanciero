@@ -111,7 +111,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
       return setMessage(error === "admin_provisioning_not_configured" ? "Para enviar invitaciones falta configurar SUPABASE_SECRET_KEY en el servidor. La clave nunca va al navegador." : "No fue posible enviar la invitación. Revisa el correo, la configuración de Auth o si la persona ya existe.");
     }
     setInviteEmail("");
-    setMessage("Invitación enviada. El acceso se habilitará cuando la persona acepte el correo.");
+    setMessage("Invitación enviada. La persona definirá su contraseña al aceptar el correo; el acceso se habilita automáticamente al finalizar.");
     await loadMembers(organizationId);
   }
 
@@ -163,7 +163,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
         </section>
 
         <section className="panel admin-invite-panel">
-          <div className="panel-heading"><div><span className="panel-label">INCORPORAR USUARIO</span><h2>Invitar y asignar responsabilidad</h2><p>La invitación queda pendiente hasta que la persona acepte el correo; recién entonces se habilita su acceso.</p></div></div>
+          <div className="panel-heading"><div><span className="panel-label">INCORPORAR USUARIO</span><h2>Invitar y asignar responsabilidad</h2><p>La persona define su contraseña desde el correo. El acceso se activa sólo al completar esa validación.</p></div></div>
           <form className="admin-invite-form" onSubmit={inviteMember}>
             <label>Correo<input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="nombre@empresa.cl" required /></label>
             <label>Rol<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as OrganizationRole)}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>

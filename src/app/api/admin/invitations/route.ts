@@ -4,6 +4,17 @@ import { isUuid, requireOrganizationAdministrator, type OrganizationRole } from 
 
 const roles = new Set<OrganizationRole>(["administrator", "finance", "operations", "auditor"]);
 
+function invitationOrigin(request: NextRequest) {
+  const configuredOrigin = process.env.APP_URL?.trim();
+  if (!configuredOrigin) return request.nextUrl.origin;
+
+  try {
+    return new URL(configuredOrigin).origin;
+  } catch {
+    return request.nextUrl.origin;
+  }
+}
+
 export async function POST(request: NextRequest) {
   const body: unknown = await request.json().catch(() => null);
   const organizationId = body && typeof body === "object" ? (body as { organizationId?: unknown }).organizationId : null;
@@ -18,7 +29,10 @@ export async function POST(request: NextRequest) {
   if (!hasSupabaseAdminKey()) return NextResponse.json({ error: "admin_provisioning_not_configured" }, { status: 503 });
 
   const admin = createAdminClient();
-  const { data: invitation, error: invitationError } = await admin.auth.admin.inviteUserByEmail(email.trim());
+  // The invitation must return to Atlas (never to the recipient's localhost).
+  // Supabase only accepts this URL because it is explicitly allow-listed in Auth.
+  const redirectTo = new URL("/auth/complete-invitation", invitationOrigin(request)).toString();
+  const { data: invitation, error: invitationError } = await admin.auth.admin.inviteUserByEmail(email.trim(), { redirectTo });
   if (invitationError || !invitation.user) return NextResponse.json({ error: "unable_to_send_invitation" }, { status: 422 });
 
   const { error: registrationError } = await admin
