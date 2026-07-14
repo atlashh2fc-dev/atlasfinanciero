@@ -263,8 +263,7 @@ function ForecastModule() {
   return (
     <main className="dashboard forecast-dashboard">
       <section className="headline">
-        <div><span className="eyebrow">PRESUPUESTO Y FORECAST · 2026</span><h1>Proyecciones</h1><p>Visualización literal de las hojas “Presupuesto 2026” y “Gastos Proyectados 2026”. No se completan meses ni se aplican probabilidades.</p></div>
-        <div className="headline-actions"><span className="refresh">● 501 líneas normalizadas en Supabase</span></div>
+        <div><span className="eyebrow">PRESUPUESTO Y FORECAST · 2026</span><h1>Proyecciones</h1></div>
       </section>
 
       <section className="kpis" aria-label="Indicadores de proyección">
