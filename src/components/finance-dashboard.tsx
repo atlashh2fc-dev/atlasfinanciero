@@ -103,7 +103,7 @@ function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas"
   const detail: Record<typeof module, string> = {
     "Cuentas por cobrar": "Este módulo usará las fechas de vencimiento y pago de facturas, sin inferir saldos ni reglas de cobranza que no estén definidas.",
     "Gastos y proveedores": "Preparado para documentos recibidos, órdenes de compra, centros de costo y proveedores. Requiere fuente de gastos aprobada.",
-    Remuneraciones: "Integración futura para costo de personal. Los datos de remuneraciones no están en el archivo analizado, por lo que esta vista aún no muestra montos.",
+    Remuneraciones: "La integración con PeopleWork está preparada para cargar costos consolidados por período, categoría y centro de costo. No replica liquidaciones ni datos personales; su activación requiere el contrato técnico del API de PeopleWork.",
   };
 
   return (

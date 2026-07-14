@@ -11,6 +11,7 @@ Aplicación web en Next.js, TypeScript, Tailwind CSS y Recharts para sustituir l
 - Clientes incorpora una matriz evolutiva con los meses en columnas, monto neto documentado, documentos y estado `Pendiente` exacto por cliente.
 - La base financiera incorpora periodos, plan de cuentas, asientos doble partida, líneas de planificación, calendario de reconocimiento de ingresos y vistas de evolución mensual. No se precargaron cuentas, asientos ni políticas contables que no estén en la fuente.
 - El formulario crea registros sólo en la sesión del navegador. No afirma persistencia ni modifica el libro Excel.
+- La capa de remuneraciones incorpora una integración preparada para PeopleWork: configuración sin secretos en base de datos, ejecuciones auditables y costos agregados por período, categoría y centro de costo. No persiste liquidaciones ni información personal de colaboradores.
 - Hay modelos, RLS, bitácora e importaciones para documentos, terceros, forecast y archivos fuente. El primer usuario administrador aún debe ser definido explícitamente antes de habilitar escritura real desde la interfaz.
 
 ## Ejecutar
@@ -30,6 +31,8 @@ pnpm build
 ## Conexión con Supabase
 
 La aplicación usa la URL y Publishable Key pública en `.env.local` (archivo ignorado por Git). Nunca pongas `service_role` en variables `NEXT_PUBLIC_`.
+
+Las credenciales de PeopleWork se mantienen exclusivamente en variables de servidor (`PEOPLEWORK_*`), sin prefijo `NEXT_PUBLIC_`. Para activar la sincronización se necesita, además de la API Key y Secret Key, el contrato técnico de PeopleWork: URL base, esquema de autenticación y endpoint/campos del costo de remuneraciones. El modelo no asume esos elementos ni intenta convertir liquidaciones individuales.
 
 Las migraciones incluyen organizaciones, perfiles, membresías por rol, terceros, documentos emitidos, lotes de importación, forecast, almacenamiento privado del libro y auditoría. Las políticas RLS impiden lectura y edición fuera de la organización.
 
