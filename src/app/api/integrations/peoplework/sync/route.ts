@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { isUuid, requireOrganizationAdministrator } from "@/lib/admin-access";
 import { asFiniteNumber, employeeFullName, fetchPeopleWorkSnapshot, normalizeIdentifier, normalizePeopleWorkDate, peopleWorkText, sanitizeCostCenters } from "@/lib/peoplework/client";
 import { getPeopleWorkConfig } from "@/lib/peoplework/config";
@@ -9,6 +10,15 @@ type SyncedPerson = { id: string; external_employee_id: string; national_identif
 
 function periodMonth(year: number) {
   return `${year}-01-01`;
+}
+
+function monthsForYear(year: number) {
+  return Array.from({ length: 12 }, (_, index) => `${year}-${String(index + 1).padStart(2, "0")}-01`);
+}
+
+function isContractActiveInPeriod(contract: { start_date?: string | null; end_date?: string | null }, period: string) {
+  const periodEnd = `${period.slice(0, 7)}-31`;
+  return (!contract.start_date || contract.start_date <= periodEnd) && (!contract.end_date || contract.end_date >= period);
 }
 
 function errorMessage(error: unknown) {
@@ -30,7 +40,8 @@ export async function POST(request: NextRequest) {
   // sincronización. Las políticas RLS mantienen el aislamiento organizacional
   // y evitan depender de una service key para esta operación interactiva.
   const admin = context.supabase;
-  const year = new Date().getFullYear();
+  const requestedYear = body && typeof body === "object" ? Number((body as { year?: unknown }).year) : new Date().getFullYear();
+  const year = Number.isInteger(requestedYear) && requestedYear >= 2000 && requestedYear <= new Date().getFullYear() ? requestedYear : new Date().getFullYear();
   const month = periodMonth(year);
   const { data: integration, error: integrationError } = await admin
     .from("payroll_integrations")
@@ -107,6 +118,34 @@ export async function POST(request: NextRequest) {
       if (error) throw new Error("No fue posible guardar los contratos de PeopleWork.");
     }
 
+    // PeopleWork publica contratos (también finalizados), pero no liquidaciones ni costo
+    // empleador histórico. Esta base mensual se reconstruye según vigencia contractual y
+    // se identifica explícitamente como remuneración bruta contractual, no como pago real.
+    const periods = monthsForYear(year);
+    const { error: removeCostError } = await admin.from("payroll_cost_lines").delete().eq("organization_id", organizationId).gte("period_month", `${year}-01-01`).lte("period_month", `${year}-12-01`);
+    if (removeCostError) throw new Error("No fue posible reemplazar la base histórica de remuneraciones.");
+    const payrollCosts = periods.flatMap((period) => snapshot.contracts.filter((contract) => isContractActiveInPeriod({ start_date: normalizePeopleWorkDate(contract.start_date), end_date: normalizePeopleWorkDate(contract.end_date) }, period)).flatMap((contract) => {
+      const gross = Math.max(0, asFiniteNumber(contract.salary));
+      if (!gross) return [];
+      const centers = sanitizeCostCenters(contract.cost_center);
+      const distributions = centers.length ? centers : [{ code: null, name: "Sin centro asignado", percentage: 100 }];
+      return distributions.map((center) => ({
+        organization_id: organizationId,
+        sync_run_id: syncRun.id,
+        period_month: period,
+        cost_category: "remuneracion_bruta_contractual",
+        cost_center_code: center.code,
+        cost_center_name: center.name,
+        amount: gross * ((center.percentage || 100) / 100),
+        currency_code: "CLP",
+        source_record_sha256: createHash("sha256").update(`${period}|${contract.id}|${center.code ?? center.name ?? "sin-centro"}|${gross}`).digest("hex"),
+      }));
+    }));
+    if (payrollCosts.length) {
+      const { error } = await admin.from("payroll_cost_lines").insert(payrollCosts);
+      if (error) throw new Error("No fue posible guardar la base mensual de remuneraciones.");
+    }
+
     const metrics = new Map<string, { personId: string; absenceDays: number; vacationDays: number }>();
     const accumulate = (personId: string | undefined, field: "absenceDays" | "vacationDays", amount: unknown) => {
       if (!personId) return;
@@ -124,10 +163,10 @@ export async function POST(request: NextRequest) {
 
     const received = snapshot.employees.length + snapshot.contracts.length + snapshot.absences.length + snapshot.vacations.length;
     await Promise.all([
-      admin.from("payroll_sync_runs").update({ status: "succeeded", finished_at: new Date().toISOString(), records_received: received, records_accepted: peopleRows.length + contractRows.length + metricRows.length, records_rejected: snapshot.contracts.length - contractRows.length }).eq("id", syncRun.id),
+      admin.from("payroll_sync_runs").update({ status: "succeeded", finished_at: new Date().toISOString(), records_received: received, records_accepted: peopleRows.length + contractRows.length + metricRows.length + payrollCosts.length, records_rejected: snapshot.contracts.length - contractRows.length }).eq("id", syncRun.id),
       admin.from("payroll_integrations").update({ is_active: true, last_sync_at: new Date().toISOString(), last_sync_status: "succeeded", last_period_month: month }).eq("id", integration.id),
     ]);
-    return NextResponse.json({ synced: true, summary: { employees: peopleRows.length, contracts: contractRows.length, absenceEvents: snapshot.absences.length, vacationEvents: snapshot.vacations.length, periodYear: year } });
+    return NextResponse.json({ synced: true, summary: { employees: peopleRows.length, contracts: contractRows.length, payrollCostLines: payrollCosts.length, absenceEvents: snapshot.absences.length, vacationEvents: snapshot.vacations.length, periodYear: year } });
   } catch (error) {
     const message = errorMessage(error);
     await Promise.all([
