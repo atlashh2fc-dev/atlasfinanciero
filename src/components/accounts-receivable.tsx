@@ -1,8 +1,9 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { InvoiceRecord } from "@/data/facturas-emitidas-2026";
+import { isCreditNoteDocument, isPurchaseOrderDocument, recognizedNetAmount } from "@/lib/document-revenue";
 
 type FollowupStatus = "open" | "committed" | "resolved";
 type CollectionFollowup = {
@@ -29,18 +30,20 @@ function daysOverdue(dueDate: string | null, today: Date) {
 
 function agingBucket(days: number | null) {
   if (days === null) return "Sin vencimiento";
-  if (days <= 0) return "No vencido";
-  if (days <= 30) return "1–30 días";
-  if (days <= 60) return "31–60 días";
-  if (days <= 90) return "61–90 días";
-  return "90+ días";
+  if (days > 0) return "Vencido";
+  const daysUntilDue = Math.abs(days);
+  if (daysUntilDue <= 2) return "Vence en 2 días";
+  if (daysUntilDue <= 7) return "Vence en 7 días";
+  if (daysUntilDue <= 15) return "Vence en 15 días";
+  if (daysUntilDue <= 30) return "Vence en 30 días";
+  return "Más de 30 días";
 }
 
 function displayFollowupStatus(status: FollowupStatus) {
   return ({ open: "Abierta", committed: "Compromiso", resolved: "Resuelta" })[status];
 }
 
-export function AccountsReceivable({ records, organizationId, canManage, isPersisted }: { records: InvoiceRecord[]; organizationId: string | null; canManage: boolean; isPersisted: boolean }) {
+export function AccountsReceivable({ records, organizationId, canManage, isPersisted, onEditDocument }: { records: InvoiceRecord[]; organizationId: string | null; canManage: boolean; isPersisted: boolean; onEditDocument?: (record: InvoiceRecord) => void }) {
   const [followups, setFollowups] = useState<CollectionFollowup[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -69,13 +72,14 @@ export function AccountsReceivable({ records, organizationId, canManage, isPersi
   useEffect(() => { void loadFollowups(); }, [organizationId]);
 
   const today = useMemo(() => new Date(), []);
-  const receivables = useMemo(() => records.filter((record) => record.status?.toLowerCase().includes("pendiente")), [records]);
-  const totalPending = useMemo(() => receivables.reduce((total, record) => total + (record.netAmount ?? 0), 0), [receivables]);
+  const receivables = useMemo(() => records.filter((record) => !isPurchaseOrderDocument(record) && !isCreditNoteDocument(record) && record.status?.toLowerCase().includes("pendiente")), [records]);
+  const totalPending = useMemo(() => receivables.reduce((total, record) => total + recognizedNetAmount(record), 0), [receivables]);
   const overdue = useMemo(() => receivables.filter((record) => (daysOverdue(record.dueDate, today) ?? -1) > 0), [receivables, today]);
-  const overdueAmount = useMemo(() => overdue.reduce((total, record) => total + (record.netAmount ?? 0), 0), [overdue]);
-  const aging = useMemo(() => ["No vencido", "1–30 días", "31–60 días", "61–90 días", "90+ días", "Sin vencimiento"].map((bucket) => ({ bucket, amount: receivables.filter((record) => agingBucket(daysOverdue(record.dueDate, today)) === bucket).reduce((total, record) => total + (record.netAmount ?? 0), 0) })), [receivables, today]);
+  const overdueAmount = useMemo(() => overdue.reduce((total, record) => total + recognizedNetAmount(record), 0), [overdue]);
+  const aging = useMemo(() => ["Vencido", "Vence en 2 días", "Vence en 7 días", "Vence en 15 días", "Vence en 30 días", "Más de 30 días", "Sin vencimiento"].map((bucket) => ({ bucket, amount: receivables.filter((record) => agingBucket(daysOverdue(record.dueDate, today)) === bucket).reduce((total, record) => total + recognizedNetAmount(record), 0) })), [receivables, today]);
   const followupsByDocument = useMemo(() => new Map(followups.map((item) => [item.issued_document_id, item])), [followups]);
-  const scheduledAmount = useMemo(() => receivables.filter((record) => followupsByDocument.get(record.id)?.next_action_on).reduce((total, record) => total + (record.netAmount ?? 0), 0), [receivables, followupsByDocument]);
+  const scheduledAmount = useMemo(() => receivables.filter((record) => followupsByDocument.get(record.id)?.next_action_on).reduce((total, record) => total + recognizedNetAmount(record), 0), [receivables, followupsByDocument]);
+  const greenAlertAmount = aging.filter((item) => item.bucket === "Vence en 2 días" || item.bucket === "Vence en 7 días").reduce((total, item) => total + item.amount, 0);
 
   function openFollowup(record: InvoiceRecord) {
     const current = followupsByDocument.get(record.id);
@@ -106,7 +110,7 @@ export function AccountsReceivable({ records, organizationId, canManage, isPersi
   return (
     <main className="dashboard receivables-dashboard">
       <section className="headline">
-        <div><span className="eyebrow">CONTROL DE COBRANZA</span><h1>Cuentas por cobrar</h1><p>Prioriza documentos pendientes, vencidos y compromisos de pago. La gestión no altera el documento original ni registra cobros inexistentes.</p></div>
+        <div><span className="eyebrow">CONTROL DE COBRANZA</span><h1>Cuentas por cobrar</h1><p>Prioriza documentos pendientes, vencidos y compromisos de pago. Editar pago actualiza estado, fechas y ciclo de factoring; la gestión conserva responsable y compromiso.</p></div>
         <div className="headline-actions"><button type="button" className="secondary-button" onClick={() => void loadFollowups()} disabled={isLoading}>Actualizar</button></div>
       </section>
 
@@ -118,12 +122,20 @@ export function AccountsReceivable({ records, organizationId, canManage, isPersi
         <article className="kpi-card accent"><span>Vencido</span><strong>{money.format(overdueAmount)}</strong><small>{overdue.length} documento(s) con vencimiento superado</small></article>
         <article className="kpi-card"><span>Gestión programada</span><strong>{money.format(scheduledAmount)}</strong><small>Documentos con próxima acción definida</small></article>
         <article className="kpi-card"><span>Compromisos de pago</span><strong>{followups.filter((item) => item.status === "committed").length}</strong><small>Seguimientos con promesa registrada</small></article>
-        <article className="kpi-card"><span>Sin vencimiento</span><strong>{aging.find((item) => item.bucket === "Sin vencimiento")?.amount ? money.format(aging.find((item) => item.bucket === "Sin vencimiento")!.amount) : "—"}</strong><small>Documentos que requieren completar fecha</small></article>
+        <article className="kpi-card"><span>Alerta verde ≤ 7 días</span><strong>{money.format(greenAlertAmount)}</strong><small>Vence en 7 o 2 días: programar caja</small></article>
       </section>
 
       <section className="executive-grid">
-        <article className="panel executive-chart"><div className="panel-heading"><div><span className="panel-label">ANTIGÜEDAD</span><h2>Exposición por tramo de vencimiento</h2></div><span className="unit">CLP neto</span></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><BarChart data={aging} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}><XAxis dataKey="bucket" tickLine={false} axisLine={false} tick={{ fill: "#7e8ba0", fontSize: 11 }} /><YAxis hide /><Tooltip formatter={(value) => money.format(Number(value))} contentStyle={{ borderRadius: 12, border: "1px solid #e6e9ef" }} /><Bar dataKey="amount" name="Pendiente" fill="#d47a45" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></div></article>
+        <article className="panel executive-chart"><div className="panel-heading"><div><span className="panel-label">CALENDARIO DE COBRANZA</span><h2>Vencimientos para flujo de caja</h2></div><span className="unit">CLP neto/exento</span></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><BarChart data={aging} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}><XAxis dataKey="bucket" tickLine={false} axisLine={false} tick={{ fill: "#7e8ba0", fontSize: 10 }} /><YAxis hide /><Tooltip formatter={(value) => money.format(Number(value))} contentStyle={{ borderRadius: 12, border: "1px solid #e6e9ef" }} /><Bar dataKey="amount" name="Pendiente" radius={[5, 5, 0, 0]}>{aging.map((item) => <Cell key={item.bucket} fill={item.bucket === "Vencido" ? "#d85f6c" : item.bucket === "Vence en 7 días" || item.bucket === "Vence en 2 días" ? "#20a67a" : "#9eabc7"} />)}</Bar></BarChart></ResponsiveContainer></div></article>
         <article className="panel receivables-priority"><div className="panel-heading"><div><span className="panel-label">PRIORIDAD</span><h2>Acción recomendada</h2></div></div><strong>{overdue.length ? `${overdue.length} documento(s) vencido(s)` : "Sin vencimientos pendientes"}</strong><p>{overdue.length ? `Concentran ${money.format(overdueAmount)} y deben tener responsable o próximo contacto.` : "Mantén una próxima acción para los documentos pendientes antes de su vencimiento."}</p><small>Los compromisos sólo se muestran cuando han sido registrados por un usuario autorizado.</small></article>
+      </section>
+
+      <section className="analysis-strip" aria-label="Tramos de vencimiento para caja">
+        {(["Vence en 30 días", "Vence en 15 días", "Vence en 7 días", "Vence en 2 días"] as const).map((bucket) => {
+          const amount = aging.find((item) => item.bucket === bucket)?.amount ?? 0;
+          const green = bucket === "Vence en 7 días" || bucket === "Vence en 2 días";
+          return <article key={bucket}><span>{green ? "ALERTA VERDE" : "PLANIFICACIÓN"}</span><strong>{bucket}</strong><p>{money.format(amount)} pendiente neto/exento.</p></article>;
+        })}
       </section>
 
       <section className="table-section">
@@ -131,7 +143,9 @@ export function AccountsReceivable({ records, organizationId, canManage, isPersi
         <div className="table-scroll"><table className="receivables-table"><thead><tr><th>Documento / cliente</th><th>Vence</th><th className="money-col">Neto</th><th>Antigüedad</th><th>Gestión</th><th>Acción</th></tr></thead><tbody>{receivables.map((record) => {
           const days = daysOverdue(record.dueDate, today);
           const followup = followupsByDocument.get(record.id);
-          return <tr key={record.id}><td><strong>N° {record.invoiceNumber ?? "—"} · {record.client ?? "Cliente no informado"}</strong><small>{record.recipient ?? record.documentType ?? "Documento emitido"}</small></td><td>{formatDate(record.dueDate)}</td><td className="money-col">{money.format(record.netAmount ?? 0)}</td><td><span className={days !== null && days > 0 ? "status cancelled" : "status neutral"}>{days === null ? "Sin fecha" : days > 0 ? `${days} día(s) vencido` : "No vencido"}</span></td><td>{followup ? <><strong>{displayFollowupStatus(followup.status)}</strong><small>{followup.next_action_on ? `Próxima acción ${formatDate(followup.next_action_on)}` : followup.note || "Sin próxima fecha"}</small></> : <span className="origin">Sin gestión registrada</span>}</td><td>{canManage && isPersisted ? <button type="button" className="secondary-button" onClick={() => openFollowup(record)}>Gestionar</button> : "—"}</td></tr>;
+          const bucket = agingBucket(days);
+          const greenAlert = bucket === "Vence en 7 días" || bucket === "Vence en 2 días";
+          return <tr key={record.id}><td><strong>N° {record.invoiceNumber ?? "—"} · {record.client ?? "Cliente no informado"}</strong><small>{record.recipient ?? record.documentType ?? "Documento emitido"}</small></td><td>{formatDate(record.dueDate)}</td><td className="money-col">{money.format(recognizedNetAmount(record))}</td><td><span className={days !== null && days > 0 ? "status cancelled" : greenAlert ? "status paid" : "status neutral"}>{days === null ? "Sin fecha" : days > 0 ? `${days} día(s) vencido` : bucket}</span></td><td>{followup ? <><strong>{displayFollowupStatus(followup.status)}</strong><small>{followup.next_action_on ? `Próxima acción ${formatDate(followup.next_action_on)}` : followup.note || "Sin próxima fecha"}</small></> : <span className="origin">Sin gestión registrada</span>}</td><td>{canManage && isPersisted ? <div className="cycle-actions"><button type="button" className="secondary-button" onClick={() => openFollowup(record)}>Gestionar</button>{onEditDocument && <button type="button" className="secondary-button" onClick={() => onEditDocument(record)}>Editar pago</button>}</div> : "—"}</td></tr>;
         })}</tbody></table></div>
         {!receivables.length && <p className="billing-empty">No hay documentos con estado pendiente en los datos disponibles.</p>}
       </section>

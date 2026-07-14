@@ -36,7 +36,7 @@ export async function GET() {
 
   const [organizations, counterparties, rules, cycles] = await Promise.all([
     supabase.from("organizations").select("id, legal_name").in("id", organizationIds).order("legal_name"),
-    supabase.from("counterparties").select("id, organization_id, legal_name").in("organization_id", organizationIds).eq("kind", "customer").eq("is_active", true).order("legal_name"),
+    supabase.from("counterparties").select("id, organization_id, legal_name").in("organization_id", organizationIds).in("kind", ["customer", "both"]).eq("is_active", true).order("legal_name"),
     supabase.from("billing_recurrence_rules").select("id, organization_id, counterparty_id, name, expected_net_amount, currency_code, deadline_day, reminder_days_before, status").in("organization_id", organizationIds).order("name"),
     supabase.from("billing_cycles").select("id, organization_id, recurrence_rule_id, period_month, due_date, expected_net_amount, currency_code, status, issued_document_id").in("organization_id", organizationIds).order("due_date"),
   ]);
