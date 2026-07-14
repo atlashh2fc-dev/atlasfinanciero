@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
 type Organization = { id: string; legal_name: string; tax_id: string | null };
@@ -34,6 +34,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
   const [inviteRole, setInviteRole] = useState<OrganizationRole>("auditor");
   const [message, setMessage] = useState<string | null>(null);
   const [recoveryLink, setRecoveryLink] = useState<{ email: string; url: string } | null>(null);
+  const recoveryLinkInputRef = useRef<HTMLInputElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -163,12 +164,31 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
 
   async function copyRecoveryLink() {
     if (!recoveryLink) return;
+    let copied = false;
     try {
-      await navigator.clipboard.writeText(recoveryLink.url);
-      setMessage("Enlace copiado. Envíalo a la persona por un canal seguro.");
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(recoveryLink.url);
+        copied = true;
+      }
     } catch {
-      setMessage("Copia el enlace manualmente desde el campo mostrado.");
+      copied = false;
     }
+
+    if (!copied) {
+      const input = recoveryLinkInputRef.current;
+      if (input) {
+        input.focus();
+        input.select();
+        input.setSelectionRange(0, recoveryLink.url.length);
+        copied = document.execCommand("copy");
+      }
+    }
+
+    if (copied) {
+      setMessage("Enlace copiado. Envíalo a la persona por un canal seguro.");
+      return;
+    }
+    setMessage("No se pudo acceder al portapapeles. El enlace quedó seleccionado: usa Cmd+C para copiarlo.");
   }
 
   return (
@@ -178,7 +198,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
       </section>
 
       {message && <p className="operation-message">{message}</p>}
-      {recoveryLink && <section className="panel recovery-link-panel"><div className="panel-heading"><div><span className="panel-label">RECUPERACIÓN ASISTIDA</span><h2>Enlace único para {recoveryLink.email}</h2><p>Este enlace no se envía por correo ni queda guardado en Atlas. Compártelo sólo con la persona autorizada.</p></div><button type="button" className="close-button" onClick={() => setRecoveryLink(null)} aria-label="Ocultar enlace">×</button></div><div className="recovery-link-row"><input value={recoveryLink.url} readOnly aria-label="Enlace seguro de recuperación" /><button type="button" className="secondary-button" onClick={() => void copyRecoveryLink()}>Copiar enlace</button></div></section>}
+      {recoveryLink && <section className="panel recovery-link-panel"><div className="panel-heading"><div><span className="panel-label">RECUPERACIÓN ASISTIDA</span><h2>Enlace único para {recoveryLink.email}</h2><p>Este enlace no se envía por correo ni queda guardado en Atlas. Compártelo sólo con la persona autorizada.</p></div><button type="button" className="close-button" onClick={() => setRecoveryLink(null)} aria-label="Ocultar enlace">×</button></div><div className="recovery-link-row"><input ref={recoveryLinkInputRef} value={recoveryLink.url} readOnly aria-label="Enlace seguro de recuperación" /><button type="button" className="secondary-button" onClick={() => void copyRecoveryLink()}>Copiar enlace</button></div></section>}
       {isLoading ? <section className="panel billing-empty"><p>Cargando administración…</p></section> : <>
         <section className="admin-grid">
           <article className="panel">
