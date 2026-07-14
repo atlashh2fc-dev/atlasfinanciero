@@ -124,6 +124,15 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
     await loadMembers(organizationId);
   }
 
+  async function resendInvitation(invitationId: string) {
+    setIsSaving(true);
+    const response = await fetch("/api/admin/invitations", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, invitationId }) });
+    setIsSaving(false);
+    if (!response.ok) return setMessage("No fue posible renovar la invitación. Verifica que aún esté pendiente.");
+    setMessage("Invitación renovada y enviada nuevamente. El enlace anterior quedó invalidado.");
+    await loadMembers(organizationId);
+  }
+
   async function removeMember(userId: string) {
     if (!window.confirm("¿Quitar a este usuario de la organización? Perderá acceso a sus datos y operaciones.")) return;
     setIsSaving(true);
@@ -173,7 +182,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
 
         <section className="table-section">
           <div className="table-heading"><div><span className="panel-label">MIEMBROS</span><h2>Accesos de {current?.legal_name ?? "la organización"}</h2><p>{members.length} activo(s) · {invitations.length} invitación(es) pendiente(s).</p></div><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void loadMembers(organizationId)}>Actualizar</button></div>
-          <div className="table-scroll"><table className="admin-members-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th>Fecha</th><th>Acción</th></tr></thead><tbody>{invitations.map((invitation) => <tr key={`invitation-${invitation.id}`}><td><strong>{invitation.email}</strong><small>Invitación enviada por correo</small></td><td>{roleLabels[invitation.role]}</td><td><span className="status pending">Pendiente</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(invitation.invitedAt))}</td><td><span className="origin">Sin acceso hasta aceptar</span></td></tr>)}{members.map((member) => <tr key={member.userId}><td><strong>{member.profile?.full_name || member.profile?.email || "Usuario"}</strong><small>{member.profile?.email ?? "Correo no disponible"}</small></td><td><select value={member.role} onChange={(event) => void changeRole(member.userId, event.target.value as OrganizationRole)} disabled={isSaving}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td><span className="status paid">Activo</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(member.createdAt))}</td><td><button type="button" className="text-button" disabled={isSaving} onClick={() => void removeMember(member.userId)}>Quitar</button></td></tr>)}</tbody></table></div>
+          <div className="table-scroll"><table className="admin-members-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th>Fecha</th><th>Acción</th></tr></thead><tbody>{invitations.map((invitation) => <tr key={`invitation-${invitation.id}`}><td><strong>{invitation.email}</strong><small>Invitación enviada por correo</small></td><td>{roleLabels[invitation.role]}</td><td><span className="status pending">Pendiente</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(invitation.invitedAt))}</td><td><button type="button" className="text-button" disabled={isSaving} onClick={() => void resendInvitation(invitation.id)}>Reenviar invitación</button></td></tr>)}{members.map((member) => <tr key={member.userId}><td><strong>{member.profile?.full_name || member.profile?.email || "Usuario"}</strong><small>{member.profile?.email ?? "Correo no disponible"}</small></td><td><select value={member.role} onChange={(event) => void changeRole(member.userId, event.target.value as OrganizationRole)} disabled={isSaving}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td><span className="status paid">Activo</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(member.createdAt))}</td><td><button type="button" className="text-button" disabled={isSaving} onClick={() => void removeMember(member.userId)}>Quitar</button></td></tr>)}</tbody></table></div>
           {!members.length && !invitations.length && <p className="billing-empty">Aún no hay accesos ni invitaciones para esta organización.</p>}
         </section>
       </>}
