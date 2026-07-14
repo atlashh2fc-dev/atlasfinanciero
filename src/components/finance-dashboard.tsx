@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -67,6 +67,15 @@ function formatMoney(value: number) {
   return money.format(value);
 }
 
+type MarketIndicator = { code: string; name: string; unit: string; date: string; value: number };
+type MarketIndicatorsPayload = { updatedAt: string | null; indicators: MarketIndicator[]; source: { name: string; url: string }; references: Array<{ name: string; url: string }> };
+
+function formatIndicator(indicator: MarketIndicator) {
+  if (indicator.unit === "Pesos") return formatMoney(indicator.value);
+  if (indicator.unit === "Porcentaje") return `${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 2 }).format(indicator.value)}%`;
+  return number.format(indicator.value);
+}
+
 function formatDate(value: string | null) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(
@@ -107,6 +116,68 @@ function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas"
         <article><strong>Responsable</strong><span>Definido en la matriz de permisos</span></article>
         <article><strong>Salida</strong><span>Tablas, trazabilidad y KPI sin datos inventados</span></article>
       </div>
+    </main>
+  );
+}
+
+function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
+  const [marketData, setMarketData] = useState<MarketIndicatorsPayload | null>(null);
+  const [marketError, setMarketError] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/market-indicators")
+      .then((response) => response.ok ? response.json() as Promise<MarketIndicatorsPayload> : Promise.reject(new Error("Indicators unavailable")))
+      .then((payload) => { if (active) setMarketData(payload); })
+      .catch(() => { if (active) setMarketError(true); });
+    return () => { active = false; };
+  }, []);
+
+  const currentDate = new Date().toISOString().slice(0, 10);
+  const netDocumented = sum(records, "netAmount");
+  const overdue = records.filter((record) => record.status === "Pendiente" && Boolean(record.dueDate) && record.dueDate! < currentDate);
+  const overdueAmount = sum(overdue, "netAmount");
+  const paymentObserved = records.filter((record) => record.issueDate && record.paymentDate);
+  const observedPaymentDays = paymentObserved.map((record) => Math.round((new Date(`${record.paymentDate}T00:00:00`).getTime() - new Date(`${record.issueDate}T00:00:00`).getTime()) / 86400000));
+  const averagePaymentDays = observedPaymentDays.length ? observedPaymentDays.reduce((total, days) => total + days, 0) / observedPaymentDays.length : null;
+  const customers = buildCustomerEvolution(records);
+  const topCustomer = customers[0];
+  const topCustomerShare = topCustomer && netDocumented ? topCustomer.total / netDocumented : 0;
+  const forecastResult = forecastMonthly2026.reduce((total, item) => total + item.projectedRevenue - item.projectedExpense, 0);
+  const monthlyExecutive = calendarMonths.map((month, index) => ({
+    month: month.slice(0, 3),
+    documented: records.filter((record) => record.month === month).reduce((total, record) => total + (record.netAmount ?? 0), 0),
+    budget: forecastMonthly2026[index]?.projectedRevenue ?? 0,
+    expense: forecastMonthly2026[index]?.projectedExpense ?? 0,
+  }));
+  const clientRanking = customers.slice(0, 6).map((customer) => ({ client: customer.client, montoNeto: customer.total }));
+  const visibleIndicators = ["uf", "utm", "dolar", "euro", "ipc", "tpm"].map((code) => marketData?.indicators.find((item) => item.code === code)).filter((item): item is MarketIndicator => Boolean(item));
+
+  return (
+    <main className="dashboard executive-dashboard">
+      <section className="headline">
+        <div><span className="eyebrow">RESUMEN EJECUTIVO · 2026</span><h1>Panorama financiero</h1><p>Ingresos documentados, exposición de cartera, comportamiento de clientes y referencia de mercado en una sola vista.</p></div>
+        <div className="headline-actions"><span className="refresh">● Actualizado con datos operativos</span></div>
+      </section>
+
+      <section className="kpis kpis-five" aria-label="Indicadores ejecutivos">
+        <article className="kpi-card"><span>Facturado neto</span><strong>{formatMoney(netDocumented)}</strong><small>Documentos emitidos 2026</small></article>
+        <article className="kpi-card accent"><span>Cartera vencida</span><strong>{formatMoney(overdueAmount)}</strong><small>{number.format(overdue.length)} pendiente(s) vencido(s)</small></article>
+        <article className="kpi-card"><span>Plazo observado de pago</span><strong>{averagePaymentDays === null ? "—" : `${number.format(averagePaymentDays)} días`}</strong><small>Documentos con emisión y pago registrados</small></article>
+        <article className="kpi-card"><span>Concentración mayor cliente</span><strong>{topCustomer ? `${new Intl.NumberFormat("es-CL", { style: "percent", maximumFractionDigits: 1 }).format(topCustomerShare)}` : "—"}</strong><small>{topCustomer?.client ?? "Sin cliente informado"}</small></article>
+        <article className="kpi-card"><span>Resultado planificado</span><strong>{formatMoney(forecastResult)}</strong><small>Ingresos proyectados menos gastos proyectados</small></article>
+      </section>
+
+      <section className="executive-grid">
+        <article className="panel executive-chart"><div className="panel-heading"><div><span className="panel-label">EJECUCIÓN VS. PLAN</span><h2>Ingresos documentados y presupuesto</h2></div><span className="unit">CLP neto</span></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><BarChart data={monthlyExecutive} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}><XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fill: "#7e8ba0", fontSize: 12 }} /><YAxis hide /><Tooltip formatter={(value) => formatMoney(Number(value))} contentStyle={{ borderRadius: 12, border: "1px solid #e6e9ef" }} /><Bar dataKey="documented" name="Documentado" fill="#5867db" radius={[5, 5, 0, 0]} /><Bar dataKey="budget" name="Presupuesto" fill="#9eabc7" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></div></article>
+        <article className="panel executive-chart"><div className="panel-heading"><div><span className="panel-label">CONCENTRACIÓN</span><h2>Clientes por monto documentado</h2></div><span className="unit">Top 6</span></div><div className="ranking-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={clientRanking} layout="vertical" margin={{ left: 0, right: 24 }}><XAxis type="number" hide /><YAxis type="category" dataKey="client" width={150} tickLine={false} axisLine={false} tick={{ fill: "#58657a", fontSize: 11 }} /><Tooltip formatter={(value) => formatMoney(Number(value))} cursor={{ fill: "#f6f7fb" }} contentStyle={{ borderRadius: 12, border: "1px solid #e6e9ef" }} /><Bar dataKey="montoNeto" radius={[0, 6, 6, 0]} fill="#20a67a" /></BarChart></ResponsiveContainer></div></article>
+      </section>
+
+      <section className="market-panel">
+        <div className="panel-heading"><div><span className="panel-label">REFERENCIAS DE MERCADO</span><h2>Indicadores públicos</h2><p>Se actualizan desde una fuente pública; cada tarjeta muestra su propia fecha de referencia.</p></div>{marketData && <a className="market-source" href={marketData.source.url} target="_blank" rel="noreferrer">Ver fuente ↗</a>}</div>
+        {marketError ? <p className="market-unavailable">Indicadores temporalmente no disponibles.</p> : <div className="market-cards">{visibleIndicators.length ? visibleIndicators.map((indicator) => <article key={indicator.code}><span>{indicator.code.toUpperCase()}</span><strong>{formatIndicator(indicator)}</strong><small>{formatDate(indicator.date.slice(0, 10))}</small></article>) : Array.from({ length: 6 }, (_, index) => <article className="market-loading" key={index}><span>Actualizando</span><strong>—</strong><small>Fuente pública</small></article>)}</div>}
+        {marketData && <p className="market-references">Referencias oficiales: {marketData.references.map((reference, index) => <span key={reference.url}>{index ? " · " : ""}<a href={reference.url} target="_blank" rel="noreferrer">{reference.name}</a></span>)}</p>}
+      </section>
     </main>
   );
 }
@@ -350,10 +421,10 @@ export function FinanceDashboard() {
           </div>
         </header>
 
-        {activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} /> : activeModule !== "Inicio" && activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
+        {activeModule === "Inicio" ? <ExecutiveDashboard records={records} /> : activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} /> : activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
           <main className="dashboard">
             <section className="headline">
-              <div><span className="eyebrow">CONTROL FINANCIERO · 2026</span><h1>{activeModule === "Facturas" ? "Facturas emitidas" : "Panorama financiero"}</h1><p>Vista calculada desde la hoja fuente. Los importes no aplican ajustes ni clasificaciones adicionales.</p></div>
+              <div><span className="eyebrow">OPERACIÓN · 2026</span><h1>Facturas emitidas</h1><p>Gestión documental, estados, vencimientos y trazabilidad por documento.</p></div>
               <div className="headline-actions">
                 <span className="refresh">● Datos importados del libro</span>
                 {hasEditPermission ? <button className="primary-button" type="button" onClick={() => setShowEntry(true)}>＋ Registrar documento</button> : <span className="permission-note">El rol Auditor no registra documentos</span>}
