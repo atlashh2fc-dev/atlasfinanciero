@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { CostCenterManagement } from "@/components/cost-center-management";
 
 type PayrollPerson = {
   id: string;
@@ -103,6 +102,5 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
       <div className="table-heading"><div><span className="panel-label">DOTACIÓN</span><h2>Detalle por persona</h2><p>{payload.persons.length} colaborador(es) sincronizados. El identificador tributario se muestra parcialmente protegido.</p></div><button type="button" className="secondary-button" onClick={() => void load()}>Actualizar</button></div>
       <div className="table-scroll"><table className="payroll-people-table"><thead><tr><th>Colaborador</th><th>Área / cargo</th><th>Contrato</th><th className="money-col">Bruto contractual</th><th className="money-col">Ausencias</th><th className="money-col">Vacaciones</th><th>Estado</th></tr></thead><tbody>{payload.persons.map((person) => <tr key={person.id}><td><strong>{person.name}</strong><small>RUT {maskRut(person.nationalIdentification)}</small></td><td><strong>{person.management ?? "—"}</strong><small>{person.jobTitle ?? "Sin cargo informado"}</small></td><td>{person.contractType ?? "—"}<small>{person.contractStatus ?? "Vigencia no informada"}</small></td><td className="money-col">{person.monthlyGrossSalary === null ? "—" : money.format(person.monthlyGrossSalary)}</td><td className="money-col">{amount.format(person.absenceDays)} días</td><td className="money-col">{amount.format(person.vacationDays)} días</td><td><span className={`status ${person.active ? "paid" : "neutral"}`}>{person.active ? "Activo" : "Inactivo"}</span></td></tr>)}</tbody></table></div>
     </section>
-    <CostCenterManagement organizationId={organizationId} />
   </main>;
 }
