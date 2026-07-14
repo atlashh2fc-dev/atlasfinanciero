@@ -8,6 +8,8 @@ Aplicación web en Next.js, TypeScript, Tailwind CSS y Recharts para sustituir l
 - La carga conserva 11.071 celdas fuente, incluidas fórmulas, 126 documentos emitidos históricos, 19 contrapartes y cuatro lotes por hoja de facturas.
 - Proyecciones normaliza únicamente líneas de detalle: 192 de ingresos proyectados, 132 del bloque `Real 2026` y 177 de gastos proyectados. Totales y conciliaciones permanecen intactos en la fuente, pero no se duplican en los gráficos.
 - Cada registro conserva la referencia `archivo → hoja → fila` y cada proyección también su columna de origen.
+- Clientes incorpora una matriz evolutiva con los meses en columnas, monto neto documentado, documentos y estado `Pendiente` exacto por cliente.
+- La base financiera incorpora periodos, plan de cuentas, asientos doble partida, líneas de planificación, calendario de reconocimiento de ingresos y vistas de evolución mensual. No se precargaron cuentas, asientos ni políticas contables que no estén en la fuente.
 - El formulario crea registros sólo en la sesión del navegador. No afirma persistencia ni modifica el libro Excel.
 - Hay modelos, RLS, bitácora e importaciones para documentos, terceros, forecast y archivos fuente. El primer usuario administrador aún debe ser definido explícitamente antes de habilitar escritura real desde la interfaz.
 
@@ -58,11 +60,11 @@ PostgreSQL
 ### Módulos
 
 1. **Documentos emitidos**: facturas, notas de crédito, documentos exentos, estado, vencimiento y pago.
-2. **Terceros**: maestro único de clientes y proveedores, usando RUT como identificador de negocio validado.
+2. **Clientes**: evolución mensual, concentración, documentos, estado y trazabilidad por cliente.
 3. **Cuentas por cobrar**: calendario de vencimientos, pagos, abonos, factoring y cartera; sus reglas deben configurarse antes de calcular saldos.
 4. **Gastos y proveedores**: documentos recibidos, órdenes de compra, centros de costo y aprobaciones.
 5. **Remuneraciones**: importación de costos de personal a centros de costo y períodos, sin exponer liquidaciones a roles no autorizados.
-6. **Proyecciones**: visualización del presupuesto, bloque `Real 2026`, gastos proyectados y diferencia simple, sin modificar sus valores fuente.
+6. **Proyecciones**: evolución mensual con presupuesto, bloque `Real 2026`, gastos, resultado simple y desviaciones, sin modificar valores fuente.
 
 ### Roles iniciales
 
