@@ -16,10 +16,10 @@ export async function GET(request: NextRequest) {
   if (!hasSupabaseAdminKey()) return NextResponse.json({ error: "admin_provisioning_not_configured" }, { status: 503 });
 
   const admin = createAdminClient();
-  const [{ data, error }, { data: pendingData, error: pendingError }] = await Promise.all([
+  const [{ data: membershipData, error: membershipError }, { data: pendingData, error: pendingError }] = await Promise.all([
     admin
       .from("organization_memberships")
-      .select("user_id, role, created_at, profiles (email, full_name)")
+      .select("user_id, role, created_at")
       .eq("organization_id", organizationId)
       .order("created_at"),
     admin
@@ -29,14 +29,35 @@ export async function GET(request: NextRequest) {
       .eq("status", "pending")
       .order("invited_at", { ascending: false }),
   ]);
-  if (error || pendingError) return NextResponse.json({ error: "unable_to_load_members" }, { status: 500 });
+  if (membershipError || pendingError) return NextResponse.json({ error: "unable_to_load_members" }, { status: 500 });
 
-  const members = (data ?? []).map((member) => ({
-    userId: member.user_id,
-    role: member.role,
-    createdAt: member.created_at,
-    profile: Array.isArray(member.profiles) ? member.profiles[0] ?? null : member.profiles,
+  const userIds = (membershipData ?? []).map((member) => member.user_id);
+  const { data: profileData, error: profileError } = userIds.length
+    ? await admin.from("profiles").select("id, email, full_name").in("id", userIds)
+    : { data: [], error: null };
+  if (profileError) return NextResponse.json({ error: "unable_to_load_members" }, { status: 500 });
+
+  const profileByUserId = new Map((profileData ?? []).map((profile) => [profile.id, profile]));
+  const authUsers = await Promise.all(userIds.map(async (userId) => {
+    const { data: result } = await admin.auth.admin.getUserById(userId);
+    return [userId, result.user] as const;
   }));
+  const authUserById = new Map(authUsers);
+
+  const members = (membershipData ?? []).map((member) => {
+    const profile = profileByUserId.get(member.user_id);
+    const authUser = authUserById.get(member.user_id);
+    const metadataName = typeof authUser?.user_metadata?.full_name === "string" ? authUser.user_metadata.full_name : null;
+    return {
+      userId: member.user_id,
+      role: member.role,
+      createdAt: member.created_at,
+      profile: {
+        email: profile?.email ?? authUser?.email ?? null,
+        full_name: profile?.full_name ?? metadataName,
+      },
+    };
+  });
   const invitations = (pendingData ?? []).map((invitation) => ({
     id: invitation.id,
     email: invitation.email,
