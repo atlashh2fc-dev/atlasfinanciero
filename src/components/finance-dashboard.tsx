@@ -1753,10 +1753,12 @@ export function FinanceDashboard() {
       !draft.client ||
       !draft.netAmount ||
       !draft.totalAmount ||
-      !draft.status
+      !draft.status ||
+      (draft.documentType.toLocaleLowerCase().includes("factura") &&
+        !draft.paymentCondition)
     ) {
       setFormError(
-        "Completa fecha, tipo, emisor, cliente, montos y estado. No se crearán valores de relleno.",
+        "Completa fecha, tipo, emisor, cliente, montos, estado y condición del servicio para facturas. No se crearán valores de relleno.",
       );
       return;
     }
@@ -2472,7 +2474,7 @@ export function FinanceDashboard() {
                   />
                 </label>
                 <label>
-                  Condición del servicio
+                  Condición del servicio (facturas) *
                   <select
                     value={draft.paymentCondition}
                     onChange={(event) =>

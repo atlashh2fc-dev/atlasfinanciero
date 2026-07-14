@@ -87,6 +87,10 @@ export async function POST(request: NextRequest) {
   const totalAmount = readAmount(body?.totalAmount, true);
   const vatAmount = readAmount(body?.vatAmount);
   const status = readText(body?.status, 80, true);
+  const paymentCondition = readPaymentCondition(body?.paymentCondition);
+  const requiresPaymentCondition = documentType
+    ?.toLocaleLowerCase()
+    .includes("factura");
 
   if (
     !issueDate ||
@@ -96,7 +100,8 @@ export async function POST(request: NextRequest) {
     netAmount === undefined ||
     totalAmount === undefined ||
     vatAmount === undefined ||
-    !status
+    !status ||
+    (requiresPaymentCondition && !paymentCondition)
   ) {
     return NextResponse.json({ error: "invalid_document" }, { status: 400 });
   }
@@ -162,7 +167,7 @@ export async function POST(request: NextRequest) {
       vat_amount: vatAmount,
       total_amount: totalAmount,
       payment_status: status,
-      payment_condition: readPaymentCondition(body?.paymentCondition),
+      payment_condition: paymentCondition,
       source_file_name: "Atlas Financiero",
       source_sheet_name: "Registro manual",
       source_row: 0,
