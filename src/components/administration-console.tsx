@@ -32,6 +32,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<OrganizationRole>("auditor");
   const [message, setMessage] = useState<string | null>(null);
+  const [recoveryLink, setRecoveryLink] = useState<{ email: string; url: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -143,6 +144,26 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
     await loadMembers(organizationId);
   }
 
+  async function generateRecoveryLink(member: Member) {
+    setIsSaving(true);
+    const response = await fetch("/api/admin/recovery-link", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, userId: member.userId }) });
+    const payload = await response.json().catch(() => null) as { email?: string; recoveryLink?: string } | null;
+    setIsSaving(false);
+    if (!response.ok || !payload?.email || !payload.recoveryLink) return setMessage("No fue posible generar el enlace seguro de recuperación.");
+    setRecoveryLink({ email: payload.email, url: payload.recoveryLink });
+    setMessage("Enlace de recuperación generado. Compártelo sólo con la persona indicada: permite definir una contraseña nueva.");
+  }
+
+  async function copyRecoveryLink() {
+    if (!recoveryLink) return;
+    try {
+      await navigator.clipboard.writeText(recoveryLink.url);
+      setMessage("Enlace copiado. Envíalo a la persona por un canal seguro.");
+    } catch {
+      setMessage("Copia el enlace manualmente desde el campo mostrado.");
+    }
+  }
+
   return (
     <main className="dashboard administration-dashboard">
       <section className="headline">
@@ -150,6 +171,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
       </section>
 
       {message && <p className="operation-message">{message}</p>}
+      {recoveryLink && <section className="panel recovery-link-panel"><div className="panel-heading"><div><span className="panel-label">RECUPERACIÓN ASISTIDA</span><h2>Enlace único para {recoveryLink.email}</h2><p>Este enlace no se envía por correo ni queda guardado en Atlas. Compártelo sólo con la persona autorizada.</p></div><button type="button" className="close-button" onClick={() => setRecoveryLink(null)} aria-label="Ocultar enlace">×</button></div><div className="recovery-link-row"><input value={recoveryLink.url} readOnly aria-label="Enlace seguro de recuperación" /><button type="button" className="secondary-button" onClick={() => void copyRecoveryLink()}>Copiar enlace</button></div></section>}
       {isLoading ? <section className="panel billing-empty"><p>Cargando administración…</p></section> : <>
         <section className="admin-grid">
           <article className="panel">
@@ -182,7 +204,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
 
         <section className="table-section">
           <div className="table-heading"><div><span className="panel-label">MIEMBROS</span><h2>Accesos de {current?.legal_name ?? "la organización"}</h2><p>{members.length} activo(s) · {invitations.length} invitación(es) pendiente(s).</p></div><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void loadMembers(organizationId)}>Actualizar</button></div>
-          <div className="table-scroll"><table className="admin-members-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th>Fecha</th><th>Acción</th></tr></thead><tbody>{invitations.map((invitation) => <tr key={`invitation-${invitation.id}`}><td><strong>{invitation.email}</strong><small>Invitación enviada por correo</small></td><td>{roleLabels[invitation.role]}</td><td><span className="status pending">Pendiente</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(invitation.invitedAt))}</td><td><button type="button" className="text-button" disabled={isSaving} onClick={() => void resendInvitation(invitation.id)}>Reenviar invitación</button></td></tr>)}{members.map((member) => <tr key={member.userId}><td><strong>{member.profile?.full_name || member.profile?.email || "Usuario"}</strong><small>{member.profile?.email ?? "Correo no disponible"}</small></td><td><select value={member.role} onChange={(event) => void changeRole(member.userId, event.target.value as OrganizationRole)} disabled={isSaving}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td><span className="status paid">Activo</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(member.createdAt))}</td><td><button type="button" className="text-button" disabled={isSaving} onClick={() => void removeMember(member.userId)}>Quitar</button></td></tr>)}</tbody></table></div>
+          <div className="table-scroll"><table className="admin-members-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th>Fecha</th><th>Acción</th></tr></thead><tbody>{invitations.map((invitation) => <tr key={`invitation-${invitation.id}`}><td><strong>{invitation.email}</strong><small>Invitación enviada por correo</small></td><td>{roleLabels[invitation.role]}</td><td><span className="status pending">Pendiente</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(invitation.invitedAt))}</td><td><button type="button" className="text-button" disabled={isSaving} onClick={() => void resendInvitation(invitation.id)}>Reenviar invitación</button></td></tr>)}{members.map((member) => <tr key={member.userId}><td><strong>{member.profile?.full_name || member.profile?.email || "Usuario"}</strong><small>{member.profile?.email ?? "Correo no disponible"}</small></td><td><select value={member.role} onChange={(event) => void changeRole(member.userId, event.target.value as OrganizationRole)} disabled={isSaving}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td><span className="status paid">Activo</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(member.createdAt))}</td><td><div className="member-actions"><button type="button" className="text-button" disabled={isSaving} onClick={() => void generateRecoveryLink(member)}>Generar enlace</button><button type="button" className="text-button" disabled={isSaving} onClick={() => void removeMember(member.userId)}>Quitar</button></div></td></tr>)}</tbody></table></div>
           {!members.length && !invitations.length && <p className="billing-empty">Aún no hay accesos ni invitaciones para esta organización.</p>}
         </section>
       </>}

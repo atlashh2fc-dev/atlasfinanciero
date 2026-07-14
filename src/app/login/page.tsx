@@ -23,7 +23,12 @@ export default function LoginPage() {
     const { error } = await createClient().auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/auth/complete-invitation`,
     });
-    if (error) return setMessage("No fue posible solicitar el enlace. Inténtalo nuevamente.");
+    if (error) {
+      if (error.status === 429 || error.code === "over_email_send_rate_limit") {
+        return setMessage("Se alcanzó temporalmente el límite de correos de acceso. Solicita a un Administrador un enlace de recuperación seguro desde Administración.");
+      }
+      return setMessage("No fue posible solicitar el enlace. Revisa el correo ingresado e inténtalo nuevamente.");
+    }
     setMessage("Si existe una cuenta para este correo, recibirás un enlace seguro para definir tu contraseña.");
   }
 
