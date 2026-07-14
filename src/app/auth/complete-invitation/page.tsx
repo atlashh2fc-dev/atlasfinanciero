@@ -55,13 +55,13 @@ export default function CompleteInvitationPage() {
           <a className="secondary-link" href="/login">Volver a ingresar</a>
         </>}
         {activationState === "ready" && <>
-          <h1>Activa tu acceso</h1>
-          <p>Define una contraseña para <strong>{email}</strong>. Al continuar podrás entrar a Atlas Financiero.</p>
+          <h1>Define tu contraseña</h1>
+          <p>Configura una contraseña para <strong>{email}</strong>. Al continuar podrás entrar a Atlas Financiero.</p>
           <form onSubmit={completeActivation}>
             <label>Contraseña<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" minLength={12} required /></label>
             <label>Confirmar contraseña<input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" minLength={12} required /></label>
             {message && <p className="form-error">{message}</p>}
-            <button className="primary-button" type="submit" disabled={isSaving}>{isSaving ? "Activando…" : "Activar acceso"}</button>
+            <button className="primary-button" type="submit" disabled={isSaving}>{isSaving ? "Guardando…" : "Guardar y continuar"}</button>
           </form>
         </>}
       </section>
