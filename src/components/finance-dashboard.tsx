@@ -18,6 +18,7 @@ import {
 } from "recharts";
 import { facturasEmitidas2026, type InvoiceRecord } from "@/data/facturas-emitidas-2026";
 import { forecastMonthly2026 } from "@/data/forecast-2026";
+import { BillingOperations } from "@/components/billing-operations";
 
 const calendarMonths = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const pieColors = ["#18a877", "#eeb34d", "#5968df", "#d85f6c", "#8b97aa", "#2a8aa6", "#9d72d7"];
@@ -99,9 +100,8 @@ function statusClass(status: string | null) {
   return "status neutral";
 }
 
-function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas" | "Proyecciones" | "Clientes"> }) {
+function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas" | "Proyecciones" | "Clientes" | "Cuentas por cobrar"> }) {
   const detail: Record<typeof module, string> = {
-    "Cuentas por cobrar": "Este módulo usará las fechas de vencimiento y pago de facturas, sin inferir saldos ni reglas de cobranza que no estén definidas.",
     "Gastos y proveedores": "Preparado para documentos recibidos, órdenes de compra, centros de costo y proveedores. Requiere fuente de gastos aprobada.",
     Remuneraciones: "La integración con PeopleWork está preparada para cargar costos consolidados por período, categoría y centro de costo. No replica liquidaciones ni datos personales; su activación requiere el contrato técnico del API de PeopleWork.",
   };
@@ -420,7 +420,7 @@ export function FinanceDashboard() {
           </div>
         </header>
 
-        {activeModule === "Inicio" ? <ExecutiveDashboard records={records} /> : activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} /> : activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
+        {activeModule === "Inicio" ? <ExecutiveDashboard records={records} /> : activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} /> : activeModule === "Cuentas por cobrar" ? <BillingOperations /> : activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
           <main className="dashboard">
             <section className="headline">
               <div><span className="eyebrow">OPERACIÓN · 2026</span><h1>Facturas emitidas</h1><p>Gestión documental, estados, vencimientos y trazabilidad por documento.</p></div>

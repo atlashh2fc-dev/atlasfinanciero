@@ -12,6 +12,7 @@ Aplicación web en Next.js, TypeScript, Tailwind CSS y Recharts para sustituir l
 - La base financiera incorpora periodos, plan de cuentas, asientos doble partida, líneas de planificación, calendario de reconocimiento de ingresos y vistas de evolución mensual. No se precargaron cuentas, asientos ni políticas contables que no estén en la fuente.
 - El formulario crea registros sólo en la sesión del navegador. No afirma persistencia ni modifica el libro Excel.
 - La capa de remuneraciones incorpora una integración preparada para PeopleWork: configuración sin secretos en base de datos, ejecuciones auditables y costos agregados por período, categoría y centro de costo. No persiste liquidaciones ni información personal de colaboradores.
+- Cuentas por cobrar incorpora ciclos de facturación recurrente: sólo Finanzas o Administrador pueden confirmar una recurrencia; cada ciclo debe quedar listo a más tardar el día 2, abre alerta preventiva y escala a vencida si permanece pendiente. Un trabajo diario en Supabase mantiene las alertas activas.
 - Hay modelos, RLS, bitácora e importaciones para documentos, terceros, forecast y archivos fuente. El primer usuario administrador aún debe ser definido explícitamente antes de habilitar escritura real desde la interfaz.
 
 ## Ejecutar
@@ -64,7 +65,7 @@ PostgreSQL
 
 1. **Documentos emitidos**: facturas, notas de crédito, documentos exentos, estado, vencimiento y pago.
 2. **Clientes**: evolución mensual, concentración, documentos, estado y trazabilidad por cliente.
-3. **Cuentas por cobrar**: calendario de vencimientos, pagos, abonos, factoring y cartera; sus reglas deben configurarse antes de calcular saldos.
+3. **Cuentas por cobrar**: calendario de vencimientos, pagos, abonos, factoring, cartera y control de recurrentes. Una regla explícita abre los ciclos mensuales y alerta antes del día 2; no se clasifican facturas históricas como recurrentes por inferencia.
 4. **Gastos y proveedores**: documentos recibidos, órdenes de compra, centros de costo y aprobaciones.
 5. **Remuneraciones**: importación de costos de personal a centros de costo y períodos, sin exponer liquidaciones a roles no autorizados.
 6. **Proyecciones**: evolución mensual con presupuesto, bloque `Real 2026`, gastos, resultado simple y desviaciones, sin modificar valores fuente.
