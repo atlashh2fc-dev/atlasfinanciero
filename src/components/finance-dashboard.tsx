@@ -25,6 +25,7 @@ import { AdministrationConsole } from "@/components/administration-console";
 import { PayrollDashboard } from "@/components/payroll-dashboard";
 import { CustomerPurchaseOrders } from "@/components/customer-purchase-orders";
 import { CustomerProfiles } from "@/components/customer-profiles";
+import { ReportsDashboard } from "@/components/reports-dashboard";
 import { isCreditNoteDocument, isPurchaseOrderDocument, recognizedNetAmount } from "@/lib/document-revenue";
 
 const calendarMonths = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
@@ -40,9 +41,10 @@ const modulePreviews: Record<Module, string> = {
   "Gastos y proveedores": "Próximamente: documentos recibidos, rendiciones, pagos y conciliación bancaria.",
   Remuneraciones: "Costo laboral y dotación sincronizados desde PeopleWork.",
   Administración: "Organizaciones, usuarios, roles e invitaciones de acceso.",
+  Reportes: "Estado de resultados, evolución y análisis financiero por período.",
 };
 
-type Module = "Inicio" | "Facturas" | "Órdenes de compra" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Recurrentes" | "Gastos y proveedores" | "Remuneraciones" | "Administración";
+type Module = "Inicio" | "Facturas" | "Órdenes de compra" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Recurrentes" | "Gastos y proveedores" | "Remuneraciones" | "Reportes" | "Administración";
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
 type AccessProfile = {
   user: { email: string | null };
@@ -148,7 +150,7 @@ function statusClass(status: string | null) {
   return "status neutral";
 }
 
-function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas" | "Órdenes de compra" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Recurrentes" | "Remuneraciones" | "Administración"> }) {
+function EmptyModule({ module }: { module: Exclude<Module, "Inicio" | "Facturas" | "Órdenes de compra" | "Proyecciones" | "Clientes" | "Cuentas por cobrar" | "Recurrentes" | "Remuneraciones" | "Reportes" | "Administración"> }) {
   const detail: Record<typeof module, string> = {
     "Gastos y proveedores": "Preparado para documentos recibidos, órdenes de compra, centros de costo y proveedores. Requiere fuente de gastos aprobada.",
   };
@@ -560,7 +562,7 @@ export function FinanceDashboard() {
     if (response.ok) window.location.assign("/");
   }
 
-  const navigation: Module[] = ["Inicio", "Facturas", "Órdenes de compra", "Recurrentes", "Clientes", "Cuentas por cobrar", "Proyecciones", "Gastos y proveedores", "Remuneraciones", "Administración"];
+  const navigation: Module[] = ["Inicio", "Facturas", "Órdenes de compra", "Recurrentes", "Clientes", "Cuentas por cobrar", "Proyecciones", "Gastos y proveedores", "Remuneraciones", "Reportes", "Administración"];
   const visibleNavigation = navigation.filter((item) => item !== "Administración" || access?.membership.role === "administrator");
 
   return (
@@ -574,7 +576,7 @@ export function FinanceDashboard() {
         <nav aria-label="Navegación principal">
           {visibleNavigation.map((item) => (
             <button key={item} type="button" className={`nav-item ${activeModule === item ? "active" : ""}`} onClick={() => setActiveModule(item)} aria-describedby={`module-preview-${item.replaceAll(" ", "-")}`}>
-              <span className="nav-icon">{item === "Inicio" ? "⌂" : item === "Facturas" ? "▤" : item === "Órdenes de compra" ? "⌑" : item === "Recurrentes" ? "↻" : item === "Proyecciones" ? "⌁" : item === "Clientes" ? "◉" : item === "Cuentas por cobrar" ? "◷" : item === "Gastos y proveedores" ? "▣" : item === "Remuneraciones" ? "◫" : "⚙"}</span>{item}
+              <span className="nav-icon">{item === "Inicio" ? "⌂" : item === "Facturas" ? "▤" : item === "Órdenes de compra" ? "⌑" : item === "Recurrentes" ? "↻" : item === "Proyecciones" ? "⌁" : item === "Clientes" ? "◉" : item === "Cuentas por cobrar" ? "◷" : item === "Gastos y proveedores" ? "▣" : item === "Remuneraciones" ? "◫" : item === "Reportes" ? "◔" : "⚙"}</span>{item}
               {item === "Facturas" && <span className="nav-count">{records.length}</span>}
               <span className="nav-preview" id={`module-preview-${item.replaceAll(" ", "-")}`} role="tooltip"><b>{item}</b>{modulePreviews[item]}</span>
             </button>
@@ -594,7 +596,7 @@ export function FinanceDashboard() {
           </div>
         </header>
 
-        {activeModule === "Inicio" ? <ExecutiveDashboard records={records} /> : activeModule === "Órdenes de compra" ? <CustomerPurchaseOrders organizationId={access?.membership.organizationId ?? null} records={records} canManage={hasEditPermission} /> : activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} organizationId={access?.membership.organizationId ?? null} canManage={hasEditPermission} /> : activeModule === "Cuentas por cobrar" ? <AccountsReceivable records={records} organizationId={access?.membership.organizationId ?? null} canManage={hasEditPermission} isPersisted={Boolean(databaseRecords)} onEditDocument={(record) => { setActiveModule("Facturas"); startDocumentEdit(record); }} /> : activeModule === "Recurrentes" ? <BillingOperations /> : activeModule === "Remuneraciones" ? <PayrollDashboard organizationId={access?.membership.organizationId ?? null} canSynchronize={access?.membership.role === "administrator"} /> : activeModule === "Administración" ? (access?.membership.role === "administrator" ? <AdministrationConsole activeOrganizationId={access.membership.organizationId} /> : null) : activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
+        {activeModule === "Inicio" ? <ExecutiveDashboard records={records} /> : activeModule === "Órdenes de compra" ? <CustomerPurchaseOrders organizationId={access?.membership.organizationId ?? null} records={records} canManage={hasEditPermission} /> : activeModule === "Proyecciones" ? <ForecastModule /> : activeModule === "Clientes" ? <CustomerModule records={records} organizationId={access?.membership.organizationId ?? null} canManage={hasEditPermission} /> : activeModule === "Cuentas por cobrar" ? <AccountsReceivable records={records} organizationId={access?.membership.organizationId ?? null} canManage={hasEditPermission} isPersisted={Boolean(databaseRecords)} onEditDocument={(record) => { setActiveModule("Facturas"); startDocumentEdit(record); }} /> : activeModule === "Recurrentes" ? <BillingOperations /> : activeModule === "Remuneraciones" ? <PayrollDashboard organizationId={access?.membership.organizationId ?? null} canSynchronize={access?.membership.role === "administrator"} /> : activeModule === "Reportes" ? <ReportsDashboard organizationId={access?.membership.organizationId ?? null} /> : activeModule === "Administración" ? (access?.membership.role === "administrator" ? <AdministrationConsole activeOrganizationId={access.membership.organizationId} /> : null) : activeModule !== "Facturas" ? <EmptyModule module={activeModule} /> : (
           <main className="dashboard">
             <section className="headline">
               <div><span className="eyebrow">OPERACIÓN · 2026</span><h1>Facturas emitidas</h1><p>Gestión documental, estados, vencimientos y trazabilidad por documento.</p></div>

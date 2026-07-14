@@ -27,15 +27,17 @@ export async function GET(request: NextRequest) {
   const yearParam = Number(request.nextUrl.searchParams.get("year"));
   const year = Number.isInteger(yearParam) && yearParam >= 2000 && yearParam <= new Date().getFullYear() ? yearParam : new Date().getFullYear();
   const month = `${year}-01-01`;
-  const [integrationResult, peopleResult, contractsResult, metricsResult, payrollResult, documentsResult] = await Promise.all([
+  const [integrationResult, peopleResult, contractsResult, metricsResult, payrollResult, documentsResult, centersResult, customerLinksResult] = await Promise.all([
     supabase.from("payroll_integrations").select("is_active, last_sync_at, last_sync_status, last_period_month").eq("organization_id", organizationId).eq("provider", "peoplework").maybeSingle(),
     supabase.from("payroll_people").select("id, full_name, national_identification, is_active, management_name, job_title").eq("organization_id", organizationId).eq("provider", "peoplework").order("full_name"),
     supabase.from("payroll_contracts").select("person_id, contract_status, contract_type, start_date, end_date, monthly_gross_salary, currency_code, weekly_hours, payment_schedule, management_name, job_title, cost_centers").eq("organization_id", organizationId).eq("provider", "peoplework"),
     supabase.from("payroll_person_period_metrics").select("person_id, absence_days, vacation_days").eq("organization_id", organizationId).eq("period_month", month),
-    supabase.from("payroll_cost_lines").select("period_month, amount").eq("organization_id", organizationId).gte("period_month", `${year}-01-01`).lte("period_month", `${year}-12-01`),
-    supabase.from("issued_documents").select("issue_date, document_type, net_amount").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
+    supabase.from("payroll_cost_lines").select("period_month, amount, cost_center_code").eq("organization_id", organizationId).gte("period_month", `${year}-01-01`).lte("period_month", `${year}-12-01`),
+    supabase.from("issued_documents").select("issue_date, document_type, net_amount, counterparty_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
+    supabase.from("cost_centers").select("id, code, name").eq("organization_id", organizationId).eq("is_active", true),
+    supabase.from("cost_center_customer_links").select("cost_center_id, counterparty_id, allocation_percentage, effective_from, effective_to").eq("organization_id", organizationId),
   ]);
-  if (integrationResult.error || peopleResult.error || contractsResult.error || metricsResult.error || payrollResult.error || documentsResult.error) return NextResponse.json({ error: "unable_to_load_peoplework_summary" }, { status: 500 });
+  if (integrationResult.error || peopleResult.error || contractsResult.error || metricsResult.error || payrollResult.error || documentsResult.error || centersResult.error || customerLinksResult.error) return NextResponse.json({ error: "unable_to_load_peoplework_summary" }, { status: 500 });
 
   const people = peopleResult.data ?? [];
   const activePeople = people.filter((person) => person.is_active);
@@ -101,6 +103,27 @@ export async function GET(request: NextRequest) {
     const payroll = payrollByMonth.get(period) ?? 0;
     return { period, revenue, payroll, operatingResultBeforeOtherExpenses: revenue - payroll, payrollAvailable: payrollByMonth.has(period) };
   });
+  const centerById = new Map((centersResult.data ?? []).map((center) => [center.id, center]));
+  const centerPerformance = new Map<string, { code: string; name: string; revenue: number; payroll: number }>();
+  for (const center of centersResult.data ?? []) centerPerformance.set(center.id, { code: center.code, name: center.name, revenue: 0, payroll: 0 });
+  const centerByCode = new Map((centersResult.data ?? []).map((center) => [center.code, center.id]));
+  for (const line of payrollResult.data ?? []) {
+    if (!line.cost_center_code) continue;
+    const centerId = centerByCode.get(line.cost_center_code);
+    const target = centerId ? centerPerformance.get(centerId) : null;
+    if (target) target.payroll += asNumber(line.amount);
+  }
+  for (const document of documentsResult.data ?? []) {
+    if (!document.issue_date || !document.counterparty_id) continue;
+    const type = normalizedType(document.document_type);
+    if (type.includes("orden de compra")) continue;
+    const net = type.includes("nota de credito") ? -Math.abs(asNumber(document.net_amount)) : asNumber(document.net_amount);
+    for (const link of customerLinksResult.data ?? []) {
+      if (link.counterparty_id !== document.counterparty_id || link.effective_from > document.issue_date || (link.effective_to && link.effective_to < document.issue_date)) continue;
+      const target = centerPerformance.get(link.cost_center_id);
+      if (target) target.revenue += net * asNumber(link.allocation_percentage) / 100;
+    }
+  }
 
   return NextResponse.json({
     integration: integrationResult.data ? { active: integrationResult.data.is_active, lastSyncAt: integrationResult.data.last_sync_at, lastSyncStatus: integrationResult.data.last_sync_status, lastPeriodMonth: integrationResult.data.last_period_month } : null,
@@ -108,5 +131,6 @@ export async function GET(request: NextRequest) {
     costCenters: [...centerTotals.values()].sort((a, b) => b.amount - a.amount),
     persons,
     incomeStatement,
+    centerPerformance: [...centerPerformance.values()].map((item) => ({ ...item, result: item.revenue - item.payroll })).sort((a, b) => b.revenue - a.revenue),
   });
 }

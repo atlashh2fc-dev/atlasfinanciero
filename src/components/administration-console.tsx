@@ -32,6 +32,10 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
   const [newTaxId, setNewTaxId] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<OrganizationRole>("auditor");
+  const [newUserName, setNewUserName] = useState("");
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserRole, setNewUserRole] = useState<OrganizationRole>("auditor");
   const [message, setMessage] = useState<string | null>(null);
   const [recoveryLink, setRecoveryLink] = useState<{ email: string; url: string } | null>(null);
   const recoveryLinkInputRef = useRef<HTMLInputElement>(null);
@@ -121,6 +125,24 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
     }
     setInviteEmail("");
     setMessage("Invitación enviada. La persona definirá su contraseña al aceptar el correo; el acceso se habilita automáticamente al finalizar.");
+    await loadMembers(organizationId);
+  }
+
+  async function createUser(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!organizationId || !newUserName.trim() || !newUserEmail.trim() || newUserPassword.length < 12) return;
+    setIsSaving(true);
+    const response = await fetch("/api/admin/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, fullName: newUserName, email: newUserEmail, password: newUserPassword, role: newUserRole }) });
+    const payload = await response.json().catch(() => null);
+    setIsSaving(false);
+    if (!response.ok) {
+      const error = readError(payload);
+      return setMessage(error === "admin_provisioning_not_configured" ? "Para crear cuentas falta configurar SUPABASE_SECRET_KEY en el servidor. La clave nunca va al navegador." : "No fue posible crear la cuenta. Revisa el correo, la contraseña o si ya existe.");
+    }
+    setNewUserName("");
+    setNewUserEmail("");
+    setNewUserPassword("");
+    setMessage("Cuenta creada y acceso asignado. La persona ya puede iniciar sesión con la contraseña definida.");
     await loadMembers(organizationId);
   }
 
@@ -226,6 +248,17 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
             <label>Correo<input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="nombre@empresa.cl" required /></label>
             <label>Rol<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as OrganizationRole)}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             <button className="primary-button" type="submit" disabled={isSaving || !organizationId}>Enviar invitación</button>
+          </form>
+        </section>
+
+        <section className="panel admin-invite-panel">
+          <div className="panel-heading"><div><span className="panel-label">ALTA DIRECTA</span><h2>Crear usuario y asignar acceso</h2><p>Para incorporaciones controladas: crea la cuenta, define su contraseña inicial y asígnala inmediatamente a esta organización.</p></div></div>
+          <form className="admin-invite-form" onSubmit={createUser}>
+            <label>Nombre completo<input value={newUserName} maxLength={160} onChange={(event) => setNewUserName(event.target.value)} placeholder="Nombre y apellido" required /></label>
+            <label>Correo<input type="email" value={newUserEmail} onChange={(event) => setNewUserEmail(event.target.value)} placeholder="nombre@empresa.cl" required /></label>
+            <label>Contraseña inicial<input type="password" minLength={12} value={newUserPassword} onChange={(event) => setNewUserPassword(event.target.value)} placeholder="Mínimo 12 caracteres" required /></label>
+            <label>Rol<select value={newUserRole} onChange={(event) => setNewUserRole(event.target.value as OrganizationRole)}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+            <button className="primary-button" type="submit" disabled={isSaving || !organizationId}>Crear usuario</button>
           </form>
         </section>
 

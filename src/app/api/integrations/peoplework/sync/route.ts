@@ -7,6 +7,8 @@ import { getPeopleWorkConfig } from "@/lib/peoplework/config";
 export const dynamic = "force-dynamic";
 
 type SyncedPerson = { id: string; external_employee_id: string; national_identification: string | null };
+type ManualAssignment = { person_id: string; cost_center_id: string; allocation_percentage: number; effective_from: string; effective_to: string | null };
+type CostCenter = { id: string; code: string; name: string };
 
 function periodMonth(year: number) {
   return `${year}-01-01`;
@@ -91,6 +93,19 @@ export async function POST(request: NextRequest) {
       if (identifier) peopleByNationalId.set(identifier, person);
     }
 
+    const { data: manualAssignmentData, error: manualAssignmentError } = await admin
+      .from("payroll_person_cost_center_assignments")
+      .select("person_id, cost_center_id, allocation_percentage, effective_from, effective_to")
+      .eq("organization_id", organizationId);
+    if (manualAssignmentError) throw new Error("No fue posible leer las asignaciones manuales de centros de costo.");
+    const manualAssignments = (manualAssignmentData ?? []) as ManualAssignment[];
+    const centerIds = [...new Set(manualAssignments.map((item) => item.cost_center_id))];
+    const { data: manualCenterData, error: manualCenterError } = centerIds.length
+      ? await admin.from("cost_centers").select("id, code, name").eq("organization_id", organizationId).in("id", centerIds)
+      : { data: [], error: null };
+    if (manualCenterError) throw new Error("No fue posible resolver los centros de costo asignados.");
+    const manualCenterById = new Map((manualCenterData ?? [] as CostCenter[]).map((center) => [center.id, center]));
+
     const contractRows = snapshot.contracts.flatMap((contract) => {
       const person = contract.employee?.id === undefined || contract.employee?.id === null ? null : peopleByExternalId.get(String(contract.employee.id));
       if (!person || contract.id === undefined || contract.id === null) return [];
@@ -127,8 +142,14 @@ export async function POST(request: NextRequest) {
     const payrollCosts = periods.flatMap((period) => snapshot.contracts.filter((contract) => isContractActiveInPeriod({ start_date: normalizePeopleWorkDate(contract.start_date), end_date: normalizePeopleWorkDate(contract.end_date) }, period)).flatMap((contract) => {
       const gross = Math.max(0, asFiniteNumber(contract.salary));
       if (!gross) return [];
+      const person = contract.employee?.id === undefined || contract.employee?.id === null ? null : peopleByExternalId.get(String(contract.employee.id));
+      const effectiveManual = person ? manualAssignments.filter((assignment) => assignment.person_id === person.id && assignment.effective_from <= period && (!assignment.effective_to || assignment.effective_to >= period)) : [];
+      const manualDistributions = effectiveManual.flatMap((assignment) => {
+        const center = manualCenterById.get(assignment.cost_center_id);
+        return center ? [{ code: center.code, name: center.name, percentage: asFiniteNumber(assignment.allocation_percentage) }] : [];
+      });
       const centers = sanitizeCostCenters(contract.cost_center);
-      const distributions = centers.length ? centers : [{ code: null, name: "Sin centro asignado", percentage: 100 }];
+      const distributions = manualDistributions.length ? manualDistributions : centers.length ? centers : [{ code: null, name: "Sin centro asignado", percentage: 100 }];
       return distributions.map((center) => ({
         organization_id: organizationId,
         sync_run_id: syncRun.id,
