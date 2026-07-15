@@ -23,6 +23,20 @@ function positive(value: unknown) {
 function isPaid(status: string | null) {
   return status?.toLocaleLowerCase().includes("pagada") ?? false;
 }
+function sameSupplier(
+  left: { supplier_counterparty_id: string | null; supplier_name: string | null },
+  right: { supplier_counterparty_id: string | null; supplier_name: string | null },
+) {
+  if (left.supplier_counterparty_id && right.supplier_counterparty_id) return left.supplier_counterparty_id === right.supplier_counterparty_id;
+  const normalize = (value: string | null) => (value ?? "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  return Boolean(normalize(left.supplier_name)) && normalize(left.supplier_name) === normalize(right.supplier_name);
+}
+function isReceivedOrder(status: string) {
+  return status === "received" || status === "partially_received";
+}
+function amountMatchesOrder(documentTotal: number | string | null, orderTotal: number | string | null) {
+  return Number(documentTotal ?? 0) > 0 && Number(documentTotal ?? 0) <= Number(orderTotal ?? 0) + 0.01;
+}
 async function canWriteProcurement(
   supabase: NonNullable<Awaited<ReturnType<typeof requireOrganizationProcurementAccess>>["supabase"]>,
   organizationId: string,
@@ -58,15 +72,31 @@ export async function GET(request: NextRequest) {
     context.supabase.from("vendor_purchase_order_lines").select("id, purchase_order_id, line_number, description, quantity, unit_price, net_amount, received_quantity, cost_center_id").eq("organization_id", organizationId).order("line_number"),
     context.supabase.from("payment_batches").select("id, batch_number, bank_account_id, scheduled_for, currency_code, total_amount, status, notes, submitted_at, approved_at, processed_at, paid_at, payment_reference, cancellation_reason").eq("organization_id", organizationId).order("scheduled_for", { ascending: false }).limit(100),
     context.supabase.from("payment_batch_items").select("id, payment_batch_id, received_document_id, supplier_name_snapshot, document_number_snapshot, due_date_snapshot, amount").eq("organization_id", organizationId),
-    context.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, document_number, issue_date, due_date, total_amount, payment_status, vendor_purchase_order_id").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
+    context.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, document_number, issue_date, due_date, net_amount, total_amount, payment_status, vendor_purchase_order_id, purchase_match_status, purchase_match_approved_at, purchase_match_approved_by").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
     context.supabase.from("counterparties").select("id, legal_name, trade_name, tax_id").eq("organization_id", organizationId).in("kind", ["supplier", "both"]).eq("is_active", true).order("legal_name"),
     context.supabase.from("bank_accounts").select("id, name, bank_name, account_number_masked").eq("organization_id", organizationId).eq("is_active", true).order("name"),
   ]);
   if ([requests, orders, orderLines, batches, batchItems, documents, suppliers, bankAccounts].some((result) => result.error)) return NextResponse.json({ error: "unable_to_load_procure_to_pay" }, { status: 500 });
+  const activeBatchIds = new Set((batches.data ?? []).filter((batch) => !["cancelled", "paid"].includes(batch.status)).map((batch) => batch.id));
+  const reservedDocumentIds = new Set((batchItems.data ?? []).filter((item) => activeBatchIds.has(item.payment_batch_id)).map((item) => item.received_document_id));
+  const ordersById = new Map((orders.data ?? []).map((order) => [order.id, order]));
+  const availableDocuments = (documents.data ?? []).filter((document) => !isPaid(document.payment_status)).map((document) => {
+    const order = document.vendor_purchase_order_id ? ordersById.get(document.vendor_purchase_order_id) : null;
+    const approvedException = document.purchase_match_status === "exception" && Boolean(document.purchase_match_approved_at && document.purchase_match_approved_by);
+    const matchedOrder = document.purchase_match_status === "matched" && order
+      ? isReceivedOrder(order.status) && sameSupplier(document, order) && amountMatchesOrder(document.total_amount, order.total_amount)
+      : false;
+    const paymentEligible = document.purchase_match_status === "not_required"
+      ? !reservedDocumentIds.has(document.id)
+      : approvedException
+        ? !reservedDocumentIds.has(document.id)
+        : matchedOrder && !reservedDocumentIds.has(document.id);
+    return { ...document, payment_eligible: paymentEligible, payment_block_reason: paymentEligible ? null : document.purchase_match_status === "pending" ? "purchase_match_pending" : document.purchase_match_status === "rejected" ? "purchase_match_rejected" : document.purchase_match_status === "exception" ? "purchase_match_exception_not_approved" : !order ? "missing_purchase_order" : !isReceivedOrder(order.status) ? "purchase_order_not_received" : !sameSupplier(document, order) ? "supplier_mismatch" : !amountMatchesOrder(document.total_amount, order.total_amount) ? "amount_mismatch" : "already_in_payment_batch" };
+  });
   return NextResponse.json({
     purchaseRequests: requests.data ?? [], purchaseOrders: orders.data ?? [], purchaseOrderLines: orderLines.data ?? [],
     paymentBatches: batches.data ?? [], paymentBatchItems: batchItems.data ?? [],
-    receivedDocuments: (documents.data ?? []).filter((document) => !isPaid(document.payment_status)),
+    receivedDocuments: availableDocuments,
     suppliers: suppliers.data ?? [], bankAccounts: bankAccounts.data ?? [],
   });
 }
@@ -76,7 +106,7 @@ export async function POST(request: NextRequest) {
   const organizationId = body?.organizationId;
   if (!isUuid(organizationId)) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   const action = body?.action;
-  const financeOnly = action === "create_payment_batch";
+  const financeOnly = action === "create_payment_batch" || action === "link_received_document_to_purchase_order";
   const context = financeOnly ? await requireOrganizationFinanceAccess(organizationId) : await requireOrganizationProcurementAccess(organizationId);
   if (context.error || !context.supabase || !context.user) return NextResponse.json({ error: context.error }, { status: context.status });
   if (!financeOnly && !(await canWriteProcurement(context.supabase, organizationId, context.user.id))) return NextResponse.json({ error: "procure_write_access_required" }, { status: 403 });
@@ -96,16 +126,41 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ id: data.id }, { status: 201 });
   }
 
-  if (action === "create_purchase_order") {
+  if (action === "create_purchase_order_from_request") {
     const purchaseOrderNumber = text(body?.purchaseOrderNumber, 100, true);
-    const supplierName = text(body?.supplierName, 300, true);
     const orderedOn = date(body?.orderedOn) ?? new Date().toISOString().slice(0, 10);
     const expectedOn = body?.expectedOn ? date(body.expectedOn) : null;
-    const supplierId = body?.supplierId ? (isUuid(body.supplierId) ? body.supplierId : null) : null;
     const purchaseRequestId = body?.purchaseRequestId ? (isUuid(body.purchaseRequestId) ? body.purchaseRequestId : null) : null;
-    const orderLines = lines(body?.lines);
-    if (!purchaseOrderNumber || !supplierName || !orderLines || (body?.expectedOn && !expectedOn) || (body?.supplierId && !supplierId) || (body?.purchaseRequestId && !purchaseRequestId)) return NextResponse.json({ error: "invalid_vendor_purchase_order" }, { status: 400 });
-    const { data: order, error: orderError } = await context.supabase.from("vendor_purchase_orders").insert({ organization_id: organizationId, purchase_order_number: purchaseOrderNumber, purchase_request_id: purchaseRequestId, supplier_counterparty_id: supplierId, supplier_name: supplierName, supplier_tax_id: text(body?.supplierTaxId, 30), ordered_on: orderedOn, expected_on: expectedOn, currency_code: "CLP", notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
+    if ((body?.expectedOn && !expectedOn) || !purchaseRequestId || (expectedOn && expectedOn < orderedOn)) return NextResponse.json({ error: "invalid_vendor_purchase_order" }, { status: 400 });
+
+    let supplierName: string | null;
+    let supplierId: string | null;
+    let supplierTaxId: string | null;
+    let currencyCode = "CLP";
+    let orderLines: ReturnType<typeof lines>;
+    let sourceRequest: { id: string; needed_by: string | null; notes: string | null } | null = null;
+
+    const { data: requestItem, error: requestError } = await context.supabase
+      .from("purchase_requests")
+      .select("id, request_number, supplier_counterparty_id, supplier_name, description, needed_by, cost_center_id, currency_code, estimated_amount, notes, status")
+      .eq("id", purchaseRequestId).eq("organization_id", organizationId).maybeSingle();
+    if (requestError || !requestItem || requestItem.status !== "approved") return NextResponse.json({ error: "approved_purchase_request_required" }, { status: 409 });
+    const { data: existingOrder, error: existingOrderError } = await context.supabase
+      .from("vendor_purchase_orders").select("id").eq("organization_id", organizationId).eq("purchase_request_id", purchaseRequestId).neq("status", "cancelled").limit(1).maybeSingle();
+    if (existingOrderError) return NextResponse.json({ error: "unable_to_validate_purchase_request" }, { status: 500 });
+    if (existingOrder) return NextResponse.json({ error: "purchase_request_already_has_order" }, { status: 409 });
+    supplierName = requestItem.supplier_name;
+    supplierId = requestItem.supplier_counterparty_id;
+    currencyCode = requestItem.currency_code;
+    orderLines = [{ description: requestItem.description, quantity: 1, unitPrice: Number(requestItem.estimated_amount), netAmount: Number(requestItem.estimated_amount), costCenterId: requestItem.cost_center_id }];
+    sourceRequest = { id: requestItem.id, needed_by: requestItem.needed_by, notes: requestItem.notes };
+    if (supplierId) {
+      const { data: supplier } = await context.supabase.from("counterparties").select("tax_id").eq("id", supplierId).eq("organization_id", organizationId).maybeSingle();
+      supplierTaxId = supplier?.tax_id ?? null;
+    } else supplierTaxId = null;
+    if (!purchaseOrderNumber || !supplierName || !orderLines) return NextResponse.json({ error: "invalid_vendor_purchase_order" }, { status: 400 });
+    const inheritedExpectedOn = sourceRequest?.needed_by && sourceRequest.needed_by >= orderedOn ? sourceRequest.needed_by : null;
+    const { data: order, error: orderError } = await context.supabase.from("vendor_purchase_orders").insert({ organization_id: organizationId, purchase_order_number: purchaseOrderNumber, purchase_request_id: sourceRequest?.id ?? null, supplier_counterparty_id: supplierId, supplier_name: supplierName, supplier_tax_id: supplierTaxId, ordered_on: orderedOn, expected_on: expectedOn ?? inheritedExpectedOn, currency_code: currencyCode, notes: text(body?.notes, 2_000) ?? sourceRequest?.notes ?? null, created_by: context.user.id }).select("id").single();
     if (orderError || !order) return NextResponse.json({ error: "unable_to_create_vendor_purchase_order" }, { status: 409 });
     const { error: linesError } = await context.supabase.from("vendor_purchase_order_lines").insert(orderLines.map((line, index) => ({ organization_id: organizationId, purchase_order_id: order.id, line_number: index + 1, description: line.description, quantity: line.quantity, unit_price: line.unitPrice, net_amount: line.netAmount, cost_center_id: line.costCenterId })));
     if (linesError) {
@@ -115,14 +170,57 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ id: order.id }, { status: 201 });
   }
 
+  if (action === "link_received_document_to_purchase_order") {
+    const receivedDocumentId = isUuid(body?.receivedDocumentId) ? body.receivedDocumentId : null;
+    const purchaseOrderId = isUuid(body?.purchaseOrderId) ? body.purchaseOrderId : null;
+    if (!receivedDocumentId || !purchaseOrderId) return NextResponse.json({ error: "invalid_document_purchase_order_link" }, { status: 400 });
+    const [{ data: document, error: documentError }, { data: order, error: orderError }] = await Promise.all([
+      context.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, total_amount, payment_status, vendor_purchase_order_id").eq("id", receivedDocumentId).eq("organization_id", organizationId).maybeSingle(),
+      context.supabase.from("vendor_purchase_orders").select("id, supplier_counterparty_id, supplier_name, total_amount, status").eq("id", purchaseOrderId).eq("organization_id", organizationId).maybeSingle(),
+    ]);
+    if (documentError || orderError || !document || !order) return NextResponse.json({ error: "document_or_purchase_order_not_found" }, { status: 404 });
+    if (isPaid(document.payment_status)) return NextResponse.json({ error: "paid_document_cannot_be_linked" }, { status: 409 });
+    if (document.vendor_purchase_order_id && document.vendor_purchase_order_id !== order.id) return NextResponse.json({ error: "document_already_linked_to_another_purchase_order" }, { status: 409 });
+    if (!isReceivedOrder(order.status) || !sameSupplier(document, order) || !amountMatchesOrder(document.total_amount, order.total_amount)) return NextResponse.json({ error: "document_does_not_match_purchase_order" }, { status: 409 });
+    const { data: linkedDocuments, error: linkedDocumentsError } = await context.supabase.from("received_documents").select("id, total_amount").eq("organization_id", organizationId).eq("vendor_purchase_order_id", order.id).neq("id", document.id);
+    const linkedTotal = (linkedDocuments ?? []).reduce((sum, item) => sum + Number(item.total_amount ?? 0), Number(document.total_amount ?? 0));
+    if (linkedDocumentsError || linkedTotal > Number(order.total_amount ?? 0) + 0.01) return NextResponse.json({ error: linkedDocumentsError ? "unable_to_validate_purchase_order_amount" : "purchase_order_amount_exceeded" }, { status: 409 });
+    const { data, error } = await context.supabase.from("received_documents").update({ vendor_purchase_order_id: order.id, purchase_match_status: "matched", purchase_match_note: null }).eq("id", document.id).eq("organization_id", organizationId).select("id, vendor_purchase_order_id").maybeSingle();
+    if (error || !data) return NextResponse.json({ error: "unable_to_link_received_document" }, { status: 409 });
+    return NextResponse.json({ document: data });
+  }
+
   if (action === "create_payment_batch") {
     const batchNumber = text(body?.batchNumber, 100, true);
     const scheduledFor = date(body?.scheduledFor);
     const bankAccountId = body?.bankAccountId ? (isUuid(body.bankAccountId) ? body.bankAccountId : null) : null;
     const documentIds = Array.isArray(body?.documentIds) && body.documentIds.length > 0 && body.documentIds.length <= 250 && body.documentIds.every(isUuid) ? body.documentIds as string[] : null;
     if (!batchNumber || !scheduledFor || !documentIds || (body?.bankAccountId && !bankAccountId)) return NextResponse.json({ error: "invalid_payment_batch" }, { status: 400 });
-    const { data: documents, error: documentsError } = await context.supabase.from("received_documents").select("id, supplier_name, document_number, due_date, total_amount, payment_status").eq("organization_id", organizationId).in("id", documentIds);
+    if (new Set(documentIds).size !== documentIds.length) return NextResponse.json({ error: "duplicated_payment_documents" }, { status: 400 });
+    const { data: documents, error: documentsError } = await context.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, document_number, due_date, total_amount, payment_status, vendor_purchase_order_id, purchase_match_status, purchase_match_approved_at, purchase_match_approved_by").eq("organization_id", organizationId).in("id", documentIds);
     if (documentsError || !documents || documents.length !== documentIds.length || documents.some((document) => isPaid(document.payment_status) || Number(document.total_amount) <= 0)) return NextResponse.json({ error: "payment_documents_not_available" }, { status: 409 });
+    const purchaseOrderIds = [...new Set(documents.map((document) => document.vendor_purchase_order_id).filter((id): id is string => Boolean(id)))];
+    const [{ data: purchaseOrders, error: purchaseOrdersError }, { data: linkedDocuments, error: linkedDocumentsError }, { data: existingItems, error: existingItemsError }] = await Promise.all([
+      context.supabase.from("vendor_purchase_orders").select("id, supplier_counterparty_id, supplier_name, total_amount, status").eq("organization_id", organizationId).in("id", purchaseOrderIds),
+      context.supabase.from("received_documents").select("vendor_purchase_order_id, total_amount").eq("organization_id", organizationId).in("vendor_purchase_order_id", purchaseOrderIds),
+      context.supabase.from("payment_batch_items").select("payment_batch_id, received_document_id").eq("organization_id", organizationId).in("received_document_id", documentIds),
+    ]);
+    if (purchaseOrdersError || linkedDocumentsError || existingItemsError || !purchaseOrders) return NextResponse.json({ error: "unable_to_validate_payment_documents" }, { status: 500 });
+    const ordersById = new Map(purchaseOrders.map((order) => [order.id, order]));
+    const totalsByOrder = new Map<string, number>();
+    for (const item of linkedDocuments ?? []) if (item.vendor_purchase_order_id) totalsByOrder.set(item.vendor_purchase_order_id, (totalsByOrder.get(item.vendor_purchase_order_id) ?? 0) + Number(item.total_amount ?? 0));
+    if (documents.some((document) => {
+      if (document.purchase_match_status === "not_required") return false;
+      if (document.purchase_match_status === "exception") return !(document.purchase_match_approved_at && document.purchase_match_approved_by);
+      const order = document.vendor_purchase_order_id ? ordersById.get(document.vendor_purchase_order_id) : null;
+      return document.purchase_match_status !== "matched" || !order || !isReceivedOrder(order.status) || !sameSupplier(document, order) || !amountMatchesOrder(document.total_amount, order.total_amount) || (totalsByOrder.get(order.id) ?? 0) > Number(order.total_amount ?? 0) + 0.01;
+    })) return NextResponse.json({ error: "payment_documents_not_validated_against_purchase_order" }, { status: 409 });
+    const existingBatchIds = [...new Set((existingItems ?? []).map((item) => item.payment_batch_id))];
+    if (existingBatchIds.length) {
+      const { data: existingBatches, error: existingBatchesError } = await context.supabase.from("payment_batches").select("id, status").eq("organization_id", organizationId).in("id", existingBatchIds);
+      if (existingBatchesError) return NextResponse.json({ error: "unable_to_validate_payment_documents" }, { status: 500 });
+      if ((existingBatches ?? []).some((batch) => batch.status !== "cancelled" && batch.status !== "paid")) return NextResponse.json({ error: "payment_document_already_reserved" }, { status: 409 });
+    }
     const { data: batch, error: batchError } = await context.supabase.from("payment_batches").insert({ organization_id: organizationId, batch_number: batchNumber, bank_account_id: bankAccountId, scheduled_for: scheduledFor, currency_code: "CLP", notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
     if (batchError || !batch) return NextResponse.json({ error: "unable_to_create_payment_batch" }, { status: 409 });
     const { error: itemsError } = await context.supabase.from("payment_batch_items").insert(documents.map((document) => ({ organization_id: organizationId, payment_batch_id: batch.id, received_document_id: document.id, supplier_name_snapshot: document.supplier_name, document_number_snapshot: document.document_number, due_date_snapshot: document.due_date, amount: document.total_amount })));
