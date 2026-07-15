@@ -1679,20 +1679,21 @@ export function FinanceDashboard() {
   }, []);
 
   useEffect(() => {
-    if (!showEntry || !access) return;
+    const organizationId = access?.membership.organizationId;
+    if (!showEntry || !organizationId) return;
     let active = true;
     setLoadingDocumentSources(true);
-    fetch(`/api/customer-profiles?organizationId=${encodeURIComponent(access.membership.organizationId)}`, { cache: "no-store" })
+    fetch(`/api/customer-profiles?organizationId=${encodeURIComponent(organizationId)}`, { cache: "no-store" })
       .then((response) => response.ok ? response.json() as Promise<{ customers: DocumentCustomer[]; contacts: DocumentContact[] }> : null)
       .then((payload) => {
         if (!active || !payload) return;
-        setDocumentCustomers(payload.customers);
-        setDocumentContacts(payload.contacts);
+        setDocumentCustomers(Array.isArray(payload.customers) ? payload.customers : []);
+        setDocumentContacts(Array.isArray(payload.contacts) ? payload.contacts : []);
       })
       .catch(() => undefined)
       .finally(() => { if (active) setLoadingDocumentSources(false); });
     return () => { active = false; };
-  }, [showEntry, access]);
+  }, [showEntry, access?.membership.organizationId]);
 
   useEffect(() => {
     let active = true;
@@ -1717,8 +1718,8 @@ export function FinanceDashboard() {
     () => databaseRecords ?? [...facturasEmitidas2026, ...sessionRecords],
     [databaseRecords, sessionRecords],
   );
-  const contactsForDraftCustomer = useMemo(() => documentContacts.filter((contact) => contact.counterparty_id === draft.clientId), [documentContacts, draft.clientId]);
-  const selectedDraftCustomer = useMemo(() => documentCustomers.find((customer) => customer.id === draft.clientId) ?? null, [documentCustomers, draft.clientId]);
+  const contactsForDraftCustomer = useMemo(() => (documentContacts ?? []).filter((contact) => contact.counterparty_id === draft.clientId), [documentContacts, draft.clientId]);
+  const selectedDraftCustomer = useMemo(() => (documentCustomers ?? []).find((customer) => customer.id === draft.clientId) ?? null, [documentCustomers, draft.clientId]);
   const entryNetAmount = Number(draft.netAmount || 0);
   const entryVatAmount = draft.documentType === "Factura afecta" ? Math.round(entryNetAmount * 0.19 * 100) / 100 : 0;
   const entryTotalAmount = Math.round((entryNetAmount + entryVatAmount) * 100) / 100;

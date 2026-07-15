@@ -70,13 +70,9 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
     setSyncing(false);
   }
 
-  if (loading) return <main className="dashboard"><p className="operation-message">Cargando módulo de remuneraciones…</p></main>;
-  if (!payload) return <main className="dashboard"><p className="operation-message">{message ?? "No hay información disponible."}</p></main>;
-
-  const { summary } = payload;
   const peopleByArea = useMemo(() => {
     const groups = new Map<string, PayrollPerson[]>();
-    for (const person of payload.persons) {
+    for (const person of payload?.persons ?? []) {
       const area = person.management?.trim() || "Sin área informada";
       groups.set(area, [...(groups.get(area) ?? []), person]);
     }
@@ -91,7 +87,12 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
         vacations: people.reduce((total, person) => total + person.vacationDays, 0),
       }))
       .sort((left, right) => right.active - left.active || right.people.length - left.people.length || left.area.localeCompare(right.area));
-  }, [payload.persons]);
+  }, [payload?.persons]);
+
+  if (loading) return <main className="dashboard"><p className="operation-message">Cargando módulo de remuneraciones…</p></main>;
+  if (!payload) return <main className="dashboard"><p className="operation-message">{message ?? "No hay información disponible."}</p></main>;
+
+  const { summary } = payload;
 
   function toggleArea(area: string) {
     setExpandedAreas((current) => {
