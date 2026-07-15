@@ -115,20 +115,26 @@ export async function GET(request: NextRequest) {
       .eq("is_active", true)
       .order("created_at"),
     data.supabase.from("service_catalog")
-      .select("id, name")
+      .select("id, name, category")
       .eq("organization_id", data.organizationId),
   ]);
   if (preinvoices.error || lines.error || customers.error || documents.error || services.error || catalog.error) {
     return NextResponse.json({ error: "unable_to_load_preinvoices" }, { status: 500 });
   }
-  const catalogNames = new Map((catalog.data ?? []).map((item) => [item.id, item.name]));
+  const catalogById = new Map((catalog.data ?? []).map((item) => [item.id, item]));
   return NextResponse.json({
     role: data.membership.role,
     preinvoices: preinvoices.data ?? [],
-    lines: lines.data ?? [],
+    lines: (lines.data ?? []).map((line) => {
+      const catalogItem = line.service_catalog_id ? catalogById.get(line.service_catalog_id) : null;
+      return { ...line, service_name: catalogItem?.name ?? null, service_category: catalogItem?.category ?? null };
+    }),
     customers: customers.data ?? [],
     documents: documents.data ?? [],
-    services: (services.data ?? []).map((service) => ({ ...service, service_name: catalogNames.get(service.service_catalog_id) ?? "Servicio contratado" })),
+    services: (services.data ?? []).map((service) => {
+      const catalogItem = catalogById.get(service.service_catalog_id);
+      return { ...service, service_name: catalogItem?.name ?? "Servicio contratado", service_category: catalogItem?.category ?? null };
+    }),
   });
 }
 

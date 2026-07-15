@@ -4,10 +4,10 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type Role = "administrator" | "finance" | "operations" | "auditor";
 type Customer = { id: string; legal_name: string; trade_name: string | null };
-type CustomerService = { id: string; counterparty_id: string; service_catalog_id: string; service_name: string; quantity: number; unit_price: number; currency: string; starts_on: string | null; ends_on: string | null; billing_frequency: "monthly" | "quarterly" | "annual" | "one_time" };
+type CustomerService = { id: string; counterparty_id: string; service_catalog_id: string; service_name: string; service_category: string | null; quantity: number; unit_price: number; currency: string; starts_on: string | null; ends_on: string | null; billing_frequency: "monthly" | "quarterly" | "annual" | "one_time" };
 type ServiceDraft = { customerServiceId: string; description: string; quantity: string; unitPrice: string; notes: string };
 type IssuedDocument = { id: string; counterparty_id: string | null; document_number: string | null; issue_date: string | null; total_amount: number | null; client_name: string | null };
-type Line = { id: string; preinvoice_id: string; description: string; quantity: number; unit_price: number; net_amount: number; source_currency: string; source_unit_price: number; conversion_rate_to_clp: number; pricing_date: string; rate_source: string; usage_quantity: number | null; notes: string | null };
+type Line = { id: string; preinvoice_id: string; description: string; quantity: number; unit_price: number; net_amount: number; source_currency: string; source_unit_price: number; conversion_rate_to_clp: number; pricing_date: string; rate_source: string; usage_quantity: number | null; notes: string | null; service_name: string | null; service_category: string | null };
 type Preinvoice = {
   id: string;
   counterparty_id: string;
@@ -35,6 +35,11 @@ const numberInput = (value: number | string) => String(value);
 
 function monthName(month: string) {
   return new Intl.DateTimeFormat("es-CL", { month: "long", year: "numeric" }).format(new Date(`${month}T00:00:00`));
+}
+
+function lineLabel(line: Line) {
+  const service = [line.service_category, line.service_name].filter(Boolean).join(" · ");
+  return service && line.description !== line.service_name && line.description !== service ? `${service} — ${line.description}` : service || line.description;
 }
 
 export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organizationId: string | null; onOpenApprovals?: () => void }) {
@@ -81,7 +86,8 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
       return;
     }
     setSelectedServiceIds((current) => [...current, serviceId]);
-    setServiceDrafts((drafts) => ({ ...drafts, [serviceId]: { customerServiceId: serviceId, description: service.service_name, quantity: numberInput(service.quantity), unitPrice: numberInput(service.unit_price), notes: "" } }));
+    const defaultGloss = service.service_category ? `${service.service_category} · ${service.service_name}` : service.service_name;
+    setServiceDrafts((drafts) => ({ ...drafts, [serviceId]: { customerServiceId: serviceId, description: defaultGloss, quantity: numberInput(service.quantity), unitPrice: numberInput(service.unit_price), notes: "" } }));
   }
 
   function updateServiceDraft(serviceId: string, values: Partial<ServiceDraft>) {
@@ -148,7 +154,7 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
             const selected = selectedServiceIds.includes(service.id);
             const draft = serviceDrafts[service.id];
             return <article className={`preinvoice-service-card${selected ? " is-selected" : ""}`} key={service.id}>
-              <label className="preinvoice-service-toggle"><input type="checkbox" checked={selected} onChange={() => toggleService(service.id)} /><span><strong>{service.service_name}</strong><small>{frequencyLabel[service.billing_frequency]} · Contratado: {service.quantity} × {service.currency} {money.format(Number(service.unit_price))}</small></span></label>
+              <label className="preinvoice-service-toggle"><input type="checkbox" checked={selected} onChange={() => toggleService(service.id)} /><span><strong>{service.service_category ? `${service.service_category} · ` : ""}{service.service_name}</strong><small>{frequencyLabel[service.billing_frequency]} · Contratado: {service.quantity} × {service.currency} {money.format(Number(service.unit_price))}</small></span></label>
               {selected && draft && <div className="preinvoice-service-editors">
                 <label className="preinvoice-gloss">Glosa<input value={draft.description} maxLength={500} onChange={(event) => updateServiceDraft(service.id, { description: event.target.value })} required /></label>
                 <label>Cantidad<input type="number" min="0.0001" step="0.0001" value={draft.quantity} onChange={(event) => updateServiceDraft(service.id, { quantity: event.target.value })} required /></label>
@@ -175,7 +181,7 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
           const customer = customers.get(preinvoice.counterparty_id);
           const lines = linesByPreinvoice.get(preinvoice.id) ?? [];
           const docs = matchingDocuments(preinvoice);
-          return <tr key={preinvoice.id}><td><strong>{customer?.trade_name || customer?.legal_name || "Cliente"}</strong><small>{lines.length ? lines.map((line) => `${line.source_currency === "UF" ? `${line.description} (${line.quantity} × UF ${money.format(Number(line.source_unit_price))}; SII ${line.pricing_date} = CLP ${money.format(Number(line.conversion_rate_to_clp))})` : `${line.description} (${line.quantity} × CLP ${money.format(Number(line.unit_price))})`}${line.notes ? ` — ${line.notes}` : ""}`).join(" · ") : "Sin líneas de servicio"}</small><small>Fecha de valorización: {preinvoice.pricing_date}</small></td><td>{preinvoice.currency_code}</td><td className="money-col">{money.format(Number(preinvoice.total_amount))}</td><td><span className={`status ${preinvoice.status === "draft" ? "pending" : preinvoice.status === "review" ? "pending" : preinvoice.status === "approved" || preinvoice.status === "issued" ? "paid" : "cancelled"}`}>{labelForStatus[preinvoice.status]}</span></td><td><div className="cycle-actions">
+          return <tr key={preinvoice.id}><td><strong>{customer?.trade_name || customer?.legal_name || "Cliente"}</strong><small>{lines.length ? lines.map((line) => `${line.source_currency === "UF" ? `${lineLabel(line)} (${line.quantity} × UF ${money.format(Number(line.source_unit_price))}; SII ${line.pricing_date} = CLP ${money.format(Number(line.conversion_rate_to_clp))})` : `${lineLabel(line)} (${line.quantity} × CLP ${money.format(Number(line.unit_price))})`}${line.notes ? ` — ${line.notes}` : ""}`).join(" · ") : "Sin líneas de servicio"}</small><small>Fecha de valorización: {preinvoice.pricing_date}</small></td><td>{preinvoice.currency_code}</td><td className="money-col">{money.format(Number(preinvoice.total_amount))}</td><td><span className={`status ${preinvoice.status === "draft" ? "pending" : preinvoice.status === "review" ? "pending" : preinvoice.status === "approved" || preinvoice.status === "issued" ? "paid" : "cancelled"}`}>{labelForStatus[preinvoice.status]}</span></td><td><div className="cycle-actions">
             {preinvoice.status === "draft" && canWrite && <><button type="button" className="secondary-button" disabled={saving || !lines.length} onClick={() => void transition(preinvoice.id, "submit_review")}>Enviar a revisión</button>{canApprove && <button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button>}</>}
             {preinvoice.status === "review" && <><small>Decisión pendiente en Aprobaciones</small>{onOpenApprovals && <button type="button" className="secondary-button" disabled={saving} onClick={onOpenApprovals}>Ver aprobación</button>}{canApprove && <><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "return_to_draft")}>Devolver</button><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button></>}</>}
             {preinvoice.status === "approved" && canApprove && <><select aria-label="Factura emitida" value={documentByPreinvoice[preinvoice.id] ?? ""} onChange={(event) => setDocumentByPreinvoice((current) => ({ ...current, [preinvoice.id]: event.target.value }))}><option value="">Factura emitida…</option>{docs.map((document) => <option key={document.id} value={document.id}>{document.document_number || "Sin folio"} · {document.issue_date || "sin fecha"} · CLP {money.format(Number(document.total_amount ?? 0))}</option>)}</select><button type="button" className="primary-button" disabled={saving || !docs.length} onClick={() => void transition(preinvoice.id, "issue")}>Vincular emisión</button><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button></>}
