@@ -829,6 +829,45 @@ button {
   outline: 2px solid #7b89e7;
   outline-offset: -2px;
 }
+.cost-center-groups {
+  display: grid;
+  gap: 10px;
+  padding: 0 20px 20px;
+}
+.cost-center-group {
+  overflow: hidden;
+  border: 1px solid #e1e6ee;
+  border-radius: 10px;
+}
+.cost-center-group-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border: 0;
+  padding: 13px 15px;
+  background: #f8faff;
+  color: #334057;
+  text-align: left;
+}
+.cost-center-group-toggle:hover {
+  background: #f1f4ff;
+}
+.cost-center-group-toggle > span:last-child {
+  display: grid;
+  gap: 3px;
+}
+.cost-center-group-toggle strong {
+  font-size: 12px;
+}
+.cost-center-group-toggle small {
+  color: #7d8ba0;
+  font-size: 10px;
+}
+.cost-center-group-chevron {
+  color: #5e6dd0;
+  font-size: 16px;
+}
 .table-scroll {
   overflow: auto;
   border-top: 1px solid #edf0f4;
