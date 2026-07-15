@@ -2168,6 +2168,17 @@ td small {
   font-size: 10px;
 }
 .service-assignment { grid-template-columns: minmax(130px, 1.6fr) repeat(3, minmax(80px, 1fr)); }
+.service-assignment .uf-reference-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: #f2f5fa;
+  color: #64738a;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+}
 .service-assignment .primary-button { grid-column: 1 / -1; justify-self: start; }
 .service-catalog-panel { margin: 0 0 18px; }
 .form-field-wide { grid-column: 1 / -1; }
