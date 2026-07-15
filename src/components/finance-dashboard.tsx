@@ -81,6 +81,8 @@ const modulePreviews: Record<Module, string> = {
     "Evolución comercial y ficha tributaria, facturación y contactos por área de cada cliente.",
   "Cuentas por cobrar":
     "Cartera pendiente por vencimiento, gestión, compromisos de pago y factoring.",
+  Proyecciones:
+    "Modelo ERP existente con forecast mensual, escenarios y diferencias contra la información real.",
   "Planificación financiera":
     "Presupuesto versionado, caja semanal de 13 semanas y rentabilidad por cliente y servicio.",
   "Cuentas por pagar":
@@ -105,6 +107,7 @@ type Module =
   | "Inicio"
   | "Facturas"
   | "OC de clientes"
+  | "Proyecciones"
   | "Planificación financiera"
   | "Clientes"
   | "Cuentas por cobrar"
@@ -120,26 +123,30 @@ type Module =
   | "Reportes"
   | "Administración";
 const navigationGroups: Array<{ label: string; items: Module[] }> = [
-  { label: "VISIÓN GENERAL", items: ["Inicio"] },
+  { label: "RESUMEN", items: ["Inicio"] },
   {
-    label: "OPERACIÓN COMERCIAL",
+    label: "INGRESOS",
     items: [
-      "Facturas",
-      "OC de clientes",
-      "Recurrentes",
-      "Prefacturación",
       "Clientes",
+      "Prefacturación",
+      "Facturas",
+      "Recurrentes",
       "Cuentas por cobrar",
+      "OC de clientes",
     ],
   },
-  { label: "PLANIFICACIÓN", items: ["Planificación financiera"] },
   {
-    label: "GESTIÓN INTERNA",
-    items: ["Cuentas por pagar", "Compras y lotes de pago", "Tesorería", "Remuneraciones", "Centros de costo"],
+    label: "COMPRAS Y CAJA",
+    items: ["Compras y lotes de pago", "Cuentas por pagar", "Tesorería"],
   },
-  { label: "ANÁLISIS", items: ["Reportes"] },
-  { label: "CONTROL", items: ["Aprobaciones", "Cierre financiero"] },
-  { label: "GOBIERNO", items: ["Administración"] },
+  {
+    label: "PLANIFICACIÓN Y ANÁLISIS",
+    items: ["Proyecciones", "Planificación financiera", "Centros de costo", "Reportes"],
+  },
+  {
+    label: "PERSONAS Y CONTROL",
+    items: ["Remuneraciones", "Aprobaciones", "Cierre financiero", "Administración"],
+  },
 ];
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
 type AccessProfile = {
@@ -284,6 +291,7 @@ function EmptyModule({
     | "Inicio"
     | "Facturas"
     | "OC de clientes"
+    | "Proyecciones"
     | "Planificación financiera"
     | "Clientes"
     | "Cuentas por cobrar"
@@ -1613,6 +1621,9 @@ function mapStoredDocument(document: StoredDocument): InvoiceRecord {
 
 export function FinanceDashboard() {
   const [activeModule, setActiveModule] = useState<Module>("Inicio");
+  const [expandedNavigationGroups, setExpandedNavigationGroups] = useState<string[]>([
+    "RESUMEN",
+  ]);
   const [year, setYear] = useState("Todos");
   const [month, setMonth] = useState("Todos");
   const [status, setStatus] = useState("Todos");
@@ -1966,6 +1977,23 @@ export function FinanceDashboard() {
       ),
     }))
     .filter((group) => group.items.length);
+  const activeNavigationGroup =
+    visibleNavigationGroups.find((group) => group.items.includes(activeModule))
+      ?.label ?? "RESUMEN";
+
+  function selectModule(module: Module, groupLabel: string) {
+    setActiveModule(module);
+    // Tras elegir una vista, conservamos una sola sección abierta: el menú
+    // sigue siendo breve y el contexto del usuario queda siempre visible.
+    setExpandedNavigationGroups([groupLabel]);
+  }
+
+  function toggleNavigationGroup(groupLabel: string) {
+    if (groupLabel === activeNavigationGroup) return;
+    setExpandedNavigationGroups((current) =>
+      current.includes(groupLabel) ? [] : [groupLabel],
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -2001,22 +2029,37 @@ export function FinanceDashboard() {
               key={group.label}
               aria-label={group.label}
             >
-              <span className="navigation-label">{group.label}</span>
+              <button
+                className={`navigation-group-toggle ${group.label === activeNavigationGroup ? "is-active-group" : ""}`}
+                type="button"
+                onClick={() => toggleNavigationGroup(group.label)}
+                aria-expanded={expandedNavigationGroups.includes(group.label) || group.label === activeNavigationGroup}
+                aria-controls={`navigation-group-${group.label.replaceAll(" ", "-")}`}
+              >
+                <span>{group.label}</span>
+                <span className="navigation-group-chevron" aria-hidden="true">⌄</span>
+              </button>
+              <div
+                className={`navigation-group-items ${(expandedNavigationGroups.includes(group.label) || group.label === activeNavigationGroup) ? "is-open" : ""}`}
+                id={`navigation-group-${group.label.replaceAll(" ", "-")}`}
+              >
               {group.items.map((item) => (
                 <button
                   key={item}
                   type="button"
                   className={`nav-item ${activeModule === item ? "active" : ""}`}
-                  onClick={() => setActiveModule(item)}
+                  onClick={() => selectModule(item, group.label)}
                   aria-describedby={`module-preview-${item.replaceAll(" ", "-")}`}
                 >
                   <span className="nav-icon">
-                    {item === "Inicio"
+                  {item === "Inicio"
                       ? "⌂"
                       : item === "Facturas"
                         ? "▤"
                         : item === "OC de clientes"
                           ? "⌑"
+                          : item === "Proyecciones"
+                            ? "⌁"
                           : item === "Recurrentes"
                             ? "↻"
                             : item === "Prefacturación"
@@ -2059,13 +2102,20 @@ export function FinanceDashboard() {
                   </span>
                 </button>
               ))}
+              </div>
             </section>
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <button className="settings-button" type="button">
-            ⚙ Configuración
-          </button>
+          {access?.membership.role === "administrator" && (
+            <button
+              className="settings-button"
+              type="button"
+              onClick={() => selectModule("Administración", "PERSONAS Y CONTROL")}
+            >
+              ⚙ Administración
+            </button>
+          )}
           <p>v0.2</p>
         </div>
       </aside>
@@ -2103,6 +2153,8 @@ export function FinanceDashboard() {
             records={records}
             canManage={hasEditPermission}
           />
+        ) : activeModule === "Proyecciones" ? (
+          <ForecastModule />
         ) : activeModule === "Planificación financiera" ? (
           canReadExpenses ? (
             <FinancialPlanningDashboard

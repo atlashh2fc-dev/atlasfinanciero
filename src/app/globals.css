@@ -84,18 +84,59 @@ button {
 }
 .sidebar nav {
   display: grid;
-  gap: 15px;
+  gap: 7px;
 }
 .navigation-group {
   display: grid;
-  gap: 3px;
+  gap: 2px;
 }
-.navigation-label {
+.navigation-label,
+.navigation-group-toggle {
   color: #718098;
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 1.15px;
-  padding: 0 11px 4px;
+}
+.navigation-group-toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 9px 11px 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+.navigation-group-toggle:hover,
+.navigation-group-toggle.is-active-group {
+  color: #d1dbea;
+}
+.navigation-group-toggle:hover {
+  background: #1c2a40;
+  border-radius: 6px;
+}
+.navigation-group-chevron {
+  color: #8595ad;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 0.7;
+  transition: transform 0.16s ease;
+}
+.navigation-group-toggle[aria-expanded="true"] .navigation-group-chevron {
+  transform: rotate(180deg);
+}
+.navigation-group-items {
+  display: none;
+  gap: 3px;
+}
+.navigation-group-items.is-open {
+  display: grid;
+  animation: navigation-group-enter 0.15s ease-out;
+}
+@keyframes navigation-group-enter {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .nav-item {
   position: relative;
