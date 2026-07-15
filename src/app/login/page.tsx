@@ -35,7 +35,7 @@ export default function LoginPage() {
   return (
     <main className="login-page">
       <section className="login-card">
-        <span className="brand-mark">A</span>
+        <img className="brand-logo login-logo" src="/atlas-financiero-logo.png" alt="" />
         <span className="eyebrow">ATLAS FINANCIERO</span>
         <h1>{isRecovering ? "Recuperar acceso" : "Ingresar"}</h1>
         <p>{isRecovering ? "Te enviaremos un enlace seguro para definir una contraseña nueva." : "Accede con tu usuario autorizado."}</p>

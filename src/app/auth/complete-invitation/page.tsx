@@ -46,7 +46,7 @@ export default function CompleteInvitationPage() {
   return (
     <main className="login-page">
       <section className="login-card invitation-card">
-        <span className="brand-mark">A</span>
+        <img className="brand-logo login-logo" src="/atlas-financiero-logo.png" alt="" />
         <span className="eyebrow">ATLAS FINANCIERO</span>
         {activationState === "checking" && <><h1>Validando acceso</h1><p>Estamos verificando tu invitación de forma segura.</p></>}
         {activationState === "invalid" && <>

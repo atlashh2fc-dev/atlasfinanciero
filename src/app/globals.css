@@ -5,9 +5,9 @@
   --muted: #738097;
   --line: #e6eaf0;
   --canvas: #f5f7fb;
-  --primary: #5867db;
+  --primary: #278c31;
   --sidebar: #172237;
-  --mint: #1ca879;
+  --mint: #78c91a;
 }
 * {
   box-sizing: border-box;
@@ -52,18 +52,16 @@ button {
   letter-spacing: -0.4px;
 }
 .brand b {
-  color: #78dfbb;
+  color: #c4f22a;
 }
-.brand-mark {
-  width: 27px;
-  height: 27px;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #7381f7, #45d09b);
-  color: white;
-  font-size: 15px;
-  font-weight: 800;
+.brand-logo {
+  width: 31px;
+  height: 31px;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+.brand-name {
+  line-height: 1;
 }
 .workspace-label {
   color: #77869d;
@@ -1316,7 +1314,7 @@ td small {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: radial-gradient(circle at top, #edf0ff, #f5f7fb 45%);
+  background: radial-gradient(circle at top, #effbd9, #f5f7fb 45%);
 }
 .login-card {
   width: min(390px, 100%);
@@ -1328,7 +1326,9 @@ td small {
   background: #fff;
   box-shadow: 0 20px 50px #26334a12;
 }
-.login-card > .brand-mark {
+.login-card > .login-logo {
+  width: 56px;
+  height: 56px;
   margin-bottom: 5px;
 }
 .login-card h1 {

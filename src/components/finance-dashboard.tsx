@@ -1971,10 +1971,8 @@ export function FinanceDashboard() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">A</span>
-          <span>
-            Atlas <b>Financiero</b>
-          </span>
+          <img className="brand-logo" src="/atlas-financiero-logo.png" alt="" />
+          <span className="brand-name">Atlas <b>Financiero</b></span>
         </div>
         <div className="workspace-label">ESPACIO DE TRABAJO</div>
         <select
