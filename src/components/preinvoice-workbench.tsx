@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type Role = "administrator" | "finance" | "operations" | "auditor";
 type Customer = { id: string; legal_name: string; trade_name: string | null };
+type CustomerService = { id: string; counterparty_id: string; service_catalog_id: string; service_name: string; quantity: number; unit_price: number; currency: string; starts_on: string | null; ends_on: string | null; billing_frequency: "monthly" | "quarterly" | "annual" | "one_time" };
 type IssuedDocument = { id: string; counterparty_id: string | null; document_number: string | null; issue_date: string | null; total_amount: number | null; client_name: string | null };
 type Line = { id: string; preinvoice_id: string; description: string; quantity: number; unit_price: number; net_amount: number; source_currency: string; source_unit_price: number; conversion_rate_to_clp: number; pricing_date: string; rate_source: string; usage_quantity: number | null };
 type Preinvoice = {
@@ -21,13 +22,14 @@ type Preinvoice = {
   cancellation_reason: string | null;
   created_at: string;
 };
-type Payload = { role: Role; preinvoices: Preinvoice[]; lines: Line[]; customers: Customer[]; documents: IssuedDocument[] };
+type Payload = { role: Role; preinvoices: Preinvoice[]; lines: Line[]; customers: Customer[]; documents: IssuedDocument[]; services: CustomerService[] };
 
 const money = new Intl.NumberFormat("es-CL", { maximumFractionDigits: 0 });
 const currentMonth = () => new Date().toISOString().slice(0, 7);
 const firstDayOfMonth = (month: string) => `${month}-01`;
 const labelForStatus: Record<Preinvoice["status"], string> = { draft: "Borrador", review: "En revisión", approved: "Aprobada", issued: "Emitida", cancelled: "Anulada" };
 const normalized = (value: string | null | undefined) => (value ?? "").trim().toLocaleUpperCase();
+const frequencyLabel: Record<CustomerService["billing_frequency"], string> = { monthly: "Mensual", quarterly: "Trimestral", annual: "Anual", one_time: "Spot / única vez" };
 
 function monthName(month: string) {
   return new Intl.DateTimeFormat("es-CL", { month: "long", year: "numeric" }).format(new Date(`${month}T00:00:00`));
@@ -37,6 +39,8 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
   const [data, setData] = useState<Payload | null>(null);
   const [periodMonth, setPeriodMonth] = useState(currentMonth);
   const [pricingDate, setPricingDate] = useState(firstDayOfMonth(currentMonth()));
+  const [counterpartyId, setCounterpartyId] = useState("");
+  const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -61,18 +65,27 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
     return result;
   }, [data]);
   const selectedPeriod = useMemo(() => (data?.preinvoices ?? []).filter((item) => item.period_month.slice(0, 7) === periodMonth), [data, periodMonth]);
+  const servicesForCustomer = useMemo(() => (data?.services ?? []).filter((service) => service.counterparty_id === counterpartyId), [data, counterpartyId]);
   const canWrite = data?.role === "administrator" || data?.role === "finance" || data?.role === "operations";
   const canApprove = data?.role === "administrator" || data?.role === "finance";
 
+  function toggleService(serviceId: string) {
+    setSelectedServiceIds((current) => current.includes(serviceId) ? current.filter((id) => id !== serviceId) : [...current, serviceId]);
+  }
+
   async function generate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!organizationId) return;
+    if (!organizationId || !counterpartyId || !selectedServiceIds.length) {
+      setMessage("Selecciona un cliente y al menos un servicio contratado.");
+      return;
+    }
     setSaving(true);
-    const response = await fetch("/api/preinvoices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "generate", organizationId, periodMonth, pricingDate }) });
+    const response = await fetch("/api/preinvoices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create_draft", organizationId, counterpartyId, customerServiceIds: selectedServiceIds, periodMonth, pricingDate }) });
     const result = await response.json().catch(() => null) as { created?: number; linesAdded?: number; error?: string; ufQuote?: { value: number; date: string } } | null;
     setSaving(false);
-    if (!response.ok) { setMessage(result?.error === "sii_uf_value_unavailable" ? "El SII no informó UF para la fecha elegida. Selecciona una fecha con valor oficial disponible." : "No fue posible generar las prefacturas del período."); return; }
-    setMessage(`${result?.created ?? 0} prefactura(s) creada(s); ${result?.linesAdded ?? 0} línea(s) incorporada(s) desde servicios vigentes.${result?.ufQuote ? ` UF SII ${result.ufQuote.date}: CLP ${money.format(result.ufQuote.value)}.` : ""}`);
+    if (!response.ok) { setMessage(result?.error === "sii_uf_value_unavailable" ? "El SII no informó UF para la fecha elegida. Selecciona una fecha con valor oficial disponible." : result?.error === "preinvoice_is_not_editable" ? "Ya existe una prefactura de este cliente en revisión, aprobada o emitida para esta moneda y período." : "No fue posible construir la prefactura seleccionada."); return; }
+    setMessage(`${result?.created ?? 0} prefactura(s) creada(s); ${result?.linesAdded ?? 0} servicio(s) seleccionado(s) incorporado(s).${result?.ufQuote ? ` UF SII ${result.ufQuote.date}: CLP ${money.format(result.ufQuote.value)}.` : ""}`);
+    setSelectedServiceIds([]);
     await load();
   }
 
@@ -102,19 +115,21 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
 
   return <main className="dashboard billing-dashboard">
     <section className="headline">
-      <div><span className="eyebrow">PREFACURACIÓN</span><h1>Servicios contratados a emisión controlada</h1><p>Genera borradores desde los servicios vigentes, revísalos y vincula una factura real sólo después de aprobarlos.</p></div>
+      <div><span className="eyebrow">PREFACURACIÓN</span><h1>Construcción controlada de prefacturas</h1><p>La ficha del cliente conserva lo contratado; aquí eliges qué servicios cobrar en cada período antes de enviarlos a aprobación.</p></div>
       <div className="headline-actions"><button type="button" className="secondary-button" onClick={() => void load()} disabled={loading || saving}>Actualizar</button></div>
     </section>
 
     {message && <p className="operation-message">{message}</p>}
     {loading ? <section className="panel billing-empty"><p>Cargando prefacturación…</p></section> : !data ? <section className="panel billing-empty"><p>Selecciona una empresa a la que tengas acceso para operar este módulo.</p></section> : <>
       <section className="billing-form-panel panel">
-        <div className="panel-heading"><div><span className="panel-label">GENERAR PERÍODO</span><h2>Origen: servicios activos del cliente</h2></div><span className="unit">Sin emitir DTE automáticamente</span></div>
+        <div className="panel-heading"><div><span className="panel-label">NUEVA PREFACTURA</span><h2>Elige el cliente y los servicios a cobrar</h2></div><span className="unit">Sin emitir DTE automáticamente</span></div>
         <form className="billing-form" onSubmit={generate}>
           <label>Mes de servicio<input type="month" value={periodMonth} onChange={(event) => { setPeriodMonth(event.target.value); setPricingDate(firstDayOfMonth(event.target.value)); }} required /></label>
           <label>Fecha de valorización UF<input type="date" value={pricingDate} onChange={(event) => setPricingDate(event.target.value)} required /></label>
-          <p className="form-note">Las UF se consultan en la tabla oficial del SII para esta fecha y se congelan en CLP junto con su paridad. Los precios CLP no se convierten.</p>
-          <button className="primary-button" type="submit" disabled={!canWrite || saving}>Generar borradores</button>
+          <label>Cliente<select value={counterpartyId} onChange={(event) => { setCounterpartyId(event.target.value); setSelectedServiceIds([]); }} required><option value="">Selecciona cliente</option>{data.customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.trade_name || customer.legal_name}</option>)}</select></label>
+          <div className="form-field-wide"><span className="form-label">Servicios contratados a incorporar</span>{!counterpartyId ? <p className="form-note">Selecciona primero un cliente.</p> : servicesForCustomer.length ? <div className="control-list">{servicesForCustomer.map((service) => <label key={service.id}><input type="checkbox" checked={selectedServiceIds.includes(service.id)} onChange={() => toggleService(service.id)} /><span><strong>{service.service_name}</strong><small>{frequencyLabel[service.billing_frequency]} · {service.quantity} × {service.currency} {money.format(Number(service.unit_price))}</small></span></label>)}</div> : <p className="form-note">Este cliente no tiene servicios contratados activos.</p>}</div>
+          <p className="form-note">La condición mensual, trimestral, anual o spot se mantiene en la ficha comercial. En esta instancia seleccionas explícitamente los servicios que forman la prefactura. Las UF se congelan con el valor oficial del SII.</p>
+          <button className="primary-button" type="submit" disabled={!canWrite || saving || !counterpartyId || !selectedServiceIds.length}>Construir prefactura</button>
         </form>
       </section>
 
@@ -139,7 +154,7 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
             {preinvoice.status === "cancelled" && <small>{preinvoice.cancellation_reason || "Anulada"}</small>}
           </div></td></tr>;
         })}</tbody></table></div>
-        {!selectedPeriod.length && <p className="billing-empty">No hay prefacturas para este período. Genera borradores desde los servicios activos.</p>}
+        {!selectedPeriod.length && <p className="billing-empty">No hay prefacturas para este período. Selecciona un cliente y sus servicios contratados para construir una.</p>}
       </section>
     </>}
   </main>;

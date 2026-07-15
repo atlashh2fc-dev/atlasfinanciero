@@ -4,7 +4,6 @@ import { getSiiUfQuote, isIsoDate } from "@/lib/sii-uf";
 
 const operatorRoles = new Set(["administrator", "finance", "operations"]);
 const financeRoles = new Set(["administrator", "finance"]);
-const frequencies = new Set(["monthly", "quarterly", "annual", "one_time"]);
 
 type Service = {
   id: string;
@@ -34,22 +33,6 @@ function roundClp(value: number) {
   return Math.round(value);
 }
 
-function dateInPeriod(service: Service, month: string) {
-  const nextMonth = new Date(`${month}T00:00:00Z`);
-  nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
-  const periodEnd = new Date(nextMonth.getTime() - 86_400_000).toISOString().slice(0, 10);
-  return (!service.starts_on || service.starts_on <= periodEnd) && (!service.ends_on || service.ends_on >= month);
-}
-
-function frequencyMatches(service: Service, month: string) {
-  if (!frequencies.has(service.billing_frequency) || !dateInPeriod(service, month)) return false;
-  const monthNumber = Number(month.slice(5, 7));
-  if (service.billing_frequency === "monthly") return true;
-  if (service.billing_frequency === "quarterly") return monthNumber % 3 === 1;
-  if (service.billing_frequency === "annual") return service.starts_on ? service.starts_on.slice(5, 7) === month.slice(5, 7) : monthNumber === 1;
-  return service.starts_on?.slice(0, 7) === month.slice(0, 7);
-}
-
 function normalized(value: string | null | undefined) {
   return (value ?? "").trim().toLocaleUpperCase();
 }
@@ -73,7 +56,7 @@ export async function GET(request: NextRequest) {
   const data = await context(organizationId);
   if (!data) return NextResponse.json({ error: "organization_access_required" }, { status: 403 });
 
-  const [preinvoices, lines, customers, documents] = await Promise.all([
+  const [preinvoices, lines, customers, documents, services, catalog] = await Promise.all([
     data.supabase.from("preinvoices")
       .select("id, counterparty_id, billing_cycle_id, period_month, pricing_date, status, currency_code, net_amount, vat_amount, total_amount, notes, reviewed_at, approved_at, issued_at, issued_document_id, cancellation_reason, created_at")
       .eq("organization_id", data.organizationId)
@@ -93,32 +76,46 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", data.organizationId)
       .order("issue_date", { ascending: false })
       .limit(100),
+    data.supabase.from("customer_services")
+      .select("id, counterparty_id, service_catalog_id, quantity, unit_price, currency, starts_on, ends_on, billing_frequency, is_active")
+      .eq("organization_id", data.organizationId)
+      .eq("is_active", true)
+      .order("created_at"),
+    data.supabase.from("service_catalog")
+      .select("id, name")
+      .eq("organization_id", data.organizationId),
   ]);
-  if (preinvoices.error || lines.error || customers.error || documents.error) {
+  if (preinvoices.error || lines.error || customers.error || documents.error || services.error || catalog.error) {
     return NextResponse.json({ error: "unable_to_load_preinvoices" }, { status: 500 });
   }
+  const catalogNames = new Map((catalog.data ?? []).map((item) => [item.id, item.name]));
   return NextResponse.json({
     role: data.membership.role,
     preinvoices: preinvoices.data ?? [],
     lines: lines.data ?? [],
     customers: customers.data ?? [],
     documents: documents.data ?? [],
+    services: (services.data ?? []).map((service) => ({ ...service, service_name: catalogNames.get(service.service_catalog_id) ?? "Servicio contratado" })),
   });
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json().catch(() => null) as { organizationId?: unknown; action?: unknown; periodMonth?: unknown; pricingDate?: unknown } | null;
+  const body = await request.json().catch(() => null) as { organizationId?: unknown; action?: unknown; periodMonth?: unknown; pricingDate?: unknown; counterpartyId?: unknown; customerServiceIds?: unknown } | null;
   const month = periodMonth(body?.periodMonth);
   const pricingDate = isIsoDate(body?.pricingDate) ? body.pricingDate : month;
   const data = await context(body?.organizationId, operatorRoles);
   if (!data) return NextResponse.json({ error: "preinvoice_write_not_authorized" }, { status: 403 });
-  if (body?.action !== "generate" || !month || !pricingDate) return NextResponse.json({ error: "invalid_preinvoice_generation" }, { status: 400 });
+  const counterpartyId = body?.counterpartyId;
+  const serviceIds = Array.isArray(body?.customerServiceIds) ? [...new Set(body.customerServiceIds.filter(isUuid))] : [];
+  if (body?.action !== "create_draft" || !month || !pricingDate || !isUuid(counterpartyId) || !serviceIds.length) return NextResponse.json({ error: "invalid_preinvoice_generation" }, { status: 400 });
 
   const [servicesResult, catalogResult, rulesResult, cyclesResult] = await Promise.all([
     data.supabase.from("customer_services")
       .select("id, counterparty_id, service_catalog_id, quantity, unit_price, currency, starts_on, ends_on, billing_frequency")
       .eq("organization_id", data.organizationId)
-      .eq("is_active", true),
+      .eq("counterparty_id", counterpartyId)
+      .eq("is_active", true)
+      .in("id", serviceIds),
     data.supabase.from("service_catalog")
       .select("id, name")
       .eq("organization_id", data.organizationId),
@@ -138,8 +135,9 @@ export async function POST(request: NextRequest) {
   const catalogNames = new Map((catalogResult.data ?? []).map((item) => [item.id, item.name]));
   const counterpartyByRule = new Map((rulesResult.data ?? []).map((item) => [item.id, item.counterparty_id]));
   const cycleByCustomerCurrency = new Map((cyclesResult.data ?? []).map((item) => [`${counterpartyByRule.get(item.recurrence_rule_id) ?? ""}:${item.currency_code}`, item.id]));
-  const activeServices = (servicesResult.data ?? []) as Service[];
-  const hasUfServices = activeServices.some((service) => service.currency === "UF" && frequencyMatches(service, month));
+  const selectedServices = (servicesResult.data ?? []) as Service[];
+  if (selectedServices.length !== serviceIds.length) return NextResponse.json({ error: "selected_services_not_available" }, { status: 409 });
+  const hasUfServices = selectedServices.some((service) => service.currency === "UF");
   let ufQuote: Awaited<ReturnType<typeof getSiiUfQuote>> | null = null;
   if (hasUfServices) {
     try {
@@ -149,19 +147,17 @@ export async function POST(request: NextRequest) {
     }
   }
   const groups = new Map<string, Service[]>();
-  for (const service of activeServices) {
-    if (!frequencyMatches(service, month)) continue;
+  for (const service of selectedServices) {
     // Las UF se valorizan y facturan en CLP para que la aprobación y el DTE
     // utilicen un total definitivo, conservando la UF de origen en la línea.
     const billingCurrency = service.currency === "UF" ? "CLP" : service.currency;
-    const key = `${service.counterparty_id}:${billingCurrency}`;
+    const key = `${counterpartyId}:${billingCurrency}`;
     groups.set(key, [...(groups.get(key) ?? []), service]);
   }
 
-  let created = 0;
-  let linesAdded = 0;
-  for (const [key, services] of groups) {
-    const [counterpartyId, currencyCode] = key.split(":");
+  const existingByGroup = new Map<string, PreinvoiceGenerationRow | null>();
+  for (const [key] of groups) {
+    const [, currencyCode] = key.split(":");
     const { data: existing, error: existingError } = await data.supabase.from("preinvoices")
       .select("id, status, pricing_date")
       .eq("organization_id", data.organizationId)
@@ -170,7 +166,21 @@ export async function POST(request: NextRequest) {
       .eq("currency_code", currencyCode)
       .maybeSingle();
     if (existingError) return NextResponse.json({ error: "unable_to_read_existing_preinvoice" }, { status: 500 });
-    let preinvoice = existing as PreinvoiceGenerationRow | null;
+    const existingPreinvoice = existing as PreinvoiceGenerationRow | null;
+    if (existingPreinvoice && existingPreinvoice.pricing_date !== pricingDate) {
+      return NextResponse.json({ error: "preinvoice_already_exists_with_another_pricing_date", pricingDate: existingPreinvoice.pricing_date }, { status: 409 });
+    }
+    if (existingPreinvoice && existingPreinvoice.status !== "draft") {
+      return NextResponse.json({ error: "preinvoice_is_not_editable", preinvoiceId: existingPreinvoice.id }, { status: 409 });
+    }
+    existingByGroup.set(key, existingPreinvoice);
+  }
+
+  let created = 0;
+  let linesAdded = 0;
+  for (const [key, services] of groups) {
+    const [counterpartyId, currencyCode] = key.split(":");
+    let preinvoice = existingByGroup.get(key) ?? null;
     if (!preinvoice) {
       const { data: inserted, error } = await data.supabase.from("preinvoices").insert({
         organization_id: data.organizationId,
@@ -187,10 +197,6 @@ export async function POST(request: NextRequest) {
       created += 1;
     }
     if (!preinvoice) return NextResponse.json({ error: "unable_to_create_preinvoice" }, { status: 409 });
-    if (preinvoice.pricing_date !== pricingDate) {
-      return NextResponse.json({ error: "preinvoice_already_exists_with_another_pricing_date", pricingDate: preinvoice.pricing_date }, { status: 409 });
-    }
-    if (preinvoice.status !== "draft") continue;
     const lineRows = services.map((service) => {
       const sourceUnitPrice = Number(service.unit_price);
       const conversionRate = service.currency === "UF" ? ufQuote?.value : 1;
