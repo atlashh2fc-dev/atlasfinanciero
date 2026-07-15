@@ -31,6 +31,9 @@ import { CustomerProfiles } from "@/components/customer-profiles";
 import { ReportsDashboard } from "@/components/reports-dashboard";
 import { CostCenterManagement } from "@/components/cost-center-management";
 import { ExpensesDashboard } from "@/components/expenses-dashboard";
+import { PreinvoiceWorkbench } from "@/components/preinvoice-workbench";
+import { TreasuryDashboard } from "@/components/treasury-dashboard";
+import { ApprovalInbox } from "@/components/approval-inbox";
 import {
   isCreditNoteDocument,
   isPurchaseOrderDocument,
@@ -69,6 +72,8 @@ const modulePreviews: Record<Module, string> = {
     "Compromisos recibidos y saldo disponible después de cada facturación parcial.",
   Recurrentes:
     "Calendario y alertas para que las facturas periódicas estén listas antes de su fecha límite.",
+  Prefacturación:
+    "Borradores desde servicios contratados, revisión financiera y vínculo con la emisión real.",
   Clientes:
     "Evolución comercial y ficha tributaria, facturación y contactos por área de cada cliente.",
   "Cuentas por cobrar":
@@ -77,9 +82,13 @@ const modulePreviews: Record<Module, string> = {
     "Presupuesto mensual, forecast y diferencia contra la información real disponible.",
   "Gastos y proveedores":
     "Facturas recibidas, proveedores, vencimientos, pagos y detalle anual trazable.",
+  Tesorería:
+    "Posición por cuenta, movimientos bancarios y conciliación de cobros y pagos.",
   Remuneraciones: "Costo laboral y dotación sincronizados desde PeopleWork.",
   "Centros de costo":
     "Estructura de imputación, personas y clientes que financian cada unidad o proyecto.",
+  Aprobaciones:
+    "Bandeja de decisiones para prefacturas, pagos y órdenes de compra con trazabilidad.",
   Administración: "Organizaciones, usuarios, roles e invitaciones de acceso.",
   Reportes:
     "Estado de resultados, evolución y análisis financiero por período.",
@@ -93,9 +102,12 @@ type Module =
   | "Clientes"
   | "Cuentas por cobrar"
   | "Recurrentes"
+  | "Prefacturación"
   | "Gastos y proveedores"
+  | "Tesorería"
   | "Remuneraciones"
   | "Centros de costo"
+  | "Aprobaciones"
   | "Reportes"
   | "Administración";
 const navigationGroups: Array<{ label: string; items: Module[] }> = [
@@ -106,6 +118,7 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
       "Facturas",
       "Órdenes de compra",
       "Recurrentes",
+      "Prefacturación",
       "Clientes",
       "Cuentas por cobrar",
     ],
@@ -113,9 +126,10 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
   { label: "PLANIFICACIÓN", items: ["Proyecciones"] },
   {
     label: "GESTIÓN INTERNA",
-    items: ["Gastos y proveedores", "Remuneraciones", "Centros de costo"],
+    items: ["Gastos y proveedores", "Tesorería", "Remuneraciones", "Centros de costo"],
   },
   { label: "ANÁLISIS", items: ["Reportes"] },
+  { label: "CONTROL", items: ["Aprobaciones"] },
   { label: "GOBIERNO", items: ["Administración"] },
 ];
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
@@ -265,9 +279,12 @@ function EmptyModule({
     | "Clientes"
     | "Cuentas por cobrar"
     | "Recurrentes"
+    | "Prefacturación"
+    | "Tesorería"
     | "Remuneraciones"
     | "Centros de costo"
     | "Reportes"
+    | "Aprobaciones"
     | "Administración"
   >;
 }) {
@@ -1929,7 +1946,8 @@ export function FinanceDashboard() {
           (item !== "Administración" ||
             access?.membership.role === "administrator") &&
           (item !== "Centros de costo" || canManageCostCenters) &&
-          (item !== "Gastos y proveedores" || canReadExpenses),
+          (item !== "Gastos y proveedores" || canReadExpenses) &&
+          (item !== "Tesorería" || canReadExpenses),
       ),
     }))
     .filter((group) => group.items.length);
@@ -1988,6 +2006,8 @@ export function FinanceDashboard() {
                           ? "⌑"
                           : item === "Recurrentes"
                             ? "↻"
+                            : item === "Prefacturación"
+                              ? "✦"
                             : item === "Proyecciones"
                               ? "⌁"
                               : item === "Clientes"
@@ -1995,11 +2015,15 @@ export function FinanceDashboard() {
                                 : item === "Cuentas por cobrar"
                                   ? "◷"
                                   : item === "Gastos y proveedores"
-                                    ? "▣"
-                                    : item === "Remuneraciones"
+                                  ? "▣"
+                                  : item === "Tesorería"
+                                    ? "◒"
+                                  : item === "Remuneraciones"
                                       ? "◫"
                                       : item === "Centros de costo"
                                         ? "⊞"
+                                        : item === "Aprobaciones"
+                                          ? "✓"
                                         : item === "Reportes"
                                           ? "◔"
                                           : "⚙"}
@@ -2083,9 +2107,20 @@ export function FinanceDashboard() {
           />
         ) : activeModule === "Recurrentes" ? (
           <BillingOperations />
+        ) : activeModule === "Prefacturación" ? (
+          <PreinvoiceWorkbench
+            organizationId={access?.membership.organizationId ?? null}
+          />
         ) : activeModule === "Gastos y proveedores" ? (
           canReadExpenses ? (
             <ExpensesDashboard
+              organizationId={access?.membership.organizationId ?? null}
+              canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
+            />
+          ) : null
+        ) : activeModule === "Tesorería" ? (
+          canReadExpenses ? (
+            <TreasuryDashboard
               organizationId={access?.membership.organizationId ?? null}
               canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
             />
@@ -2103,6 +2138,10 @@ export function FinanceDashboard() {
           ) : null
         ) : activeModule === "Reportes" ? (
           <ReportsDashboard
+            organizationId={access?.membership.organizationId ?? null}
+          />
+        ) : activeModule === "Aprobaciones" ? (
+          <ApprovalInbox
             organizationId={access?.membership.organizationId ?? null}
           />
         ) : activeModule === "Administración" ? (
