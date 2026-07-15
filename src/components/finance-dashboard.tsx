@@ -71,8 +71,8 @@ const modulePreviews: Record<Module, string> = {
     "Cockpit ejecutivo: crecimiento, cobranza, concentración y referencias de mercado.",
   Facturas:
     "Documentos emitidos, estados, pagos, notas de crédito y evolución neta por período.",
-  "Órdenes de compra":
-    "Compromisos recibidos y saldo disponible después de cada facturación parcial.",
+  "OC de clientes":
+    "Órdenes de compra recibidas de clientes y saldo disponible después de cada facturación parcial.",
   Recurrentes:
     "Calendario y alertas para que las facturas periódicas estén listas antes de su fecha límite.",
   Prefacturación:
@@ -81,13 +81,11 @@ const modulePreviews: Record<Module, string> = {
     "Evolución comercial y ficha tributaria, facturación y contactos por área de cada cliente.",
   "Cuentas por cobrar":
     "Cartera pendiente por vencimiento, gestión, compromisos de pago y factoring.",
-  Proyecciones:
-    "Presupuesto mensual, forecast y diferencia contra la información real disponible.",
   "Planificación financiera":
     "Presupuesto versionado, caja semanal de 13 semanas y rentabilidad por cliente y servicio.",
-  "Gastos y proveedores":
-    "Facturas recibidas, proveedores, vencimientos, pagos y detalle anual trazable.",
-  "Compras y pagos":
+  "Cuentas por pagar":
+    "Facturas recibidas, proveedores, vencimientos y registro individual de pagos.",
+  "Compras y lotes de pago":
     "Solicitudes, órdenes a proveedor y lotes de pago con aprobación antes de ejecutar.",
   Tesorería:
     "Posición por cuenta, movimientos bancarios y conciliación de cobros y pagos.",
@@ -106,15 +104,14 @@ const modulePreviews: Record<Module, string> = {
 type Module =
   | "Inicio"
   | "Facturas"
-  | "Órdenes de compra"
-  | "Proyecciones"
+  | "OC de clientes"
   | "Planificación financiera"
   | "Clientes"
   | "Cuentas por cobrar"
   | "Recurrentes"
   | "Prefacturación"
-  | "Gastos y proveedores"
-  | "Compras y pagos"
+  | "Cuentas por pagar"
+  | "Compras y lotes de pago"
   | "Tesorería"
   | "Remuneraciones"
   | "Centros de costo"
@@ -128,17 +125,17 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
     label: "OPERACIÓN COMERCIAL",
     items: [
       "Facturas",
-      "Órdenes de compra",
+      "OC de clientes",
       "Recurrentes",
       "Prefacturación",
       "Clientes",
       "Cuentas por cobrar",
     ],
   },
-  { label: "PLANIFICACIÓN", items: ["Proyecciones", "Planificación financiera"] },
+  { label: "PLANIFICACIÓN", items: ["Planificación financiera"] },
   {
     label: "GESTIÓN INTERNA",
-    items: ["Gastos y proveedores", "Compras y pagos", "Tesorería", "Remuneraciones", "Centros de costo"],
+    items: ["Cuentas por pagar", "Compras y lotes de pago", "Tesorería", "Remuneraciones", "Centros de costo"],
   },
   { label: "ANÁLISIS", items: ["Reportes"] },
   { label: "CONTROL", items: ["Aprobaciones", "Cierre financiero"] },
@@ -286,14 +283,13 @@ function EmptyModule({
     Module,
     | "Inicio"
     | "Facturas"
-    | "Órdenes de compra"
-    | "Proyecciones"
+    | "OC de clientes"
     | "Planificación financiera"
     | "Clientes"
     | "Cuentas por cobrar"
     | "Recurrentes"
     | "Prefacturación"
-    | "Compras y pagos"
+    | "Compras y lotes de pago"
     | "Tesorería"
     | "Remuneraciones"
     | "Centros de costo"
@@ -304,7 +300,7 @@ function EmptyModule({
   >;
 }) {
   const detail: Record<typeof module, string> = {
-    "Gastos y proveedores":
+    "Cuentas por pagar":
       "Preparado para documentos recibidos, órdenes de compra, centros de costo y proveedores. Requiere fuente de gastos aprobada.",
   };
 
@@ -1962,8 +1958,8 @@ export function FinanceDashboard() {
           (item !== "Administración" ||
             access?.membership.role === "administrator") &&
           (item !== "Centros de costo" || canManageCostCenters) &&
-          (item !== "Gastos y proveedores" || canReadExpenses) &&
-          (item !== "Compras y pagos" || canReadProcurement) &&
+          (item !== "Cuentas por pagar" || canReadExpenses) &&
+          (item !== "Compras y lotes de pago" || canReadProcurement) &&
           (item !== "Tesorería" || canReadExpenses) &&
           (item !== "Planificación financiera" || canReadExpenses) &&
           (item !== "Cierre financiero" || canReadExpenses),
@@ -2021,21 +2017,19 @@ export function FinanceDashboard() {
                       ? "⌂"
                       : item === "Facturas"
                         ? "▤"
-                        : item === "Órdenes de compra"
+                        : item === "OC de clientes"
                           ? "⌑"
                           : item === "Recurrentes"
                             ? "↻"
                             : item === "Prefacturación"
                               ? "✦"
-                            : item === "Proyecciones"
-                              ? "⌁"
-                              : item === "Clientes"
+                            : item === "Clientes"
                                 ? "◉"
                                 : item === "Cuentas por cobrar"
                                   ? "◷"
-                                  : item === "Gastos y proveedores"
+                                  : item === "Cuentas por pagar"
                                   ? "▣"
-                                  : item === "Compras y pagos"
+                                  : item === "Compras y lotes de pago"
                                     ? "▤"
                                   : item === "Tesorería"
                                     ? "◒"
@@ -2105,14 +2099,12 @@ export function FinanceDashboard() {
 
         {activeModule === "Inicio" ? (
           <ExecutiveDashboard records={records} />
-        ) : activeModule === "Órdenes de compra" ? (
+        ) : activeModule === "OC de clientes" ? (
           <CustomerPurchaseOrders
             organizationId={access?.membership.organizationId ?? null}
             records={records}
             canManage={hasEditPermission}
           />
-        ) : activeModule === "Proyecciones" ? (
-          <ForecastModule />
         ) : activeModule === "Planificación financiera" ? (
           canReadExpenses ? (
             <FinancialPlanningDashboard
@@ -2142,14 +2134,14 @@ export function FinanceDashboard() {
           <PreinvoiceWorkbench
             organizationId={access?.membership.organizationId ?? null}
           />
-        ) : activeModule === "Gastos y proveedores" ? (
+        ) : activeModule === "Cuentas por pagar" ? (
           canReadExpenses ? (
             <ExpensesDashboard
               organizationId={access?.membership.organizationId ?? null}
               canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
             />
           ) : null
-        ) : activeModule === "Compras y pagos" ? (
+        ) : activeModule === "Compras y lotes de pago" ? (
           <ProcureToPayWorkbench
             organizationId={access?.membership.organizationId ?? null}
             canManage={hasEditPermission}
