@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isUuid, requireOrganizationFinanceAccess } from "@/lib/admin-access";
 
-type Action = "create_center" | "assign_worker" | "link_customer";
+type Action = "create_center" | "assign_worker" | "link_customer" | "assign_issued_document" | "assign_received_document";
 
 function bodyValue(body: unknown, key: string) {
   return body && typeof body === "object" ? (body as Record<string, unknown>)[key] : null;
@@ -22,22 +22,24 @@ export async function GET(request: NextRequest) {
   const context = await requireOrganizationFinanceAccess(organizationId);
   if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
   const supabase = context.supabase;
-  const [centersResult, peopleResult, customersResult, assignmentsResult, linksResult] = await Promise.all([
+  const [centersResult, peopleResult, customersResult, assignmentsResult, linksResult, issuedResult, receivedResult] = await Promise.all([
     supabase.from("cost_centers").select("id, code, name, is_active").eq("organization_id", organizationId).order("code"),
     supabase.from("payroll_people").select("id, full_name, is_active").eq("organization_id", organizationId).eq("provider", "peoplework").order("full_name"),
     supabase.from("counterparties").select("id, legal_name, trade_name, tax_id").eq("organization_id", organizationId).in("kind", ["customer", "both"]).eq("is_active", true).order("legal_name"),
     supabase.from("payroll_person_cost_center_assignments").select("id, person_id, cost_center_id, allocation_percentage, effective_from, effective_to").eq("organization_id", organizationId).order("effective_from", { ascending: false }),
     supabase.from("cost_center_customer_links").select("id, cost_center_id, counterparty_id, allocation_percentage, effective_from, effective_to").eq("organization_id", organizationId).order("effective_from", { ascending: false }),
+    supabase.from("issued_documents").select("id, document_number, issue_date, document_type, client_name, total_amount, cost_center_id").eq("organization_id", organizationId).order("issue_date", { ascending: false }),
+    supabase.from("received_documents").select("id, document_number, issue_date, document_type, supplier_name, total_amount, cost_center_id").eq("organization_id", organizationId).order("issue_date", { ascending: false }),
   ]);
-  if (centersResult.error || peopleResult.error || customersResult.error || assignmentsResult.error || linksResult.error) return NextResponse.json({ error: "unable_to_load_cost_centers" }, { status: 500 });
-  return NextResponse.json({ centers: centersResult.data ?? [], people: peopleResult.data ?? [], customers: customersResult.data ?? [], assignments: assignmentsResult.data ?? [], customerLinks: linksResult.data ?? [] });
+  if (centersResult.error || peopleResult.error || customersResult.error || assignmentsResult.error || linksResult.error || issuedResult.error || receivedResult.error) return NextResponse.json({ error: "unable_to_load_cost_centers" }, { status: 500 });
+  return NextResponse.json({ centers: centersResult.data ?? [], people: peopleResult.data ?? [], customers: customersResult.data ?? [], assignments: assignmentsResult.data ?? [], customerLinks: linksResult.data ?? [], issuedDocuments: issuedResult.data ?? [], receivedDocuments: receivedResult.data ?? [] });
 }
 
 export async function POST(request: NextRequest) {
   const body: unknown = await request.json().catch(() => null);
   const organizationId = bodyValue(body, "organizationId");
   const action = bodyValue(body, "action");
-  if (!isUuid(organizationId) || typeof action !== "string" || !["create_center", "assign_worker", "link_customer"].includes(action)) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
+  if (!isUuid(organizationId) || typeof action !== "string" || !["create_center", "assign_worker", "link_customer", "assign_issued_document", "assign_received_document"].includes(action)) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   const context = await requireOrganizationFinanceAccess(organizationId);
   if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
   const supabase = context.supabase;
@@ -51,10 +53,23 @@ export async function POST(request: NextRequest) {
   }
 
   const costCenterId = bodyValue(body, "costCenterId");
+  if (!isUuid(costCenterId)) return NextResponse.json({ error: "invalid_cost_center" }, { status: 400 });
+  const { data: center } = await supabase.from("cost_centers").select("id").eq("id", costCenterId).eq("organization_id", organizationId).maybeSingle();
+  if (!center) return NextResponse.json({ error: "cost_center_not_found" }, { status: 404 });
+
+  if ((action as Action) === "assign_issued_document" || (action as Action) === "assign_received_document") {
+    const documentId = bodyValue(body, "documentId");
+    if (!isUuid(documentId)) return NextResponse.json({ error: "invalid_document" }, { status: 400 });
+    const table = action === "assign_issued_document" ? "issued_documents" : "received_documents";
+    const { data, error } = await supabase.from(table).update({ cost_center_id: costCenterId }).eq("id", documentId).eq("organization_id", organizationId).select("id").maybeSingle();
+    if (error || !data) return NextResponse.json({ error: "unable_to_assign_document" }, { status: 422 });
+    return NextResponse.json({ assigned: true });
+  }
+
   const allocationPercentage = percentage(bodyValue(body, "allocationPercentage"));
   const effectiveFrom = validDate(bodyValue(body, "effectiveFrom"));
   const effectiveTo = bodyValue(body, "effectiveTo") ? validDate(bodyValue(body, "effectiveTo")) : null;
-  if (!isUuid(costCenterId) || allocationPercentage === null || !effectiveFrom || (bodyValue(body, "effectiveTo") && !effectiveTo) || (effectiveTo && effectiveTo < effectiveFrom)) return NextResponse.json({ error: "invalid_assignment" }, { status: 400 });
+  if (allocationPercentage === null || !effectiveFrom || (bodyValue(body, "effectiveTo") && !effectiveTo) || (effectiveTo && effectiveTo < effectiveFrom)) return NextResponse.json({ error: "invalid_assignment" }, { status: 400 });
 
   if ((action as Action) === "assign_worker") {
     const personId = bodyValue(body, "personId");

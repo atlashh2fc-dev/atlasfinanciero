@@ -921,6 +921,77 @@ button {
   color: #5e6dd0;
   font-size: 16px;
 }
+.cost-center-select-button {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
+}
+.cost-center-select-button:hover strong,
+.cost-center-select-button:focus-visible strong {
+  color: #4b5ac8;
+  text-decoration: underline;
+}
+.table-sort-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+}
+.table-sort-button:hover,
+.table-sort-button:focus-visible {
+  color: #4b5ac8;
+}
+.cost-center-load-modal {
+  width: min(1080px, 100%);
+}
+.cost-center-load-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  padding-top: 20px;
+}
+.cost-center-load-grid form {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 15px;
+  border: 1px solid #e1e6ee;
+  border-radius: 9px;
+}
+.cost-center-load-grid h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.cost-center-load-grid label {
+  display: grid;
+  gap: 6px;
+  color: #526077;
+  font-size: 11px;
+  font-weight: 700;
+}
+.cost-center-load-grid select,
+.cost-center-load-grid input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #dfe5ed;
+  border-radius: 7px;
+  padding: 9px 10px;
+  color: #26334a;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+}
+@media (max-width: 980px) {
+  .cost-center-load-grid { grid-template-columns: 1fr; }
+}
 .table-scroll {
   overflow: auto;
   border-top: 1px solid #edf0f4;
