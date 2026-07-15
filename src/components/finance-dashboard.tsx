@@ -34,6 +34,9 @@ import { ExpensesDashboard } from "@/components/expenses-dashboard";
 import { PreinvoiceWorkbench } from "@/components/preinvoice-workbench";
 import { TreasuryDashboard } from "@/components/treasury-dashboard";
 import { ApprovalInbox } from "@/components/approval-inbox";
+import { ProcureToPayWorkbench } from "@/components/procure-to-pay-workbench";
+import { FinancialPlanningDashboard } from "@/components/financial-planning-dashboard";
+import { FinancialCloseWorkbench } from "@/components/financial-close-workbench";
 import {
   isCreditNoteDocument,
   isPurchaseOrderDocument,
@@ -80,8 +83,12 @@ const modulePreviews: Record<Module, string> = {
     "Cartera pendiente por vencimiento, gestión, compromisos de pago y factoring.",
   Proyecciones:
     "Presupuesto mensual, forecast y diferencia contra la información real disponible.",
+  "Planificación financiera":
+    "Presupuesto versionado, caja semanal de 13 semanas y rentabilidad por cliente y servicio.",
   "Gastos y proveedores":
     "Facturas recibidas, proveedores, vencimientos, pagos y detalle anual trazable.",
+  "Compras y pagos":
+    "Solicitudes, órdenes a proveedor y lotes de pago con aprobación antes de ejecutar.",
   Tesorería:
     "Posición por cuenta, movimientos bancarios y conciliación de cobros y pagos.",
   Remuneraciones: "Costo laboral y dotación sincronizados desde PeopleWork.",
@@ -89,6 +96,8 @@ const modulePreviews: Record<Module, string> = {
     "Estructura de imputación, personas y clientes que financian cada unidad o proyecto.",
   Aprobaciones:
     "Bandeja de decisiones para prefacturas, pagos y órdenes de compra con trazabilidad.",
+  "Cierre financiero":
+    "Checklist, pre-cierre, cierre bloqueado y evidencia auditable por período mensual.",
   Administración: "Organizaciones, usuarios, roles e invitaciones de acceso.",
   Reportes:
     "Estado de resultados, evolución y análisis financiero por período.",
@@ -99,15 +108,18 @@ type Module =
   | "Facturas"
   | "Órdenes de compra"
   | "Proyecciones"
+  | "Planificación financiera"
   | "Clientes"
   | "Cuentas por cobrar"
   | "Recurrentes"
   | "Prefacturación"
   | "Gastos y proveedores"
+  | "Compras y pagos"
   | "Tesorería"
   | "Remuneraciones"
   | "Centros de costo"
   | "Aprobaciones"
+  | "Cierre financiero"
   | "Reportes"
   | "Administración";
 const navigationGroups: Array<{ label: string; items: Module[] }> = [
@@ -123,13 +135,13 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
       "Cuentas por cobrar",
     ],
   },
-  { label: "PLANIFICACIÓN", items: ["Proyecciones"] },
+  { label: "PLANIFICACIÓN", items: ["Proyecciones", "Planificación financiera"] },
   {
     label: "GESTIÓN INTERNA",
-    items: ["Gastos y proveedores", "Tesorería", "Remuneraciones", "Centros de costo"],
+    items: ["Gastos y proveedores", "Compras y pagos", "Tesorería", "Remuneraciones", "Centros de costo"],
   },
   { label: "ANÁLISIS", items: ["Reportes"] },
-  { label: "CONTROL", items: ["Aprobaciones"] },
+  { label: "CONTROL", items: ["Aprobaciones", "Cierre financiero"] },
   { label: "GOBIERNO", items: ["Administración"] },
 ];
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
@@ -276,15 +288,18 @@ function EmptyModule({
     | "Facturas"
     | "Órdenes de compra"
     | "Proyecciones"
+    | "Planificación financiera"
     | "Clientes"
     | "Cuentas por cobrar"
     | "Recurrentes"
     | "Prefacturación"
+    | "Compras y pagos"
     | "Tesorería"
     | "Remuneraciones"
     | "Centros de costo"
     | "Reportes"
     | "Aprobaciones"
+    | "Cierre financiero"
     | "Administración"
   >;
 }) {
@@ -1938,6 +1953,7 @@ export function FinanceDashboard() {
     access?.membership.role === "administrator" ||
     access?.membership.role === "finance" ||
     access?.membership.role === "auditor";
+  const canReadProcurement = access !== null;
   const visibleNavigationGroups = navigationGroups
     .map((group) => ({
       ...group,
@@ -1947,7 +1963,10 @@ export function FinanceDashboard() {
             access?.membership.role === "administrator") &&
           (item !== "Centros de costo" || canManageCostCenters) &&
           (item !== "Gastos y proveedores" || canReadExpenses) &&
-          (item !== "Tesorería" || canReadExpenses),
+          (item !== "Compras y pagos" || canReadProcurement) &&
+          (item !== "Tesorería" || canReadExpenses) &&
+          (item !== "Planificación financiera" || canReadExpenses) &&
+          (item !== "Cierre financiero" || canReadExpenses),
       ),
     }))
     .filter((group) => group.items.length);
@@ -2016,14 +2035,20 @@ export function FinanceDashboard() {
                                   ? "◷"
                                   : item === "Gastos y proveedores"
                                   ? "▣"
+                                  : item === "Compras y pagos"
+                                    ? "▤"
                                   : item === "Tesorería"
                                     ? "◒"
+                                    : item === "Planificación financiera"
+                                      ? "⌁"
                                   : item === "Remuneraciones"
                                       ? "◫"
                                       : item === "Centros de costo"
                                         ? "⊞"
                                         : item === "Aprobaciones"
                                           ? "✓"
+                                          : item === "Cierre financiero"
+                                            ? "◉"
                                         : item === "Reportes"
                                           ? "◔"
                                           : "⚙"}
@@ -2088,6 +2113,12 @@ export function FinanceDashboard() {
           />
         ) : activeModule === "Proyecciones" ? (
           <ForecastModule />
+        ) : activeModule === "Planificación financiera" ? (
+          canReadExpenses ? (
+            <FinancialPlanningDashboard
+              organizationId={access?.membership.organizationId ?? null}
+            />
+          ) : null
         ) : activeModule === "Clientes" ? (
           <CustomerModule
             records={records}
@@ -2118,6 +2149,12 @@ export function FinanceDashboard() {
               canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
             />
           ) : null
+        ) : activeModule === "Compras y pagos" ? (
+          <ProcureToPayWorkbench
+            organizationId={access?.membership.organizationId ?? null}
+            canManage={hasEditPermission}
+            canManagePayments={access?.membership.role === "administrator" || access?.membership.role === "finance"}
+          />
         ) : activeModule === "Tesorería" ? (
           canReadExpenses ? (
             <TreasuryDashboard
@@ -2144,6 +2181,12 @@ export function FinanceDashboard() {
           <ApprovalInbox
             organizationId={access?.membership.organizationId ?? null}
           />
+        ) : activeModule === "Cierre financiero" ? (
+          canReadExpenses ? (
+            <FinancialCloseWorkbench
+              organizationId={access?.membership.organizationId ?? null}
+            />
+          ) : null
         ) : activeModule === "Administración" ? (
           access?.membership.role === "administrator" ? (
             <AdministrationConsole
