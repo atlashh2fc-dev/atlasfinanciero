@@ -834,6 +834,59 @@ button {
   gap: 10px;
   padding: 0 20px 20px;
 }
+.cost-center-section {
+  display: flex;
+  flex-direction: column;
+}
+.cost-center-section .table-heading {
+  order: 1;
+}
+.cost-center-section .operation-message {
+  order: 2;
+}
+.cost-center-section .cost-center-groups {
+  order: 3;
+}
+.cost-center-management-panel {
+  order: 4;
+  margin: 0 20px 20px;
+  border: 1px solid #e1e6ee;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.cost-center-management-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 15px;
+  cursor: pointer;
+  background: #f8faff;
+  color: #334057;
+  list-style: none;
+}
+.cost-center-management-panel summary::-webkit-details-marker {
+  display: none;
+}
+.cost-center-management-panel summary > span:first-child {
+  display: grid;
+  gap: 3px;
+}
+.cost-center-management-panel summary strong {
+  font-size: 12px;
+}
+.cost-center-management-panel summary small,
+.cost-center-management-hint {
+  color: #7d8ba0;
+  font-size: 10px;
+}
+.cost-center-management-panel[open] summary {
+  border-bottom: 1px solid #e1e6ee;
+  background: #f1f4ff;
+}
+.cost-center-management-panel .admin-grid {
+  padding: 16px;
+}
 .cost-center-group {
   overflow: hidden;
   border: 1px solid #e1e6ee;
