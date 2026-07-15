@@ -1,0 +1,3 @@
+-- Marcador de historial: esta versión fue aplicada directamente en producción
+-- antes de quedar registrada en el repositorio. No ejecuta SQL para evitar
+-- duplicar los objetos financieros ya existentes.

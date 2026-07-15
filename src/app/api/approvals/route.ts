@@ -48,6 +48,7 @@ export async function GET(request: NextRequest) {
       .from("approval_requests")
       .select("id, approval_policy_id, target_type, target_id, title, description, amount, currency_code, status, requested_by, submitted_at, completed_at, metadata, approval_policies(name), approval_steps(id, step_number, required_role, assigned_to, status, decided_by, decided_at, decision_comment)")
       .eq("organization_id", organizationId)
+      .eq("status", "submitted")
       .order("submitted_at", { ascending: false }),
     context.supabase
       .from("approval_policies")
