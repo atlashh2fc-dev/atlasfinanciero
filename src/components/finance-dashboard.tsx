@@ -2087,6 +2087,7 @@ export function FinanceDashboard() {
           canReadExpenses ? (
             <ExpensesDashboard
               organizationId={access?.membership.organizationId ?? null}
+              canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
             />
           ) : null
         ) : activeModule === "Remuneraciones" ? (
