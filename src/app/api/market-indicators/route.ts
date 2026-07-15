@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 
 export const revalidate = 3600;
+// El proveedor público puede responder lentamente. Esta ruta se evalúa bajo
+// demanda y conserva caché HTTP; así una consulta externa no bloquea el build.
+export const dynamic = "force-dynamic";
 
 type PublicIndicator = {
   codigo: string;
