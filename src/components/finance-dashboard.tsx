@@ -30,6 +30,7 @@ import { CustomerPurchaseOrders } from "@/components/customer-purchase-orders";
 import { CustomerProfiles } from "@/components/customer-profiles";
 import { ReportsDashboard } from "@/components/reports-dashboard";
 import { CostCenterManagement } from "@/components/cost-center-management";
+import { ExpensesDashboard } from "@/components/expenses-dashboard";
 import {
   isCreditNoteDocument,
   isPurchaseOrderDocument,
@@ -75,7 +76,7 @@ const modulePreviews: Record<Module, string> = {
   Proyecciones:
     "Presupuesto mensual, forecast y diferencia contra la información real disponible.",
   "Gastos y proveedores":
-    "Próximamente: documentos recibidos, rendiciones, pagos y conciliación bancaria.",
+    "Facturas recibidas, proveedores, vencimientos, pagos y detalle anual trazable.",
   Remuneraciones: "Costo laboral y dotación sincronizados desde PeopleWork.",
   "Centros de costo":
     "Estructura de imputación, personas y clientes que financian cada unidad o proyecto.",
@@ -1916,6 +1917,10 @@ export function FinanceDashboard() {
   const canManageCostCenters =
     access?.membership.role === "administrator" ||
     access?.membership.role === "finance";
+  const canReadExpenses =
+    access?.membership.role === "administrator" ||
+    access?.membership.role === "finance" ||
+    access?.membership.role === "auditor";
   const visibleNavigationGroups = navigationGroups
     .map((group) => ({
       ...group,
@@ -1923,7 +1928,8 @@ export function FinanceDashboard() {
         (item) =>
           (item !== "Administración" ||
             access?.membership.role === "administrator") &&
-          (item !== "Centros de costo" || canManageCostCenters),
+          (item !== "Centros de costo" || canManageCostCenters) &&
+          (item !== "Gastos y proveedores" || canReadExpenses),
       ),
     }))
     .filter((group) => group.items.length);
@@ -2077,6 +2083,12 @@ export function FinanceDashboard() {
           />
         ) : activeModule === "Recurrentes" ? (
           <BillingOperations />
+        ) : activeModule === "Gastos y proveedores" ? (
+          canReadExpenses ? (
+            <ExpensesDashboard
+              organizationId={access?.membership.organizationId ?? null}
+            />
+          ) : null
         ) : activeModule === "Remuneraciones" ? (
           <PayrollDashboard
             organizationId={access?.membership.organizationId ?? null}
