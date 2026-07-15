@@ -70,7 +70,10 @@ export async function POST(request: NextRequest) {
 
   const form = await request.formData();
   const issueDate = readDate(form.get("issueDate"));
+  const dueDate = readDate(form.get("dueDate"));
   const documentType = readText(form.get("documentType"), 100, true);
+  const issuerName = readText(form.get("issuerName"), 250, true);
+  const issuerTaxId = readText(form.get("issuerTaxId"), 40);
   const status = readText(form.get("status"), 80, true);
   const clientId = form.get("clientId");
   const contactId = form.get("contactId");
@@ -78,7 +81,7 @@ export async function POST(request: NextRequest) {
   const paymentCondition = readPaymentCondition(form.get("paymentCondition"));
   const upload = form.get("file");
   const requiresPaymentCondition = documentType?.startsWith("Factura");
-  if (!issueDate || !documentType || !documentTypes.has(documentType) || !paymentStatuses.has(status ?? "") || !isUuid(clientId) || (contactId && !isUuid(contactId)) || typeof netAmount !== "number" || (requiresPaymentCondition && !paymentCondition) || (upload !== null && !(upload instanceof File))) return NextResponse.json({ error: "invalid_document" }, { status: 400 });
+  if (!issueDate || !documentType || !issuerName || !documentTypes.has(documentType) || !paymentStatuses.has(status ?? "") || !isUuid(clientId) || (contactId && !isUuid(contactId)) || typeof netAmount !== "number" || (requiresPaymentCondition && (!paymentCondition || !dueDate)) || (upload !== null && !(upload instanceof File))) return NextResponse.json({ error: "invalid_document" }, { status: 400 });
   if (upload instanceof File && (upload.size === 0 || upload.size > 52_428_800 || !new Set(["application/pdf", "image/jpeg", "image/png"]).has(upload.type))) return NextResponse.json({ error: "invalid_document_attachment" }, { status: 400 });
 
   const { data: memberships, error: membershipsError } = await supabase
@@ -144,14 +147,15 @@ export async function POST(request: NextRequest) {
       document_number: readText(form.get("invoiceNumber"), 80),
       issue_date: issueDate,
       document_type: documentType,
-      issuer_name: organization.legal_name,
-      issuer_tax_id: organization.tax_id,
+      issuer_name: issuerName,
+      issuer_tax_id: issuerTaxId,
       client_name: client.trade_name || client.legal_name,
       recipient_name: contact?.full_name || client.trade_name || client.legal_name,
       recipient_tax_id: client.tax_id,
       net_amount: netAmount,
       vat_amount: vatAmount,
       total_amount: totalAmount,
+      due_date: dueDate,
       payment_status: status,
       payment_condition: paymentCondition,
       attachment_path: attachmentPath,
@@ -163,7 +167,7 @@ export async function POST(request: NextRequest) {
       source_row: 0,
     })
     .select(
-      "id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, payment_status, payment_condition, attachment_path, attachment_name, attachment_mime_type, attachment_size, source_file_name, source_sheet_name, source_row",
+      "id, document_number, issue_date, due_date, due_month, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, payment_status, payment_condition, attachment_path, attachment_name, attachment_mime_type, attachment_size, source_file_name, source_sheet_name, source_row",
     )
     .single();
 

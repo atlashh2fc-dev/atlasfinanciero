@@ -167,7 +167,10 @@ type AccessProfile = {
 type InvoiceDraft = {
   invoiceNumber: string;
   issueDate: string;
+  dueDate: string;
   documentType: string;
+  issuerName: string;
+  issuerTaxId: string;
   clientId: string;
   contactId: string;
   netAmount: string;
@@ -193,7 +196,10 @@ type DocumentUpdateDraft = {
 const blankDraft: InvoiceDraft = {
   invoiceNumber: "",
   issueDate: "",
+  dueDate: "",
   documentType: "Factura afecta",
+  issuerName: "",
+  issuerTaxId: "",
   clientId: "",
   contactId: "",
   netAmount: "",
@@ -1685,16 +1691,25 @@ export function FinanceDashboard() {
     let active = true;
     setLoadingDocumentSources(true);
     fetch(`/api/customer-profiles?organizationId=${encodeURIComponent(organizationId)}`, { cache: "no-store" })
-      .then((response) => response.ok ? response.json() as Promise<{ customers: DocumentCustomer[]; contacts: DocumentContact[] }> : null)
+      .then((response) => response.ok ? response.json() as Promise<{ profiles: DocumentCustomer[]; contacts: DocumentContact[] }> : null)
       .then((payload) => {
         if (!active || !payload) return;
-        setDocumentCustomers(Array.isArray(payload.customers) ? payload.customers : []);
+        setDocumentCustomers(Array.isArray(payload.profiles) ? payload.profiles : []);
         setDocumentContacts(Array.isArray(payload.contacts) ? payload.contacts : []);
       })
       .catch(() => undefined)
       .finally(() => { if (active) setLoadingDocumentSources(false); });
     return () => { active = false; };
   }, [showEntry, access?.membership.organizationId]);
+
+  useEffect(() => {
+    if (!showEntry || !access) return;
+    setDraft((current) => ({
+      ...current,
+      issuerName: current.issuerName || access.membership.organizationName,
+      issuerTaxId: current.issuerTaxId || access.membership.organizationTaxId || "",
+    }));
+  }, [showEntry, access]);
 
   useEffect(() => {
     let active = true;
@@ -1903,21 +1918,25 @@ export function FinanceDashboard() {
     if (
       !draft.issueDate ||
       !draft.documentType ||
+      !draft.issuerName.trim() ||
       !draft.clientId ||
       !draft.netAmount ||
       !draft.status ||
       (draft.documentType.toLocaleLowerCase().includes("factura") &&
-        !draft.paymentCondition)
+        (!draft.paymentCondition || !draft.dueDate))
     ) {
       setFormError(
-        "Completa fecha, tipo, cliente, monto neto, estado y condición del servicio para facturas.",
+        "Completa fecha de emisión y vencimiento, tipo, emisor, cliente, monto neto, estado y condición del servicio para facturas.",
       );
       return;
     }
     const formData = new FormData();
     formData.set("invoiceNumber", draft.invoiceNumber);
     formData.set("issueDate", draft.issueDate);
+    formData.set("dueDate", draft.dueDate);
     formData.set("documentType", draft.documentType);
+    formData.set("issuerName", draft.issuerName);
+    formData.set("issuerTaxId", draft.issuerTaxId);
     formData.set("clientId", draft.clientId);
     formData.set("contactId", draft.contactId);
     formData.set("netAmount", draft.netAmount);
@@ -1948,6 +1967,8 @@ export function FinanceDashboard() {
         id: string;
         document_number: string | null;
         issue_date: string;
+        due_date: string | null;
+        due_month: string | null;
         document_type: string;
         issuer_name: string;
         issuer_tax_id: string | null;
@@ -1971,8 +1992,8 @@ export function FinanceDashboard() {
       ...payload.document,
       notes: null,
       payment_term_days: null,
-      due_date: null,
-      due_month: null,
+      due_date: payload.document.due_date,
+      due_month: payload.document.due_month,
       payment_date: null,
       payment_method: null,
       payment_condition:
@@ -2359,7 +2380,14 @@ export function FinanceDashboard() {
                   <button
                     className="primary-button"
                     type="button"
-                    onClick={() => setShowEntry(true)}
+                    onClick={() => {
+                      setDraft({
+                        ...blankDraft,
+                        issuerName: access?.membership.organizationName ?? "",
+                        issuerTaxId: access?.membership.organizationTaxId ?? "",
+                      });
+                      setShowEntry(true);
+                    }}
                   >
                     ＋ Registrar documento
                   </button>
@@ -2708,8 +2736,9 @@ export function FinanceDashboard() {
                 <span className="eyebrow">REGISTRO CONTROLADO</span>
                 <h2 id="entry-title">Registrar factura o documento</h2>
                 <p>
-                  El emisor, cliente y destinatario se obtienen desde la empresa
-                  activa y sus fichas comerciales. IVA y total se calculan automáticamente.
+                  El emisor se propone desde la empresa activa y puede corregirse.
+                  Cliente y destinatario provienen de las fichas comerciales. IVA y
+                  total se calculan automáticamente.
                 </p>
               </div>
               <button
@@ -2739,6 +2768,16 @@ export function FinanceDashboard() {
                     value={draft.issueDate}
                     onChange={(event) =>
                       updateDraft("issueDate", event.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  Fecha vencimiento (facturas) *
+                  <input
+                    type="date"
+                    value={draft.dueDate}
+                    onChange={(event) =>
+                      updateDraft("dueDate", event.target.value)
                     }
                   />
                 </label>
@@ -2776,12 +2815,12 @@ export function FinanceDashboard() {
                   </select>
                 </label>
                 <label>
-                  Empresa emisora
-                  <input value={access?.membership.organizationName ?? "Empresa activa"} readOnly />
+                  Empresa emisora *
+                  <input value={draft.issuerName} onChange={(event) => updateDraft("issuerName", event.target.value)} placeholder="Empresa emisora" required />
                 </label>
                 <label>
                   RUT emisor
-                  <input value={access?.membership.organizationTaxId || "Sin RUT registrado en la empresa activa"} readOnly />
+                  <input value={draft.issuerTaxId} onChange={(event) => updateDraft("issuerTaxId", event.target.value)} placeholder="RUT emisor" />
                 </label>
                 <label>
                   Cliente *
