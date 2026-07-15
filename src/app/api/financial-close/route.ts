@@ -19,12 +19,13 @@ function monthEnd(periodStart: string) {
 
 export async function GET(request: NextRequest) {
   const organizationId = request.nextUrl.searchParams.get("organizationId");
+  const requestedPeriodId = request.nextUrl.searchParams.get("periodId");
   if (!isUuid(organizationId)) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
 
   const context = await requireOrganizationExpenseReadAccess(organizationId);
   if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
 
-  const [periodsResult, tasksResult, eventsResult, entriesResult, issuedResult, receivedResult, bankResult] = await Promise.all([
+  const [periodsResult, tasksResult, eventsResult] = await Promise.all([
     context.supabase.from("financial_periods")
       .select("id, period_start, period_end, status, closed_at, closed_by, notes, created_at, updated_at")
       .eq("organization_id", organizationId).order("period_start", { ascending: false }).limit(36),
@@ -34,29 +35,24 @@ export async function GET(request: NextRequest) {
     context.supabase.from("financial_period_close_events")
       .select("id, financial_period_id, from_status, to_status, reason, actor_id, created_at")
       .eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(100),
-    context.supabase.from("accounting_entries")
-      .select("id, financial_period_id, status").eq("organization_id", organizationId).limit(1_000),
-    context.supabase.from("issued_documents")
-      .select("id, issue_date, total_amount").eq("organization_id", organizationId).not("issue_date", "is", null).limit(2_000),
-    context.supabase.from("received_documents")
-      .select("id, issue_date, total_amount").eq("organization_id", organizationId).limit(2_000),
-    context.supabase.from("bank_transactions")
-      .select("id, booked_on, reconciliation_status").eq("organization_id", organizationId).limit(2_000),
   ]);
 
-  if (periodsResult.error || tasksResult.error || eventsResult.error || entriesResult.error || issuedResult.error || receivedResult.error || bankResult.error) {
+  if (periodsResult.error || tasksResult.error || eventsResult.error) {
     return NextResponse.json({ error: "unable_to_load_financial_close" }, { status: 500 });
   }
+  const periods = periodsResult.data ?? [];
+  const selectedPeriodId = requestedPeriodId && periods.some((period) => period.id === requestedPeriodId) ? requestedPeriodId : periods[0]?.id ?? null;
+  const controlsResult = selectedPeriodId
+    ? await context.supabase.rpc("financial_close_control_snapshot", { p_financial_period_id: selectedPeriodId })
+    : { data: null, error: null };
+  if (controlsResult.error) return NextResponse.json({ error: "unable_to_load_financial_close_controls" }, { status: 500 });
 
   return NextResponse.json({
     role: context.user ? (await context.supabase.from("organization_memberships").select("role").eq("organization_id", organizationId).eq("user_id", context.user.id).single()).data?.role ?? null : null,
-    periods: periodsResult.data ?? [],
+    periods,
     tasks: tasksResult.data ?? [],
     events: eventsResult.data ?? [],
-    entries: entriesResult.data ?? [],
-    issuedDocuments: issuedResult.data ?? [],
-    receivedDocuments: receivedResult.data ?? [],
-    bankTransactions: bankResult.data ?? [],
+    controls: controlsResult.data,
   });
 }
 
