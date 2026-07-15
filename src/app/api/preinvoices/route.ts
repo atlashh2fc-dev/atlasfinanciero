@@ -17,6 +17,7 @@ type Service = {
   billing_frequency: string;
 };
 type PreinvoiceGenerationRow = { id: string; status: string; pricing_date: string };
+type ServiceDraft = { customerServiceId: string; quantity: number; unitPrice: number; description: string; notes: string | null };
 
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -31,6 +32,38 @@ function periodMonth(value: unknown) {
 
 function roundClp(value: number) {
   return Math.round(value);
+}
+
+function roundDecimal(value: number, decimals: number) {
+  const multiplier = 10 ** decimals;
+  return Math.round((value + Number.EPSILON) * multiplier) / multiplier;
+}
+
+function positiveDecimal(value: unknown, decimals: number) {
+  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  return Number.isFinite(number) && number > 0 ? roundDecimal(number, decimals) : null;
+}
+
+function nonNegativeDecimal(value: unknown, decimals: number) {
+  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  return Number.isFinite(number) && number >= 0 ? roundDecimal(number, decimals) : null;
+}
+
+function lineDrafts(value: unknown) {
+  if (!Array.isArray(value) || !value.length) return null;
+  const drafts: ServiceDraft[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") return null;
+    const draft = item as Record<string, unknown>;
+    const customerServiceId = draft.customerServiceId;
+    const quantity = positiveDecimal(draft.quantity, 4);
+    const unitPrice = nonNegativeDecimal(draft.unitPrice, 4);
+    const description = typeof draft.description === "string" ? draft.description.trim() : "";
+    const notes = typeof draft.notes === "string" ? draft.notes.trim() : "";
+    if (!isUuid(customerServiceId) || quantity === null || unitPrice === null || !description || description.length > 500 || notes.length > 2000) return null;
+    drafts.push({ customerServiceId, quantity, unitPrice, description, notes: notes || null });
+  }
+  return new Set(drafts.map((draft) => draft.customerServiceId)).size === drafts.length ? drafts : null;
 }
 
 function normalized(value: string | null | undefined) {
@@ -100,25 +133,23 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json().catch(() => null) as { organizationId?: unknown; action?: unknown; periodMonth?: unknown; pricingDate?: unknown; counterpartyId?: unknown; customerServiceIds?: unknown } | null;
+  const body = await request.json().catch(() => null) as { organizationId?: unknown; action?: unknown; periodMonth?: unknown; pricingDate?: unknown; counterpartyId?: unknown; lines?: unknown } | null;
   const month = periodMonth(body?.periodMonth);
   const pricingDate = isIsoDate(body?.pricingDate) ? body.pricingDate : month;
   const data = await context(body?.organizationId, operatorRoles);
   if (!data) return NextResponse.json({ error: "preinvoice_write_not_authorized" }, { status: 403 });
   const counterpartyId = body?.counterpartyId;
-  const serviceIds = Array.isArray(body?.customerServiceIds) ? [...new Set(body.customerServiceIds.filter(isUuid))] : [];
-  if (body?.action !== "create_draft" || !month || !pricingDate || !isUuid(counterpartyId) || !serviceIds.length) return NextResponse.json({ error: "invalid_preinvoice_generation" }, { status: 400 });
+  const requestedLines = lineDrafts(body?.lines);
+  const serviceIds = requestedLines?.map((line) => line.customerServiceId) ?? [];
+  if (body?.action !== "create_draft" || !month || !pricingDate || !isUuid(counterpartyId) || !requestedLines) return NextResponse.json({ error: "invalid_preinvoice_generation" }, { status: 400 });
 
-  const [servicesResult, catalogResult, rulesResult, cyclesResult] = await Promise.all([
+  const [servicesResult, rulesResult, cyclesResult] = await Promise.all([
     data.supabase.from("customer_services")
       .select("id, counterparty_id, service_catalog_id, quantity, unit_price, currency, starts_on, ends_on, billing_frequency")
       .eq("organization_id", data.organizationId)
       .eq("counterparty_id", counterpartyId)
       .eq("is_active", true)
       .in("id", serviceIds),
-    data.supabase.from("service_catalog")
-      .select("id, name")
-      .eq("organization_id", data.organizationId),
     data.supabase.from("billing_recurrence_rules")
       .select("id, counterparty_id")
       .eq("organization_id", data.organizationId)
@@ -128,15 +159,15 @@ export async function POST(request: NextRequest) {
       .eq("organization_id", data.organizationId)
       .eq("period_month", month),
   ]);
-  if (servicesResult.error || catalogResult.error || rulesResult.error || cyclesResult.error) {
+  if (servicesResult.error || rulesResult.error || cyclesResult.error) {
     return NextResponse.json({ error: "unable_to_prepare_preinvoices" }, { status: 500 });
   }
 
-  const catalogNames = new Map((catalogResult.data ?? []).map((item) => [item.id, item.name]));
   const counterpartyByRule = new Map((rulesResult.data ?? []).map((item) => [item.id, item.counterparty_id]));
   const cycleByCustomerCurrency = new Map((cyclesResult.data ?? []).map((item) => [`${counterpartyByRule.get(item.recurrence_rule_id) ?? ""}:${item.currency_code}`, item.id]));
   const selectedServices = (servicesResult.data ?? []) as Service[];
   if (selectedServices.length !== serviceIds.length) return NextResponse.json({ error: "selected_services_not_available" }, { status: 409 });
+  const draftByServiceId = new Map(requestedLines.map((line) => [line.customerServiceId, line]));
   const hasUfServices = selectedServices.some((service) => service.currency === "UF");
   let ufQuote: Awaited<ReturnType<typeof getSiiUfQuote>> | null = null;
   if (hasUfServices) {
@@ -198,28 +229,31 @@ export async function POST(request: NextRequest) {
     }
     if (!preinvoice) return NextResponse.json({ error: "unable_to_create_preinvoice" }, { status: 409 });
     const lineRows = services.map((service) => {
-      const sourceUnitPrice = Number(service.unit_price);
+      const draft = draftByServiceId.get(service.id);
+      if (!draft) throw new Error("missing_service_draft");
+      const sourceUnitPrice = draft.unitPrice;
       const conversionRate = service.currency === "UF" ? ufQuote?.value : 1;
       if (!conversionRate) throw new Error("missing_uf_quote");
-      const unitPrice = service.currency === "UF" ? roundClp(sourceUnitPrice * conversionRate) : sourceUnitPrice;
+      const unitPrice = service.currency === "UF" ? roundClp(sourceUnitPrice * conversionRate) : roundDecimal(sourceUnitPrice, 2);
       return {
         organization_id: data.organizationId,
         preinvoice_id: preinvoice.id,
         customer_service_id: service.id,
         service_catalog_id: service.service_catalog_id,
-        description: catalogNames.get(service.service_catalog_id) ?? "Servicio contratado",
-        quantity: service.quantity,
+        description: draft.description,
+        quantity: draft.quantity,
         unit_price: unitPrice,
-        net_amount: Number(service.quantity) * unitPrice,
+        net_amount: roundDecimal(draft.quantity * unitPrice, 2),
         source_currency: service.currency,
         source_unit_price: sourceUnitPrice,
         conversion_rate_to_clp: conversionRate,
         pricing_date: pricingDate,
         rate_source: service.currency === "UF" ? "sii_uf_daily" : "contract_price_clp",
+        notes: draft.notes,
       };
     });
     const { error } = await data.supabase.from("preinvoice_lines")
-      .upsert(lineRows, { onConflict: "preinvoice_id,customer_service_id", ignoreDuplicates: true });
+      .upsert(lineRows, { onConflict: "preinvoice_id,customer_service_id" });
     if (error) return NextResponse.json({ error: "unable_to_add_preinvoice_lines" }, { status: 409 });
     linesAdded += lineRows.length;
   }
