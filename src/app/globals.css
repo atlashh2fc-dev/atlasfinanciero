@@ -1753,6 +1753,7 @@ td small {
   border-radius: 10px;
   background: #f6f8fb;
 }
+.p2p-payments-lane { grid-column: 1 / -1; }
 .p2p-lane-heading {
   display: flex;
   align-items: center;
@@ -1816,6 +1817,77 @@ td small {
 .p2p-link-control select { width: 100%; min-width: 0; padding: 7px; border: 1px solid #dfe5ed; border-radius: 6px; background: #fff; color: #526077; font-size: 10px; }
 .p2p-document-case { border-left: 3px solid #e5bd61; }
 .p2p-payment-case { border-left: 3px solid #6574e0; }
+.p2p-payment-filters {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) repeat(4, minmax(115px, 1fr));
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e3e8f1;
+  border-radius: 8px;
+  background: #fff;
+}
+.p2p-payment-filters label {
+  display: grid;
+  gap: 4px;
+  color: #7d899c;
+  font-size: 9px;
+  font-weight: 800;
+}
+.p2p-payment-filters input,
+.p2p-payment-filters select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid #dfe5ed;
+  border-radius: 6px;
+  padding: 7px;
+  background: #fff;
+  color: #526077;
+  font-size: 11px;
+}
+.p2p-payment-selection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: #edf1ff;
+  color: #4c5d9d;
+  font-size: 11px;
+  font-weight: 700;
+}
+.p2p-document-list { display: grid; gap: 10px; }
+.p2p-queue-count { color: #7d899c; font-size: 10px; font-weight: 700; }
+.p2p-document-group { display: grid; gap: 8px; }
+.p2p-document-group > h4 {
+  margin: 2px 0 0;
+  color: #526077;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+.p2p-document-group > h4 small {
+  display: inline-grid;
+  min-width: 18px;
+  margin-left: 5px;
+  place-items: center;
+  border-radius: 99px;
+  background: #e2e8f5;
+  color: #66738a;
+  font-size: 9px;
+}
+.p2p-document-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #627087;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.p2p-document-select input { width: 14px; height: 14px; margin: 0; accent-color: #5d6cda; }
+.p2p-document-select:has(input:disabled) { color: #9aa5b4; cursor: not-allowed; }
+.p2p-show-more { justify-self: center; }
 .p2p-payment-blocked {
   display: grid;
   gap: 5px;
@@ -2651,7 +2723,8 @@ td small {
   .p2p-flow,
   .p2p-attention-grid,
   .p2p-lanes,
-  .p2p-compact-form { grid-template-columns: 1fr; }
+  .p2p-compact-form,
+  .p2p-payment-filters { grid-template-columns: 1fr; }
   .p2p-flow { gap: 9px; padding: 14px; }
   .p2p-flow-step { padding: 5px 3px; }
   .p2p-flow-step + .p2p-flow-step { border-top: 1px solid #e9edf3; border-left: 0; }
