@@ -6,7 +6,7 @@ type Role = "administrator" | "finance" | "operations" | "auditor";
 type Customer = { id: string; legal_name: string; trade_name: string | null };
 type CustomerService = { id: string; counterparty_id: string; service_catalog_id: string; service_name: string; service_category: string | null; quantity: number; unit_price: number; currency: string; starts_on: string | null; ends_on: string | null; billing_frequency: "monthly" | "quarterly" | "annual" | "one_time" };
 type ServiceDraft = { customerServiceId: string; description: string; quantity: string; unitPrice: string; notes: string };
-type IssuedDocument = { id: string; counterparty_id: string | null; document_number: string | null; issue_date: string | null; total_amount: number | null; client_name: string | null };
+type IssuedDocument = { id: string; counterparty_id: string | null; document_number: string | null; issue_date: string | null; total_amount: number | null; client_name: string | null; recipient_name: string | null };
 type Line = { id: string; preinvoice_id: string; description: string; quantity: number; unit_price: number; net_amount: number; source_currency: string; source_unit_price: number; conversion_rate_to_clp: number; pricing_date: string; rate_source: string; usage_quantity: number | null; notes: string | null; service_name: string | null; service_category: string | null };
 type Preinvoice = {
   id: string;
@@ -67,6 +67,7 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
   useEffect(() => { void load(); }, [organizationId]);
 
   const customers = useMemo(() => new Map((data?.customers ?? []).map((customer) => [customer.id, customer])), [data]);
+  const documents = useMemo(() => new Map((data?.documents ?? []).map((document) => [document.id, document])), [data]);
   const linesByPreinvoice = useMemo(() => {
     const result = new Map<string, Line[]>();
     for (const line of data?.lines ?? []) result.set(line.preinvoice_id, [...(result.get(line.preinvoice_id) ?? []), line]);
@@ -126,14 +127,16 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
       setMessage(result?.error === "approval_request_not_created" ? "La prefactura quedó en revisión, pero no se creó su solicitud. Devuélvela a borrador y vuelve a enviarla." : "No fue posible cambiar el estado. Revisa la secuencia, permisos y factura vinculada.");
       return;
     }
-    setMessage(action === "submit_review" && result?.approvalRequestId ? "Prefactura enviada correctamente a Aprobaciones." : action === "issue" ? "Prefactura marcada como emitida y vinculada a la factura." : "Estado de prefactura actualizado.");
+    const issuedDocument = issuedDocumentId ? documents.get(issuedDocumentId) : null;
+    const issuedLabel = issuedDocument ? `Folio ${issuedDocument.document_number || "sin folio"} · ${issuedDocument.issue_date || "sin fecha"} · CLP ${money.format(Number(issuedDocument.total_amount ?? 0))}` : "factura emitida";
+    setMessage(action === "submit_review" && result?.approvalRequestId ? "Prefactura enviada correctamente a Aprobaciones." : action === "issue" ? `Prefactura emitida y vinculada a ${issuedLabel}.` : "Estado de prefactura actualizado.");
     await load();
   }
 
   function matchingDocuments(preinvoice: Preinvoice) {
     const customer = customers.get(preinvoice.counterparty_id);
     const names = new Set([normalized(customer?.legal_name), normalized(customer?.trade_name)].filter(Boolean));
-    return (data?.documents ?? []).filter((document) => document.counterparty_id === preinvoice.counterparty_id || (!document.counterparty_id && names.has(normalized(document.client_name))));
+    return (data?.documents ?? []).filter((document) => document.counterparty_id === preinvoice.counterparty_id || (!document.counterparty_id && [document.client_name, document.recipient_name].some((name) => names.has(normalized(name)))));
   }
 
   return <main className="dashboard billing-dashboard">
@@ -181,11 +184,12 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
           const customer = customers.get(preinvoice.counterparty_id);
           const lines = linesByPreinvoice.get(preinvoice.id) ?? [];
           const docs = matchingDocuments(preinvoice);
+          const linkedDocument = preinvoice.issued_document_id ? documents.get(preinvoice.issued_document_id) : null;
           return <tr key={preinvoice.id}><td><strong>{customer?.trade_name || customer?.legal_name || "Cliente"}</strong><small>{lines.length ? lines.map((line) => `${line.source_currency === "UF" ? `${lineLabel(line)} (${line.quantity} × UF ${money.format(Number(line.source_unit_price))}; SII ${line.pricing_date} = CLP ${money.format(Number(line.conversion_rate_to_clp))})` : `${lineLabel(line)} (${line.quantity} × CLP ${money.format(Number(line.unit_price))})`}${line.notes ? ` — ${line.notes}` : ""}`).join(" · ") : "Sin líneas de servicio"}</small><small>Fecha de valorización: {preinvoice.pricing_date}</small></td><td>{preinvoice.currency_code}</td><td className="money-col">{money.format(Number(preinvoice.total_amount))}</td><td><span className={`status ${preinvoice.status === "draft" ? "pending" : preinvoice.status === "review" ? "pending" : preinvoice.status === "approved" || preinvoice.status === "issued" ? "paid" : "cancelled"}`}>{labelForStatus[preinvoice.status]}</span></td><td><div className="cycle-actions">
             {preinvoice.status === "draft" && canWrite && <><button type="button" className="secondary-button" disabled={saving || !lines.length} onClick={() => void transition(preinvoice.id, "submit_review")}>Enviar a revisión</button>{canApprove && <button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button>}</>}
             {preinvoice.status === "review" && <><small>Decisión pendiente en Aprobaciones</small>{onOpenApprovals && <button type="button" className="secondary-button" disabled={saving} onClick={onOpenApprovals}>Ver aprobación</button>}{canApprove && <><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "return_to_draft")}>Devolver</button><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button></>}</>}
-            {preinvoice.status === "approved" && canApprove && <><select aria-label="Factura emitida" value={documentByPreinvoice[preinvoice.id] ?? ""} onChange={(event) => setDocumentByPreinvoice((current) => ({ ...current, [preinvoice.id]: event.target.value }))}><option value="">Factura emitida…</option>{docs.map((document) => <option key={document.id} value={document.id}>{document.document_number || "Sin folio"} · {document.issue_date || "sin fecha"} · CLP {money.format(Number(document.total_amount ?? 0))}</option>)}</select><button type="button" className="primary-button" disabled={saving || !docs.length} onClick={() => void transition(preinvoice.id, "issue")}>Vincular emisión</button><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button></>}
-            {preinvoice.status === "issued" && <small>Factura vinculada</small>}
+            {preinvoice.status === "approved" && canApprove && <>{docs.length ? <><select aria-label="Factura emitida" value={documentByPreinvoice[preinvoice.id] ?? ""} onChange={(event) => setDocumentByPreinvoice((current) => ({ ...current, [preinvoice.id]: event.target.value }))}><option value="">Selecciona la factura emitida…</option>{docs.map((document) => <option key={document.id} value={document.id}>{document.document_number || "Sin folio"} · {document.issue_date || "sin fecha"} · CLP {money.format(Number(document.total_amount ?? 0))}</option>)}</select><button type="button" className="primary-button" disabled={saving || !documentByPreinvoice[preinvoice.id]} onClick={() => void transition(preinvoice.id, "issue")}>Confirmar vínculo</button></> : <small>No hay factura emitida registrada para este cliente.</small>}<button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button></>}
+            {preinvoice.status === "issued" && <small>{linkedDocument ? `Emitida · Folio ${linkedDocument.document_number || "sin folio"} · ${linkedDocument.issue_date || "sin fecha"} · CLP ${money.format(Number(linkedDocument.total_amount ?? 0))}` : "Emitida · Factura vinculada"}</small>}
             {preinvoice.status === "cancelled" && <small>{preinvoice.cancellation_reason || "Anulada"}</small>}
           </div></td></tr>;
         })}</tbody></table></div>

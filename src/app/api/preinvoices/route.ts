@@ -105,7 +105,7 @@ export async function GET(request: NextRequest) {
       .in("kind", ["customer", "both"])
       .order("legal_name"),
     data.supabase.from("issued_documents")
-      .select("id, counterparty_id, document_number, issue_date, total_amount, client_name")
+      .select("id, counterparty_id, document_number, issue_date, total_amount, client_name, recipient_name")
       .eq("organization_id", data.organizationId)
       .order("issue_date", { ascending: false })
       .limit(100),
