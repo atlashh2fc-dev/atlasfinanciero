@@ -779,6 +779,52 @@ button {
   padding: 6px 26px 6px 8px;
   font-size: 11px;
 }
+.expense-filter-row {
+  display: grid;
+  grid-template-columns: minmax(230px, 1.2fr) minmax(170px, 0.7fr) minmax(250px, 1fr);
+  gap: 12px;
+  padding: 0 20px 18px;
+}
+.expense-filter-row label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.expense-filter-row label > span {
+  color: #64738a;
+  font-size: 11px;
+  font-weight: 750;
+}
+.expense-filter-row select,
+.expense-filter-row input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid #dfe5ed;
+  border-radius: 8px;
+  padding: 0 11px;
+  color: #334057;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  outline-color: #6c79e5;
+}
+.expense-filter-row select {
+  padding-right: 32px;
+}
+.expense-document-row.is-actionable {
+  cursor: pointer;
+}
+.expense-document-row.is-actionable:hover td {
+  background: #f4f6ff;
+}
+.expense-document-row.is-actionable td:first-child strong {
+  color: #4a59c9;
+}
+.expense-document-row.is-actionable:focus {
+  outline: 2px solid #7b89e7;
+  outline-offset: -2px;
+}
 .table-scroll {
   overflow: auto;
   border-top: 1px solid #edf0f4;
