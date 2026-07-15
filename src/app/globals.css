@@ -1018,6 +1018,63 @@ button {
 .expense-filter-row select {
   padding-right: 32px;
 }
+.cost-allocation-form {
+  border-top: 1px solid #e8edf4;
+  padding-top: 18px;
+}
+.allocation-line {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(210px, 1fr) minmax(120px, .45fr) minmax(130px, .45fr);
+  gap: 12px;
+  align-items: end;
+  padding: 0 20px 14px;
+}
+.allocation-line label,
+.allocation-summary,
+.allocation-amount {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.allocation-line span,
+.allocation-summary span,
+.allocation-amount span {
+  color: #64738a;
+  font-size: 11px;
+  font-weight: 750;
+}
+.allocation-line select,
+.allocation-line input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid #dfe5ed;
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #26334a;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+}
+.allocation-summary { align-self: end; padding-bottom: 4px; }
+.allocation-summary small { color: #8a97aa; font-size: 10px; }
+.allocation-amount { padding-bottom: 2px; }
+.allocation-amount .text-button { justify-self: start; color: #b65061; }
+.allocation-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px 20px;
+}
+.allocation-actions > div { margin-right: auto; display: grid; gap: 2px; }
+.allocation-actions span { font-size: 11px; font-weight: 700; }
+.allocation-valid { color: #26825a; }
+.allocation-invalid { color: #b66a16; }
+.allocation-table { border-top: 1px solid #e8edf4; }
+@media (max-width: 840px) {
+  .allocation-line { grid-template-columns: 1fr 1fr; }
+  .allocation-actions { flex-wrap: wrap; }
+}
 .expense-document-row.is-actionable {
   cursor: pointer;
 }

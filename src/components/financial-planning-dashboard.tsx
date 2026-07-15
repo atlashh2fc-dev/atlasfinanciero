@@ -11,10 +11,12 @@ type BankAccount = { id: string; name: string; opening_balance: number | string;
 type BankTransaction = { id: string; bank_account_id: string; booked_on: string; amount: number | string; balance_after: number | string | null };
 type Customer = { id: string; legal_name: string; trade_name: string | null; kind: string };
 type Service = { id: string; name: string; category: string | null };
+type CustomerService = { id: string; counterparty_id: string; service_catalog_id: string; is_active: boolean };
 type Preinvoice = { id: string; counterparty_id: string; period_month: string; status: string; issued_document_id: string | null };
 type PreinvoiceLine = { id: string; preinvoice_id: string; customer_service_id: string | null; service_catalog_id: string | null; description: string; net_amount: number | string };
-type Allocation = { id: string; received_document_id: string; counterparty_id: string; customer_service_id: string | null; allocated_amount: number | string; notes: string | null };
-type Payload = { year: number; role: string; plans: Plan[]; budgetLines: BudgetLine[]; settings: { horizon_weeks: number; include_overdue_in_first_week: boolean }; adjustments: Adjustment[]; issuedDocuments: IssuedDocument[]; receivedDocuments: ReceivedDocument[]; bankAccounts: BankAccount[]; bankTransactions: BankTransaction[]; customers: Customer[]; services: Service[]; preinvoices: Preinvoice[]; preinvoiceLines: PreinvoiceLine[]; allocations: Allocation[] };
+type Allocation = { id: string; received_document_id: string; counterparty_id: string; customer_service_id: string | null; allocation_percentage: number | string; allocated_amount: number | string; notes: string | null };
+type AllocationDraft = { id: string; counterpartyId: string; customerServiceId: string; percentage: string; notes: string };
+type Payload = { year: number; role: string; plans: Plan[]; budgetLines: BudgetLine[]; settings: { horizon_weeks: number; include_overdue_in_first_week: boolean }; adjustments: Adjustment[]; issuedDocuments: IssuedDocument[]; receivedDocuments: ReceivedDocument[]; bankAccounts: BankAccount[]; bankTransactions: BankTransaction[]; customers: Customer[]; services: Service[]; customerServices: CustomerService[]; preinvoices: Preinvoice[]; preinvoiceLines: PreinvoiceLine[]; allocations: Allocation[] };
 
 const money = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 const number = (value: number | string | null | undefined) => Number(value ?? 0);
@@ -51,6 +53,8 @@ function signedAmount(document: { document_type: string | null; net_amount: numb
   return isCredit(document.document_type) ? -number(document.net_amount) : number(document.net_amount);
 }
 
+const newAllocationLine = (): AllocationDraft => ({ id: crypto.randomUUID(), counterpartyId: "", customerServiceId: "", percentage: "", notes: "" });
+
 export function FinancialPlanningDashboard({ organizationId }: { organizationId: string | null }) {
   const [year, setYear] = useState(new Date().getFullYear());
   const [data, setData] = useState<Payload | null>(null);
@@ -61,7 +65,8 @@ export function FinancialPlanningDashboard({ organizationId }: { organizationId:
   const [planName, setPlanName] = useState("Presupuesto base");
   const [budget, setBudget] = useState({ month: monthStart(new Date().getFullYear(), new Date().getMonth()), kind: "revenue", name: "", amount: "" });
   const [cashAdjustment, setCashAdjustment] = useState({ expectedOn: today(), direction: "outflow", description: "", amount: "" });
-  const [allocation, setAllocation] = useState({ receivedDocumentId: "", counterpartyId: "", amount: "" });
+  const [allocationDocumentId, setAllocationDocumentId] = useState("");
+  const [allocationLines, setAllocationLines] = useState<AllocationDraft[]>([newAllocationLine()]);
 
   const canManage = data?.role === "administrator" || data?.role === "finance";
 
@@ -159,6 +164,23 @@ export function FinancialPlanningDashboard({ organizationId }: { organizationId:
   }, [data]);
 
   const allocatableDocuments = useMemo(() => (data?.receivedDocuments ?? []).filter((document) => number(document.net_amount) > 0 && !isCredit(document.document_type)), [data?.receivedDocuments]);
+  const allocationDocument = allocatableDocuments.find((document) => document.id === allocationDocumentId) ?? null;
+  const allocationTotal = allocationLines.reduce((sum, line) => sum + (Number(line.percentage) || 0), 0);
+  const allocationComplete = Math.abs(allocationTotal - 100) < 0.000_001;
+  const serviceNames = useMemo(() => new Map((data?.services ?? []).map((service) => [service.id, service.name])), [data?.services]);
+  const customerNames = useMemo(() => new Map((data?.customers ?? []).map((customer) => [customer.id, customer.trade_name || customer.legal_name])), [data?.customers]);
+
+  function selectAllocationDocument(receivedDocumentId: string) {
+    setAllocationDocumentId(receivedDocumentId);
+    const existing = data?.allocations.filter((item) => item.received_document_id === receivedDocumentId) ?? [];
+    setAllocationLines(existing.length
+      ? existing.map((item) => ({ id: item.id, counterpartyId: item.counterparty_id, customerServiceId: item.customer_service_id ?? "", percentage: number(item.allocation_percentage).toFixed(4).replace(/0+$/, "").replace(/\.$/, ""), notes: item.notes ?? "" }))
+      : [newAllocationLine()]);
+  }
+
+  function updateAllocationLine(id: string, updates: Partial<AllocationDraft>) {
+    setAllocationLines((current) => current.map((line) => line.id === id ? { ...line, ...updates } : line));
+  }
 
   if (loading) return <main className="dashboard"><p className="billing-empty">Cargando planificación financiera…</p></main>;
   return <main className="dashboard reports-dashboard">
@@ -180,7 +202,12 @@ export function FinancialPlanningDashboard({ organizationId }: { organizationId:
     </section>
 
     <section className="table-section"><div className="table-heading"><div><span className="panel-label">RENTABILIDAD ATRIBUIDA</span><h2>Margen por cliente</h2><p>Ingresos netos de prefacturas emitidas menos costos de documentos recibidos que Finanzas haya imputado. Los gastos no asignados no se distribuyen artificialmente.</p></div></div><div className="table-scroll"><table><thead><tr><th>Cliente</th><th className="money-col">Ingresos</th><th className="money-col">Costos atribuidos</th><th className="money-col">Margen</th><th className="money-col">Margen %</th></tr></thead><tbody>{profitability.length ? profitability.map((item) => <tr key={item.id}><td>{item.name}</td><td className="money-col">{money.format(item.revenue)}</td><td className="money-col">{money.format(item.cost)}</td><td className={`money-col ${item.margin < 0 ? "is-negative" : ""}`}>{money.format(item.margin)}</td><td className="money-col">{item.revenue ? `${((item.margin / item.revenue) * 100).toFixed(1)}%` : "—"}</td></tr>) : <tr><td colSpan={5}>Aún no hay prefacturas emitidas ni costos atribuidos en este año.</td></tr>}</tbody></table></div>
-      {canManage && <form className="expense-filter-row" onSubmit={(event: FormEvent) => { event.preventDefault(); void post({ action: "create_cost_allocation", receivedDocumentId: allocation.receivedDocumentId, counterpartyId: allocation.counterpartyId, allocatedAmount: allocation.amount }).then((result) => result && setAllocation({ receivedDocumentId: "", counterpartyId: "", amount: "" })); }}><label><span>Documento de costo</span><select value={allocation.receivedDocumentId} onChange={(event) => setAllocation({ ...allocation, receivedDocumentId: event.target.value })} required><option value="">Selecciona factura</option>{allocatableDocuments.map((document) => <option key={document.id} value={document.id}>{document.supplier_name} · {document.document_number || "sin folio"} · {money.format(number(document.net_amount))}</option>)}</select></label><label><span>Cliente</span><select value={allocation.counterpartyId} onChange={(event) => setAllocation({ ...allocation, counterpartyId: event.target.value })} required><option value="">Selecciona cliente</option>{data?.customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.trade_name || customer.legal_name}</option>)}</select></label><label><span>Costo neto imputado</span><input type="number" min="1" value={allocation.amount} onChange={(event) => setAllocation({ ...allocation, amount: event.target.value })} required /></label><button className="primary-button" disabled={saving} type="submit">Imputar costo</button></form>}
+      {canManage && <form className="cost-allocation-form" onSubmit={(event: FormEvent) => { event.preventDefault(); if (!allocationComplete) return; void post({ action: "replace_cost_allocations", receivedDocumentId: allocationDocumentId, allocations: allocationLines.map(({ id: _id, ...line }) => line) }).then((result) => result && setMessage("Reparto de costo guardado: 100% del neto quedó asignado.")); }}>
+        <div className="expense-filter-row"><label><span>Documento de costo</span><select value={allocationDocumentId} onChange={(event) => selectAllocationDocument(event.target.value)} required><option value="">Selecciona factura</option>{allocatableDocuments.map((document) => <option key={document.id} value={document.id}>{document.supplier_name} · {document.document_number || "sin folio"} · {money.format(number(document.net_amount))}</option>)}</select></label>{allocationDocument && <div className="allocation-summary"><span>Neto a repartir</span><strong>{money.format(number(allocationDocument.net_amount))}</strong><small>El último peso por redondeo se ajusta automáticamente.</small></div>}</div>
+        {allocationLines.map((line, index) => <div className="allocation-line" key={line.id}><label><span>Cliente</span><select value={line.counterpartyId} onChange={(event) => updateAllocationLine(line.id, { counterpartyId: event.target.value, customerServiceId: "" })} required><option value="">Selecciona cliente</option>{data?.customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.trade_name || customer.legal_name}</option>)}</select></label><label><span>Servicio contratado (opcional)</span><select value={line.customerServiceId} onChange={(event) => updateAllocationLine(line.id, { customerServiceId: event.target.value })} disabled={!line.counterpartyId}><option value="">Sin servicio específico</option>{data?.customerServices.filter((service) => service.counterparty_id === line.counterpartyId).map((service) => <option key={service.id} value={service.id}>{serviceNames.get(service.service_catalog_id) ?? "Servicio"}</option>)}</select></label><label><span>Porcentaje</span><input type="number" min="0.0001" max="100" step="0.0001" value={line.percentage} onChange={(event) => updateAllocationLine(line.id, { percentage: event.target.value })} required /></label><div className="allocation-amount"><span>Línea {index + 1}</span><strong>{allocationDocument ? money.format(number(allocationDocument.net_amount) * (Number(line.percentage) || 0) / 100) : "—"}</strong><button className="text-button" type="button" disabled={allocationLines.length === 1} onClick={() => setAllocationLines((current) => current.filter((item) => item.id !== line.id))}>Quitar</button></div></div>)}
+        <div className="allocation-actions"><div><strong>{allocationTotal.toFixed(4)}%</strong><span className={allocationComplete ? "allocation-valid" : "allocation-invalid"}>{allocationComplete ? "Reparto completo" : `Faltan ${(100 - allocationTotal).toFixed(4)}%`}</span></div><button className="secondary-button" type="button" onClick={() => setAllocationLines((current) => [...current, newAllocationLine()])}>Agregar cliente</button><button className="primary-button" disabled={saving || !allocationDocumentId || !allocationComplete || allocationLines.some((line) => !line.counterpartyId || !line.percentage)} type="submit">Guardar reparto</button></div>
+      </form>}
+      {data?.allocations.length ? <div className="table-scroll allocation-table"><table><thead><tr><th>Documento</th><th>Cliente</th><th>Servicio</th><th className="money-col">%</th><th className="money-col">Costo neto</th></tr></thead><tbody>{data.allocations.map((item) => { const document = data.receivedDocuments.find((candidate) => candidate.id === item.received_document_id); return <tr key={item.id}><td>{document ? `${document.supplier_name} · ${document.document_number || "sin folio"}` : "Documento"}</td><td>{customerNames.get(item.counterparty_id) ?? "Cliente"}</td><td>{item.customer_service_id ? serviceNames.get(data.customerServices.find((service) => service.id === item.customer_service_id)?.service_catalog_id ?? "") ?? "Servicio" : "—"}</td><td className="money-col">{number(item.allocation_percentage).toFixed(2)}%</td><td className="money-col">{money.format(number(item.allocated_amount))}</td></tr>; })}</tbody></table></div> : null}
     </section>
   </main>;
 }

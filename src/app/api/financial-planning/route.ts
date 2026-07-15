@@ -27,6 +27,15 @@ function positiveAmount(value: unknown) {
   return Number.isFinite(parsed) && parsed > 0 && parsed <= 999_999_999_999_999 ? parsed : null;
 }
 
+function percentageBasisPoints(value: unknown) {
+  const raw = typeof value === "number" ? String(value) : value;
+  if (typeof raw !== "string" || !/^\d+(\.\d{1,4})?$/.test(raw)) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 100) return null;
+  const basisPoints = Math.round(parsed * 10_000);
+  return Math.abs(parsed * 10_000 - basisPoints) < 0.000_001 ? basisPoints : null;
+}
+
 function optionalText(value: unknown, maxLength: number) {
   if (value === undefined || value === null || value === "") return null;
   if (typeof value !== "string") return null;
@@ -59,7 +68,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: context.error }, { status: context.status });
 
   const range = dateRangeForYear(year);
-  const [membership, plans, budgetLines, settings, adjustments, issued, received, accounts, transactions, customers, services, preinvoices, preinvoiceLines, allocations] = await Promise.all([
+  const [membership, plans, budgetLines, settings, adjustments, issued, received, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations] = await Promise.all([
     context.supabase
       .from("organization_memberships")
       .select("role")
@@ -125,6 +134,11 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId)
       .order("name"),
     context.supabase
+      .from("customer_services")
+      .select("id, counterparty_id, service_catalog_id, is_active")
+      .eq("organization_id", organizationId)
+      .eq("is_active", true),
+    context.supabase
       .from("preinvoices")
       .select("id, counterparty_id, period_month, status, issued_document_id")
       .eq("organization_id", organizationId)
@@ -137,11 +151,11 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId),
     context.supabase
       .from("profitability_cost_allocations")
-      .select("id, received_document_id, counterparty_id, customer_service_id, allocated_amount, notes")
+      .select("id, received_document_id, counterparty_id, customer_service_id, allocation_percentage, allocated_amount, notes")
       .eq("organization_id", organizationId),
   ]);
 
-  const results = [plans, budgetLines, settings, adjustments, issued, received, accounts, transactions, customers, services, preinvoices, preinvoiceLines, allocations];
+  const results = [plans, budgetLines, settings, adjustments, issued, received, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations];
   if (results.some((result) => result.error))
     return NextResponse.json({ error: "unable_to_load_financial_planning" }, { status: 500 });
 
@@ -158,6 +172,7 @@ export async function GET(request: NextRequest) {
     bankTransactions: transactions.data ?? [],
     customers: (customers.data ?? []).filter((item) => item.kind === "customer" || item.kind === "both"),
     services: services.data ?? [],
+    customerServices: customerServices.data ?? [],
     preinvoices: preinvoices.data ?? [],
     preinvoiceLines: preinvoiceLines.data ?? [],
     allocations: allocations.data ?? [],
@@ -248,22 +263,39 @@ export async function POST(request: NextRequest) {
       : NextResponse.json({ adjustment: data }, { status: 201 });
   }
 
-  if (action === "create_cost_allocation") {
+  if (action === "replace_cost_allocations") {
     const receivedDocumentId = body.receivedDocumentId;
-    const counterpartyId = body.counterpartyId;
-    const customerServiceId = body.customerServiceId === undefined || body.customerServiceId === null || body.customerServiceId === "" ? null : body.customerServiceId;
-    const allocatedAmount = positiveAmount(body.allocatedAmount);
-    const notes = optionalText(body.notes, 2_000);
-    if (!isUuid(receivedDocumentId) || !isUuid(counterpartyId) || (customerServiceId !== null && !isUuid(customerServiceId)) || !allocatedAmount)
+    const lines = body.allocations;
+    if (!isUuid(receivedDocumentId) || !Array.isArray(lines) || lines.length < 1 || lines.length > 100)
       return NextResponse.json({ error: "invalid_cost_allocation" }, { status: 400 });
-    const { data, error } = await context.supabase.from("profitability_cost_allocations").insert({
-      organization_id: organizationId, received_document_id: receivedDocumentId,
-      counterparty_id: counterpartyId, customer_service_id: customerServiceId,
-      allocated_amount: allocatedAmount, notes, created_by: context.user.id,
-    }).select("id, received_document_id, counterparty_id, customer_service_id, allocated_amount, notes").single();
-    return error || !data
-      ? NextResponse.json({ error: "unable_to_create_cost_allocation" }, { status: 409 })
-      : NextResponse.json({ allocation: data }, { status: 201 });
+    const allocations = lines.map((line) => {
+      if (!line || typeof line !== "object") return null;
+      const item = line as Record<string, unknown>;
+      const customerServiceId = item.customerServiceId === undefined || item.customerServiceId === null || item.customerServiceId === "" ? null : item.customerServiceId;
+      const percentage = percentageBasisPoints(item.percentage);
+      const notes = optionalText(item.notes, 2_000);
+      if (!isUuid(item.counterpartyId) || (customerServiceId !== null && !isUuid(customerServiceId)) || percentage === null)
+        return null;
+      return {
+        counterpartyId: item.counterpartyId,
+        customerServiceId,
+        percentage: (percentage / 10_000).toFixed(4),
+        notes,
+        basisPoints: percentage,
+      };
+    });
+    const validAllocations = allocations.filter((line): line is NonNullable<typeof line> => line !== null);
+    if (validAllocations.length !== allocations.length || validAllocations.reduce((total, line) => total + line.basisPoints, 0) !== 1_000_000)
+      return NextResponse.json({ error: "allocation_percentages_must_equal_100" }, { status: 400 });
+
+    const { data, error } = await context.supabase.rpc("replace_profitability_cost_allocations", {
+      p_organization_id: organizationId,
+      p_received_document_id: receivedDocumentId,
+      p_allocations: validAllocations.map(({ basisPoints: _basisPoints, ...line }) => line),
+    });
+    return error
+      ? NextResponse.json({ error: "unable_to_replace_cost_allocations" }, { status: 409 })
+      : NextResponse.json({ allocations: data ?? [] });
   }
 
   return NextResponse.json({ error: "unsupported_action" }, { status: 400 });
