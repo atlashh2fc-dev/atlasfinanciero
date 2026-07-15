@@ -788,6 +788,169 @@ button {
   padding: 20px 0 0;
   overflow: hidden;
 }
+
+/* Bandeja de aprobaciones: la decisión necesita jerarquía visual, no texto
+   corrido. Estos bloques mantienen el resumen, el detalle y la acción
+   claramente separados incluso en pantallas amplias. */
+.approval-inbox-list {
+  display: grid;
+  gap: 16px;
+  padding: 0 20px 20px;
+}
+
+.approval-request {
+  margin: 0;
+  padding: 22px;
+  border-color: #dfe5ef;
+  box-shadow: 0 8px 24px rgba(24, 44, 79, 0.05);
+}
+
+.approval-request .panel-heading {
+  gap: 20px;
+}
+
+.approval-request .panel-heading h2 {
+  margin: 7px 0 4px;
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.approval-request .panel-heading p {
+  margin: 0;
+  color: #66758c;
+}
+
+.approval-request-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.approval-request-meta > span {
+  display: flex;
+  min-width: 0;
+  min-height: 76px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  padding: 13px 15px;
+  border: 1px solid #e6ebf3;
+  border-radius: 10px;
+  background: #f9fbfe;
+}
+
+.approval-request-meta strong {
+  overflow: hidden;
+  color: #22314b;
+  font-size: 16px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-request-meta small {
+  color: #7b889d;
+  font-size: 11px;
+}
+
+.approval-preinvoice-detail {
+  margin: 0 0 20px;
+  padding: 18px;
+  border: 1px solid #e1e7f0;
+  border-radius: 10px;
+  background: #fbfcff;
+}
+
+.approval-preinvoice-detail h3 {
+  margin: 6px 0 14px;
+  color: #263651;
+  font-size: 17px;
+}
+
+.approval-preinvoice-detail .table-scroll {
+  border: 1px solid #e5eaf2;
+  border-radius: 8px;
+  background: white;
+}
+
+.approval-preinvoice-detail table {
+  min-width: 620px;
+}
+
+.approval-preinvoice-detail th,
+.approval-preinvoice-detail td {
+  padding: 13px 14px;
+}
+
+.approval-step {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding-top: 18px;
+  border-top: 1px solid #e7ecf3;
+}
+
+.approval-step > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.approval-step strong {
+  color: #24334d;
+  font-size: 16px;
+}
+
+.approval-step small {
+  color: #738198;
+}
+
+.approval-decision {
+  display: grid;
+  min-width: 330px;
+  gap: 10px;
+}
+
+.approval-decision textarea {
+  min-height: 70px;
+  resize: vertical;
+}
+
+.approval-decision > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .approval-request-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .approval-step {
+    flex-direction: column;
+  }
+
+  .approval-decision {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .approval-inbox-list {
+    padding: 0 12px 12px;
+  }
+
+  .approval-request {
+    padding: 16px;
+  }
+
+  .approval-request-meta {
+    grid-template-columns: 1fr;
+  }
+}
 .table-heading {
   padding: 0 20px 17px;
 }
