@@ -24,6 +24,7 @@ type ApprovalRequest = {
   status: "submitted" | "approved" | "rejected" | "cancelled";
   submitted_at: string;
   completed_at: string | null;
+  metadata: Record<string, unknown>;
   approval_policies: { name: string } | null;
   approval_steps: ApprovalStep[];
 };
@@ -47,6 +48,18 @@ function amount(value: number | string, currency: string) {
 
 function date(value: string | null) {
   return value ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "—";
+}
+
+type PreinvoiceLine = { description: string; quantity: number | string; unit_price: number | string; net_amount: number | string };
+
+function preinvoiceDetails(metadata: Record<string, unknown>) {
+  const items = Array.isArray(metadata.line_items) ? metadata.line_items.filter((item): item is PreinvoiceLine => Boolean(item) && typeof item === "object" && "description" in item && "quantity" in item && "unit_price" in item && "net_amount" in item) : [];
+  return {
+    customerName: typeof metadata.customer_name === "string" ? metadata.customer_name : "Cliente no informado",
+    period: typeof metadata.period_month === "string" ? metadata.period_month : "—",
+    requesterName: typeof metadata.requester_name === "string" ? metadata.requester_name : "Usuario no informado",
+    items,
+  };
 }
 
 export function ApprovalInbox({ organizationId }: { organizationId: string | null }) {
@@ -107,9 +120,11 @@ export function ApprovalInbox({ organizationId }: { organizationId: string | nul
       {loading ? <p className="billing-empty">Cargando aprobaciones…</p> : <div className="approval-inbox-list">{payload?.requests.map((request) => {
         const pendingStep = request.approval_steps.find((step) => step.status === "pending") ?? null;
         const mayDecide = Boolean(pendingStep && request.status === "submitted" && (pendingStep.required_role === payload.membership.role || payload.membership.role === "administrator") && !pendingStep.assigned_to);
+        const details = request.target_type === "preinvoice" ? preinvoiceDetails(request.metadata) : null;
         return <article className="panel approval-request" key={request.id}>
           <div className="panel-heading"><div><span className="panel-label">{typeLabels[request.target_type]} · {request.approval_policies?.name ?? "Política"}</span><h2>{request.title}</h2><p>{request.description || "Sin detalle adicional."}</p></div><span className={`status ${request.status === "approved" ? "paid" : request.status === "rejected" ? "cancelled" : request.status === "submitted" ? "pending" : "neutral"}`}>{statusLabels[request.status]}</span></div>
-          <div className="approval-request-meta"><span><strong>{amount(request.amount, request.currency_code)}</strong><small>Monto sujeto a aprobación</small></span><span><strong>{date(request.submitted_at)}</strong><small>Enviada</small></span><span><strong>{pendingStep ? `Paso ${pendingStep.step_number}` : "Completada"}</strong><small>{pendingStep ? `Requiere ${pendingStep.required_role}` : "Flujo finalizado"}</small></span></div>
+          <div className="approval-request-meta"><span><strong>{amount(request.amount, request.currency_code)}</strong><small>Monto sujeto a aprobación</small></span><span><strong>{details?.requesterName ?? "Usuario no informado"}</strong><small>Solicitada por</small></span><span><strong>{date(request.submitted_at)}</strong><small>Enviada</small></span><span><strong>{pendingStep ? `Paso ${pendingStep.step_number}` : "Completada"}</strong><small>{pendingStep ? `Requiere ${pendingStep.required_role}` : "Flujo finalizado"}</small></span></div>
+          {details && <section className="approval-preinvoice-detail"><div><span className="panel-label">DETALLE A APROBAR</span><h3>{details.customerName} · período {details.period}</h3></div>{details.items.length ? <div className="table-scroll"><table><thead><tr><th>Servicio / producto</th><th className="money-col">Cantidad</th><th className="money-col">Precio unitario</th><th className="money-col">Neto</th></tr></thead><tbody>{details.items.map((item, index) => <tr key={`${item.description}-${index}`}><td>{item.description}</td><td className="money-col">{item.quantity}</td><td className="money-col">{amount(item.unit_price, request.currency_code)}</td><td className="money-col">{amount(item.net_amount, request.currency_code)}</td></tr>)}</tbody></table></div> : <p className="billing-empty">No se encontraron líneas en esta solicitud.</p>}</section>}
           {request.approval_steps.map((step) => <div className="approval-step" key={step.id}><div><strong>Paso {step.step_number}: {step.required_role}</strong><small>{step.status === "pending" ? "Pendiente de decisión" : `${step.status === "approved" ? "Aprobado" : step.status === "rejected" ? "Rechazado" : "Omitido"} · ${date(step.decided_at)}`}{step.decision_comment ? ` · ${step.decision_comment}` : ""}</small></div>{mayDecide && step.id === pendingStep?.id && <div className="approval-decision"><textarea aria-label={`Comentario para ${request.title}`} maxLength={2000} value={comments[step.id] ?? ""} onChange={(event) => setComments((current) => ({ ...current, [step.id]: event.target.value }))} placeholder="Comentario (opcional)" /><div><button className="secondary-button" type="button" disabled={savingStepId === step.id} onClick={() => void decide(step, "rejected")}>Rechazar</button><button className="primary-button" type="button" disabled={savingStepId === step.id} onClick={() => void decide(step, "approved")}>{savingStepId === step.id ? "Guardando…" : "Aprobar"}</button></div></div>}</div>)}
         </article>;
       })}</div>}

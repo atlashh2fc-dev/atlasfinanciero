@@ -37,6 +37,7 @@ import { ApprovalInbox } from "@/components/approval-inbox";
 import { ProcureToPayWorkbench } from "@/components/procure-to-pay-workbench";
 import { FinancialPlanningDashboard } from "@/components/financial-planning-dashboard";
 import { FinancialCloseWorkbench } from "@/components/financial-close-workbench";
+import { ActivityAuditLog } from "@/components/activity-audit-log";
 import {
   isCreditNoteDocument,
   isPurchaseOrderDocument,
@@ -99,6 +100,7 @@ const modulePreviews: Record<Module, string> = {
   "Cierre financiero":
     "Checklist, pre-cierre, cierre bloqueado y evidencia auditable por período mensual.",
   Administración: "Organizaciones, usuarios, roles e invitaciones de acceso.",
+  "Bitácora de actividad": "Cambios registrados por usuario, entidad, fecha y hora para control administrativo.",
   Reportes:
     "Estado de resultados, evolución y análisis financiero por período.",
 };
@@ -121,7 +123,8 @@ type Module =
   | "Aprobaciones"
   | "Cierre financiero"
   | "Reportes"
-  | "Administración";
+  | "Administración"
+  | "Bitácora de actividad";
 const navigationGroups: Array<{ label: string; items: Module[] }> = [
   { label: "RESUMEN", items: ["Inicio"] },
   {
@@ -145,7 +148,7 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
   },
   {
     label: "PERSONAS Y CONTROL",
-    items: ["Remuneraciones", "Aprobaciones", "Cierre financiero", "Administración"],
+    items: ["Remuneraciones", "Aprobaciones", "Cierre financiero", "Administración", "Bitácora de actividad"],
   },
 ];
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
@@ -305,6 +308,7 @@ function EmptyModule({
     | "Aprobaciones"
     | "Cierre financiero"
     | "Administración"
+    | "Bitácora de actividad"
   >;
 }) {
   const detail: Record<typeof module, string> = {
@@ -1966,7 +1970,7 @@ export function FinanceDashboard() {
       ...group,
       items: group.items.filter(
         (item) =>
-          (item !== "Administración" ||
+          (item !== "Administración" && item !== "Bitácora de actividad" ||
             access?.membership.role === "administrator") &&
           (item !== "Centros de costo" || canManageCostCenters) &&
           (item !== "Cuentas por pagar" || canReadExpenses) &&
@@ -2086,6 +2090,8 @@ export function FinanceDashboard() {
                                             ? "◉"
                                         : item === "Reportes"
                                           ? "◔"
+                                          : item === "Bitácora de actividad"
+                                            ? "◷"
                                           : "⚙"}
                   </span>
                   {item}
@@ -2235,6 +2241,10 @@ export function FinanceDashboard() {
             <AdministrationConsole
               activeOrganizationId={access.membership.organizationId}
             />
+          ) : null
+        ) : activeModule === "Bitácora de actividad" ? (
+          access?.membership.role === "administrator" ? (
+            <ActivityAuditLog organizationId={access.membership.organizationId} />
           ) : null
         ) : activeModule !== "Facturas" ? (
           <EmptyModule module={activeModule} />
