@@ -2183,6 +2183,7 @@ export function FinanceDashboard() {
         ) : activeModule === "Prefacturación" ? (
           <PreinvoiceWorkbench
             organizationId={access?.membership.organizationId ?? null}
+            onOpenApprovals={() => selectModule("Aprobaciones", "PERSONAS Y CONTROL")}
           />
         ) : activeModule === "Cuentas por pagar" ? (
           canReadExpenses ? (

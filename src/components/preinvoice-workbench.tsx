@@ -33,7 +33,7 @@ function monthName(month: string) {
   return new Intl.DateTimeFormat("es-CL", { month: "long", year: "numeric" }).format(new Date(`${month}T00:00:00`));
 }
 
-export function PreinvoiceWorkbench({ organizationId }: { organizationId: string | null }) {
+export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organizationId: string | null; onOpenApprovals?: () => void }) {
   const [data, setData] = useState<Payload | null>(null);
   const [periodMonth, setPeriodMonth] = useState(currentMonth);
   const [pricingDate, setPricingDate] = useState(firstDayOfMonth(currentMonth()));
@@ -84,9 +84,13 @@ export function PreinvoiceWorkbench({ organizationId }: { organizationId: string
     if (action === "issue" && !issuedDocumentId) { setMessage("Selecciona primero la factura emitida que corresponde a esta prefactura."); return; }
     setSaving(true);
     const response = await fetch("/api/preinvoices", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, preinvoiceId, action, issuedDocumentId, reason }) });
+    const result = await response.json().catch(() => null) as { error?: string; approvalRequestId?: string } | null;
     setSaving(false);
-    if (!response.ok) { setMessage("No fue posible cambiar el estado. Revisa la secuencia, permisos y factura vinculada."); return; }
-    setMessage(action === "issue" ? "Prefactura marcada como emitida y vinculada a la factura." : "Estado de prefactura actualizado.");
+    if (!response.ok) {
+      setMessage(result?.error === "approval_request_not_created" ? "La prefactura quedó en revisión, pero no se creó su solicitud. Devuélvela a borrador y vuelve a enviarla." : "No fue posible cambiar el estado. Revisa la secuencia, permisos y factura vinculada.");
+      return;
+    }
+    setMessage(action === "submit_review" && result?.approvalRequestId ? "Prefactura enviada correctamente a Aprobaciones." : action === "issue" ? "Prefactura marcada como emitida y vinculada a la factura." : "Estado de prefactura actualizado.");
     await load();
   }
 
@@ -129,7 +133,7 @@ export function PreinvoiceWorkbench({ organizationId }: { organizationId: string
           const docs = matchingDocuments(preinvoice);
           return <tr key={preinvoice.id}><td><strong>{customer?.trade_name || customer?.legal_name || "Cliente"}</strong><small>{lines.length ? lines.map((line) => line.source_currency === "UF" ? `${line.description} (${line.quantity} × UF ${money.format(Number(line.source_unit_price))}; SII ${line.pricing_date} = CLP ${money.format(Number(line.conversion_rate_to_clp))})` : `${line.description} (${line.quantity} × CLP ${money.format(Number(line.unit_price))})`).join(" · ") : "Sin líneas de servicio"}</small><small>Fecha de valorización: {preinvoice.pricing_date}</small></td><td>{preinvoice.currency_code}</td><td className="money-col">{money.format(Number(preinvoice.total_amount))}</td><td><span className={`status ${preinvoice.status === "draft" ? "pending" : preinvoice.status === "review" ? "pending" : preinvoice.status === "approved" || preinvoice.status === "issued" ? "paid" : "cancelled"}`}>{labelForStatus[preinvoice.status]}</span></td><td><div className="cycle-actions">
             {preinvoice.status === "draft" && canWrite && <><button type="button" className="secondary-button" disabled={saving || !lines.length} onClick={() => void transition(preinvoice.id, "submit_review")}>Enviar a revisión</button>{canApprove && <button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button>}</>}
-            {preinvoice.status === "review" && <><small>Decisión pendiente en Aprobaciones</small>{canApprove && <><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "return_to_draft")}>Devolver</button><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button></>}</>}
+            {preinvoice.status === "review" && <><small>Decisión pendiente en Aprobaciones</small>{onOpenApprovals && <button type="button" className="secondary-button" disabled={saving} onClick={onOpenApprovals}>Ver aprobación</button>}{canApprove && <><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "return_to_draft")}>Devolver</button><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button></>}</>}
             {preinvoice.status === "approved" && canApprove && <><select aria-label="Factura emitida" value={documentByPreinvoice[preinvoice.id] ?? ""} onChange={(event) => setDocumentByPreinvoice((current) => ({ ...current, [preinvoice.id]: event.target.value }))}><option value="">Factura emitida…</option>{docs.map((document) => <option key={document.id} value={document.id}>{document.document_number || "Sin folio"} · {document.issue_date || "sin fecha"} · CLP {money.format(Number(document.total_amount ?? 0))}</option>)}</select><button type="button" className="primary-button" disabled={saving || !docs.length} onClick={() => void transition(preinvoice.id, "issue")}>Vincular emisión</button><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button></>}
             {preinvoice.status === "issued" && <small>Factura vinculada</small>}
             {preinvoice.status === "cancelled" && <small>{preinvoice.cancellation_reason || "Anulada"}</small>}

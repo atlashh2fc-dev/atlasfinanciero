@@ -269,5 +269,19 @@ export async function PATCH(request: NextRequest) {
   const { data: updated, error } = await data.supabase.from("preinvoices").update(values).eq("id", preinvoice.id).eq("organization_id", data.organizationId)
     .select("id, status, issued_document_id, reviewed_at, approved_at, issued_at").single();
   if (error) return NextResponse.json({ error: "unable_to_update_preinvoice" }, { status: 409 });
+  if (action === "submit_review") {
+    const { data: approvalRequest, error: approvalError } = await data.supabase
+      .from("approval_requests")
+      .select("id, status")
+      .eq("organization_id", data.organizationId)
+      .eq("target_type", "preinvoice")
+      .eq("target_id", preinvoice.id)
+      .eq("status", "submitted")
+      .maybeSingle();
+    if (approvalError || !approvalRequest) {
+      return NextResponse.json({ error: "approval_request_not_created" }, { status: 500 });
+    }
+    return NextResponse.json({ preinvoice: updated, approvalRequestId: approvalRequest.id });
+  }
   return NextResponse.json({ preinvoice: updated });
 }
