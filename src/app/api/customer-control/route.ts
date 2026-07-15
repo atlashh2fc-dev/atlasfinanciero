@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 
 const writeRoles = new Set(["administrator", "finance", "operations"]);
 const frequencies = new Set(["monthly", "one_time", "annual", "quarterly"]);
-const currencies = new Set(["CLP", "USD", "UF"]);
+const pricingCurrencies = new Set(["CLP", "UF"]);
 
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
   if (action === "save_catalog") {
     const item = body.item as Record<string, unknown> | null;
     const name = text(item?.name, 180, true); const unitPrice = amount(item?.unitPrice);
-    const currency = typeof item?.currency === "string" && currencies.has(item.currency) ? item.currency : null;
+    const currency = typeof item?.currency === "string" && pricingCurrencies.has(item.currency) ? item.currency : null;
     if (!name || unitPrice === null || !currency) return NextResponse.json({ error: "invalid_catalog_item" }, { status: 400 });
     const values = { name, category: text(item?.category, 100), description: text(item?.description, 1000), unit_name: text(item?.unitName, 80) ?? "unidad", unit_price: unitPrice, currency, is_active: item?.isActive !== false };
     const id = item?.id;
@@ -102,7 +102,7 @@ export async function POST(request: NextRequest) {
   if (action === "save_service") {
     const item = body.item as Record<string, unknown> | null;
     const counterpartyId = item?.counterpartyId; const catalogId = item?.catalogId; const unitPrice = amount(item?.unitPrice); const quantity = Number(item?.quantity);
-    const currency = typeof item?.currency === "string" && currencies.has(item.currency) ? item.currency : null;
+    const currency = typeof item?.currency === "string" && pricingCurrencies.has(item.currency) ? item.currency : null;
     const frequency = typeof item?.billingFrequency === "string" && frequencies.has(item.billingFrequency) ? item.billingFrequency : null;
     if (!isUuid(counterpartyId) || !isUuid(catalogId) || unitPrice === null || !Number.isFinite(quantity) || quantity <= 0 || !currency || !frequency) return NextResponse.json({ error: "invalid_customer_service" }, { status: 400 });
     const { error } = await data.supabase.from("customer_services").upsert({ organization_id: organizationId, counterparty_id: counterpartyId, service_catalog_id: catalogId, unit_price: unitPrice, quantity, currency, billing_frequency: frequency, starts_on: text(item?.startsOn, 10), ends_on: text(item?.endsOn, 10), notes: text(item?.notes, 2000), is_active: item?.isActive !== false }, { onConflict: "counterparty_id,service_catalog_id" });

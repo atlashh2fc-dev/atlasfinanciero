@@ -5,12 +5,13 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 type Role = "administrator" | "finance" | "operations" | "auditor";
 type Customer = { id: string; legal_name: string; trade_name: string | null };
 type IssuedDocument = { id: string; counterparty_id: string | null; document_number: string | null; issue_date: string | null; total_amount: number | null; client_name: string | null };
-type Line = { id: string; preinvoice_id: string; description: string; quantity: number; unit_price: number; net_amount: number; usage_quantity: number | null };
+type Line = { id: string; preinvoice_id: string; description: string; quantity: number; unit_price: number; net_amount: number; source_currency: string; source_unit_price: number; conversion_rate_to_clp: number; pricing_date: string; rate_source: string; usage_quantity: number | null };
 type Preinvoice = {
   id: string;
   counterparty_id: string;
   billing_cycle_id: string | null;
   period_month: string;
+  pricing_date: string;
   status: "draft" | "review" | "approved" | "issued" | "cancelled";
   currency_code: string;
   net_amount: number;
@@ -24,6 +25,7 @@ type Payload = { role: Role; preinvoices: Preinvoice[]; lines: Line[]; customers
 
 const money = new Intl.NumberFormat("es-CL", { maximumFractionDigits: 0 });
 const currentMonth = () => new Date().toISOString().slice(0, 7);
+const firstDayOfMonth = (month: string) => `${month}-01`;
 const labelForStatus: Record<Preinvoice["status"], string> = { draft: "Borrador", review: "En revisión", approved: "Aprobada", issued: "Emitida", cancelled: "Anulada" };
 const normalized = (value: string | null | undefined) => (value ?? "").trim().toLocaleUpperCase();
 
@@ -34,6 +36,7 @@ function monthName(month: string) {
 export function PreinvoiceWorkbench({ organizationId }: { organizationId: string | null }) {
   const [data, setData] = useState<Payload | null>(null);
   const [periodMonth, setPeriodMonth] = useState(currentMonth);
+  const [pricingDate, setPricingDate] = useState(firstDayOfMonth(currentMonth()));
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -65,11 +68,11 @@ export function PreinvoiceWorkbench({ organizationId }: { organizationId: string
     event.preventDefault();
     if (!organizationId) return;
     setSaving(true);
-    const response = await fetch("/api/preinvoices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "generate", organizationId, periodMonth }) });
-    const result = await response.json().catch(() => null) as { created?: number; linesAdded?: number; error?: string } | null;
+    const response = await fetch("/api/preinvoices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "generate", organizationId, periodMonth, pricingDate }) });
+    const result = await response.json().catch(() => null) as { created?: number; linesAdded?: number; error?: string; ufQuote?: { value: number; date: string } } | null;
     setSaving(false);
-    if (!response.ok) { setMessage("No fue posible generar las prefacturas del período."); return; }
-    setMessage(`${result?.created ?? 0} prefactura(s) creada(s); ${result?.linesAdded ?? 0} línea(s) incorporada(s) desde servicios vigentes.`);
+    if (!response.ok) { setMessage(result?.error === "sii_uf_value_unavailable" ? "El SII no informó UF para la fecha elegida. Selecciona una fecha con valor oficial disponible." : "No fue posible generar las prefacturas del período."); return; }
+    setMessage(`${result?.created ?? 0} prefactura(s) creada(s); ${result?.linesAdded ?? 0} línea(s) incorporada(s) desde servicios vigentes.${result?.ufQuote ? ` UF SII ${result.ufQuote.date}: CLP ${money.format(result.ufQuote.value)}.` : ""}`);
     await load();
   }
 
@@ -104,8 +107,9 @@ export function PreinvoiceWorkbench({ organizationId }: { organizationId: string
       <section className="billing-form-panel panel">
         <div className="panel-heading"><div><span className="panel-label">GENERAR PERÍODO</span><h2>Origen: servicios activos del cliente</h2></div><span className="unit">Sin emitir DTE automáticamente</span></div>
         <form className="billing-form" onSubmit={generate}>
-          <label>Mes de servicio<input type="month" value={periodMonth} onChange={(event) => setPeriodMonth(event.target.value)} required /></label>
-          <p className="form-note">Se incluyen servicios mensuales y los trimestrales, anuales o únicos que correspondan a este período. Las líneas quedan congeladas con su precio pactado.</p>
+          <label>Mes de servicio<input type="month" value={periodMonth} onChange={(event) => { setPeriodMonth(event.target.value); setPricingDate(firstDayOfMonth(event.target.value)); }} required /></label>
+          <label>Fecha de valorización UF<input type="date" value={pricingDate} onChange={(event) => setPricingDate(event.target.value)} required /></label>
+          <p className="form-note">Las UF se consultan en la tabla oficial del SII para esta fecha y se congelan en CLP junto con su paridad. Los precios CLP no se convierten.</p>
           <button className="primary-button" type="submit" disabled={!canWrite || saving}>Generar borradores</button>
         </form>
       </section>
@@ -118,12 +122,12 @@ export function PreinvoiceWorkbench({ organizationId }: { organizationId: string
       </section>
 
       <section className="table-section">
-        <div className="table-heading"><div><span className="panel-label">BANDEJA DEL PERÍODO</span><h2>{monthName(`${periodMonth}-01`)}</h2><p>Una prefactura agrupa servicios por cliente y moneda. La factura emitida debe existir previamente en el registro documental.</p></div></div>
+        <div className="table-heading"><div><span className="panel-label">BANDEJA DEL PERÍODO</span><h2>{monthName(`${periodMonth}-01`)}</h2><p>Las líneas UF se convierten a CLP con su fecha y valor SII auditables. La factura emitida debe existir previamente en el registro documental.</p></div></div>
         <div className="table-scroll"><table className="billing-cycles-table"><thead><tr><th>Cliente / líneas</th><th>Moneda</th><th className="money-col">Neto</th><th>Estado</th><th>Control</th></tr></thead><tbody>{selectedPeriod.map((preinvoice) => {
           const customer = customers.get(preinvoice.counterparty_id);
           const lines = linesByPreinvoice.get(preinvoice.id) ?? [];
           const docs = matchingDocuments(preinvoice);
-          return <tr key={preinvoice.id}><td><strong>{customer?.trade_name || customer?.legal_name || "Cliente"}</strong><small>{lines.length ? lines.map((line) => `${line.description} (${line.quantity} × ${money.format(Number(line.unit_price))})`).join(" · ") : "Sin líneas de servicio"}</small></td><td>{preinvoice.currency_code}</td><td className="money-col">{money.format(Number(preinvoice.total_amount))}</td><td><span className={`status ${preinvoice.status === "draft" ? "pending" : preinvoice.status === "review" ? "pending" : preinvoice.status === "approved" || preinvoice.status === "issued" ? "paid" : "cancelled"}`}>{labelForStatus[preinvoice.status]}</span></td><td><div className="cycle-actions">
+          return <tr key={preinvoice.id}><td><strong>{customer?.trade_name || customer?.legal_name || "Cliente"}</strong><small>{lines.length ? lines.map((line) => line.source_currency === "UF" ? `${line.description} (${line.quantity} × UF ${money.format(Number(line.source_unit_price))}; SII ${line.pricing_date} = CLP ${money.format(Number(line.conversion_rate_to_clp))})` : `${line.description} (${line.quantity} × CLP ${money.format(Number(line.unit_price))})`).join(" · ") : "Sin líneas de servicio"}</small><small>Fecha de valorización: {preinvoice.pricing_date}</small></td><td>{preinvoice.currency_code}</td><td className="money-col">{money.format(Number(preinvoice.total_amount))}</td><td><span className={`status ${preinvoice.status === "draft" ? "pending" : preinvoice.status === "review" ? "pending" : preinvoice.status === "approved" || preinvoice.status === "issued" ? "paid" : "cancelled"}`}>{labelForStatus[preinvoice.status]}</span></td><td><div className="cycle-actions">
             {preinvoice.status === "draft" && canWrite && <><button type="button" className="secondary-button" disabled={saving || !lines.length} onClick={() => void transition(preinvoice.id, "submit_review")}>Enviar a revisión</button>{canApprove && <button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button>}</>}
             {preinvoice.status === "review" && <><small>Decisión pendiente en Aprobaciones</small>{canApprove && <><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "return_to_draft")}>Devolver</button><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button></>}</>}
             {preinvoice.status === "approved" && canApprove && <><select aria-label="Factura emitida" value={documentByPreinvoice[preinvoice.id] ?? ""} onChange={(event) => setDocumentByPreinvoice((current) => ({ ...current, [preinvoice.id]: event.target.value }))}><option value="">Factura emitida…</option>{docs.map((document) => <option key={document.id} value={document.id}>{document.document_number || "Sin folio"} · {document.issue_date || "sin fecha"} · CLP {money.format(Number(document.total_amount ?? 0))}</option>)}</select><button type="button" className="primary-button" disabled={saving || !docs.length} onClick={() => void transition(preinvoice.id, "issue")}>Vincular emisión</button><button type="button" className="text-button" disabled={saving} onClick={() => void transition(preinvoice.id, "cancel")}>Anular</button></>}

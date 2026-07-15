@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { getSiiUfQuote, isIsoDate } from "@/lib/sii-uf";
 
 const operatorRoles = new Set(["administrator", "finance", "operations"]);
 const financeRoles = new Set(["administrator", "finance"]);
@@ -16,6 +17,7 @@ type Service = {
   ends_on: string | null;
   billing_frequency: string;
 };
+type PreinvoiceGenerationRow = { id: string; status: string; pricing_date: string };
 
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -26,6 +28,10 @@ function periodMonth(value: unknown) {
   const month = `${value.slice(0, 7)}-01`;
   const date = new Date(`${month}T00:00:00Z`);
   return Number.isNaN(date.getTime()) || date.getUTCDate() !== 1 || date.toISOString().slice(0, 7) !== value.slice(0, 7) ? null : month;
+}
+
+function roundClp(value: number) {
+  return Math.round(value);
 }
 
 function dateInPeriod(service: Service, month: string) {
@@ -69,12 +75,12 @@ export async function GET(request: NextRequest) {
 
   const [preinvoices, lines, customers, documents] = await Promise.all([
     data.supabase.from("preinvoices")
-      .select("id, counterparty_id, billing_cycle_id, period_month, status, currency_code, net_amount, vat_amount, total_amount, notes, reviewed_at, approved_at, issued_at, issued_document_id, cancellation_reason, created_at")
+      .select("id, counterparty_id, billing_cycle_id, period_month, pricing_date, status, currency_code, net_amount, vat_amount, total_amount, notes, reviewed_at, approved_at, issued_at, issued_document_id, cancellation_reason, created_at")
       .eq("organization_id", data.organizationId)
       .order("period_month", { ascending: false })
       .order("created_at", { ascending: false }),
     data.supabase.from("preinvoice_lines")
-      .select("id, preinvoice_id, customer_service_id, service_catalog_id, description, quantity, unit_price, net_amount, usage_quantity, notes")
+      .select("id, preinvoice_id, customer_service_id, service_catalog_id, description, quantity, unit_price, net_amount, source_currency, source_unit_price, conversion_rate_to_clp, pricing_date, rate_source, usage_quantity, notes")
       .eq("organization_id", data.organizationId)
       .order("created_at"),
     data.supabase.from("counterparties")
@@ -101,11 +107,12 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json().catch(() => null) as { organizationId?: unknown; action?: unknown; periodMonth?: unknown } | null;
+  const body = await request.json().catch(() => null) as { organizationId?: unknown; action?: unknown; periodMonth?: unknown; pricingDate?: unknown } | null;
   const month = periodMonth(body?.periodMonth);
+  const pricingDate = isIsoDate(body?.pricingDate) ? body.pricingDate : month;
   const data = await context(body?.organizationId, operatorRoles);
   if (!data) return NextResponse.json({ error: "preinvoice_write_not_authorized" }, { status: 403 });
-  if (body?.action !== "generate" || !month) return NextResponse.json({ error: "invalid_preinvoice_generation" }, { status: 400 });
+  if (body?.action !== "generate" || !month || !pricingDate) return NextResponse.json({ error: "invalid_preinvoice_generation" }, { status: 400 });
 
   const [servicesResult, catalogResult, rulesResult, cyclesResult] = await Promise.all([
     data.supabase.from("customer_services")
@@ -131,10 +138,23 @@ export async function POST(request: NextRequest) {
   const catalogNames = new Map((catalogResult.data ?? []).map((item) => [item.id, item.name]));
   const counterpartyByRule = new Map((rulesResult.data ?? []).map((item) => [item.id, item.counterparty_id]));
   const cycleByCustomerCurrency = new Map((cyclesResult.data ?? []).map((item) => [`${counterpartyByRule.get(item.recurrence_rule_id) ?? ""}:${item.currency_code}`, item.id]));
+  const activeServices = (servicesResult.data ?? []) as Service[];
+  const hasUfServices = activeServices.some((service) => service.currency === "UF" && frequencyMatches(service, month));
+  let ufQuote: Awaited<ReturnType<typeof getSiiUfQuote>> | null = null;
+  if (hasUfServices) {
+    try {
+      ufQuote = await getSiiUfQuote(pricingDate);
+    } catch {
+      return NextResponse.json({ error: "sii_uf_value_unavailable", pricingDate }, { status: 422 });
+    }
+  }
   const groups = new Map<string, Service[]>();
-  for (const service of (servicesResult.data ?? []) as Service[]) {
+  for (const service of activeServices) {
     if (!frequencyMatches(service, month)) continue;
-    const key = `${service.counterparty_id}:${service.currency}`;
+    // Las UF se valorizan y facturan en CLP para que la aprobación y el DTE
+    // utilicen un total definitivo, conservando la UF de origen en la línea.
+    const billingCurrency = service.currency === "UF" ? "CLP" : service.currency;
+    const key = `${service.counterparty_id}:${billingCurrency}`;
     groups.set(key, [...(groups.get(key) ?? []), service]);
   }
 
@@ -143,44 +163,61 @@ export async function POST(request: NextRequest) {
   for (const [key, services] of groups) {
     const [counterpartyId, currencyCode] = key.split(":");
     const { data: existing, error: existingError } = await data.supabase.from("preinvoices")
-      .select("id, status")
+      .select("id, status, pricing_date")
       .eq("organization_id", data.organizationId)
       .eq("counterparty_id", counterpartyId)
       .eq("period_month", month)
       .eq("currency_code", currencyCode)
       .maybeSingle();
     if (existingError) return NextResponse.json({ error: "unable_to_read_existing_preinvoice" }, { status: 500 });
-    let preinvoice = existing;
+    let preinvoice = existing as PreinvoiceGenerationRow | null;
     if (!preinvoice) {
       const { data: inserted, error } = await data.supabase.from("preinvoices").insert({
         organization_id: data.organizationId,
         counterparty_id: counterpartyId,
         billing_cycle_id: cycleByCustomerCurrency.get(key) ?? null,
         period_month: month,
+        pricing_date: pricingDate,
         currency_code: currencyCode,
         created_by: data.user.id,
-      }).select("id, status").single();
-      if (error || !inserted) return NextResponse.json({ error: "unable_to_create_preinvoice" }, { status: 409 });
-      preinvoice = inserted;
+      }).select("id, status, pricing_date").single();
+      const insertedPreinvoice = inserted as PreinvoiceGenerationRow | null;
+      if (error || !insertedPreinvoice) return NextResponse.json({ error: "unable_to_create_preinvoice" }, { status: 409 });
+      preinvoice = insertedPreinvoice;
       created += 1;
     }
+    if (!preinvoice) return NextResponse.json({ error: "unable_to_create_preinvoice" }, { status: 409 });
+    if (preinvoice.pricing_date !== pricingDate) {
+      return NextResponse.json({ error: "preinvoice_already_exists_with_another_pricing_date", pricingDate: preinvoice.pricing_date }, { status: 409 });
+    }
     if (preinvoice.status !== "draft") continue;
-    const lineRows = services.map((service) => ({
-      organization_id: data.organizationId,
-      preinvoice_id: preinvoice.id,
-      customer_service_id: service.id,
-      service_catalog_id: service.service_catalog_id,
-      description: catalogNames.get(service.service_catalog_id) ?? "Servicio contratado",
-      quantity: service.quantity,
-      unit_price: service.unit_price,
-      net_amount: Number(service.quantity) * Number(service.unit_price),
-    }));
+    const lineRows = services.map((service) => {
+      const sourceUnitPrice = Number(service.unit_price);
+      const conversionRate = service.currency === "UF" ? ufQuote?.value : 1;
+      if (!conversionRate) throw new Error("missing_uf_quote");
+      const unitPrice = service.currency === "UF" ? roundClp(sourceUnitPrice * conversionRate) : sourceUnitPrice;
+      return {
+        organization_id: data.organizationId,
+        preinvoice_id: preinvoice.id,
+        customer_service_id: service.id,
+        service_catalog_id: service.service_catalog_id,
+        description: catalogNames.get(service.service_catalog_id) ?? "Servicio contratado",
+        quantity: service.quantity,
+        unit_price: unitPrice,
+        net_amount: Number(service.quantity) * unitPrice,
+        source_currency: service.currency,
+        source_unit_price: sourceUnitPrice,
+        conversion_rate_to_clp: conversionRate,
+        pricing_date: pricingDate,
+        rate_source: service.currency === "UF" ? "sii_uf_daily" : "contract_price_clp",
+      };
+    });
     const { error } = await data.supabase.from("preinvoice_lines")
       .upsert(lineRows, { onConflict: "preinvoice_id,customer_service_id", ignoreDuplicates: true });
     if (error) return NextResponse.json({ error: "unable_to_add_preinvoice_lines" }, { status: 409 });
     linesAdded += lineRows.length;
   }
-  return NextResponse.json({ created, linesAdded, groups: groups.size, periodMonth: month }, { status: 201 });
+  return NextResponse.json({ created, linesAdded, groups: groups.size, periodMonth: month, pricingDate, ufQuote }, { status: 201 });
 }
 
 export async function PATCH(request: NextRequest) {
