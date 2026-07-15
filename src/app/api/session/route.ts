@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 type Membership = {
   organization_id: string;
   role: "administrator" | "finance" | "operations" | "auditor";
-  organizations: Array<{ legal_name: string }>;
+  organizations: Array<{ legal_name: string; tax_id: string | null }>;
 };
 
 export async function GET() {
@@ -31,6 +31,7 @@ export async function GET() {
     membership: {
       organizationId: membership.organization_id,
       organizationName: membership.organizations[0]?.legal_name ?? "Organización",
+      organizationTaxId: membership.organizations[0]?.tax_id ?? null,
       role: membership.role,
     },
     organizations: memberships.map((item) => ({

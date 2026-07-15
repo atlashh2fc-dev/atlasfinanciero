@@ -3,18 +3,6 @@ import { createClient } from "@/lib/supabase/server";
 
 type DocumentRequest = {
   id?: unknown;
-  organizationId?: unknown;
-  invoiceNumber?: unknown;
-  issueDate?: unknown;
-  documentType?: unknown;
-  issuer?: unknown;
-  issuerRut?: unknown;
-  client?: unknown;
-  recipient?: unknown;
-  recipientRut?: unknown;
-  netAmount?: unknown;
-  vatAmount?: unknown;
-  totalAmount?: unknown;
   status?: unknown;
   paymentDate?: unknown;
   paymentMethod?: unknown;
@@ -28,6 +16,8 @@ type DocumentRequest = {
 
 const writeRoles = new Set(["administrator", "finance", "operations"]);
 const paymentConditions = new Set(["advance", "post_service"]);
+const paymentStatuses = new Set(["Pendiente", "Pagada", "Factorizada", "Pagada al factoring", "Recomprada al factoring", "Anulada", "Nota de crédito"]);
+const documentTypes = new Set(["Factura afecta", "Factura exenta", "Nota de crédito", "Nota de débito"]);
 
 function readText(value: unknown, maxLength: number, required = false) {
   if (value === undefined || value === null) return required ? null : null;
@@ -66,6 +56,8 @@ function isUuid(value: unknown): value is string {
 }
 
 export async function POST(request: NextRequest) {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("multipart/form-data")) return NextResponse.json({ error: "multipart_document_required" }, { status: 400 });
   const supabase = await createClient();
   const {
     data: { user },
@@ -76,35 +68,18 @@ export async function POST(request: NextRequest) {
       { status: 401 },
     );
 
-  const body = (await request
-    .json()
-    .catch(() => null)) as DocumentRequest | null;
-  const issueDate = readDate(body?.issueDate);
-  const documentType = readText(body?.documentType, 100, true);
-  const issuer = readText(body?.issuer, 180, true);
-  const client = readText(body?.client, 180, true);
-  const netAmount = readAmount(body?.netAmount, true);
-  const totalAmount = readAmount(body?.totalAmount, true);
-  const vatAmount = readAmount(body?.vatAmount);
-  const status = readText(body?.status, 80, true);
-  const paymentCondition = readPaymentCondition(body?.paymentCondition);
-  const requiresPaymentCondition = documentType
-    ?.toLocaleLowerCase()
-    .includes("factura");
-
-  if (
-    !issueDate ||
-    !documentType ||
-    !issuer ||
-    !client ||
-    netAmount === undefined ||
-    totalAmount === undefined ||
-    vatAmount === undefined ||
-    !status ||
-    (requiresPaymentCondition && !paymentCondition)
-  ) {
-    return NextResponse.json({ error: "invalid_document" }, { status: 400 });
-  }
+  const form = await request.formData();
+  const issueDate = readDate(form.get("issueDate"));
+  const documentType = readText(form.get("documentType"), 100, true);
+  const status = readText(form.get("status"), 80, true);
+  const clientId = form.get("clientId");
+  const contactId = form.get("contactId");
+  const netAmount = readAmount(form.get("netAmount"), true);
+  const paymentCondition = readPaymentCondition(form.get("paymentCondition"));
+  const upload = form.get("file");
+  const requiresPaymentCondition = documentType?.startsWith("Factura");
+  if (!issueDate || !documentType || !documentTypes.has(documentType) || !paymentStatuses.has(status ?? "") || !isUuid(clientId) || (contactId && !isUuid(contactId)) || typeof netAmount !== "number" || (requiresPaymentCondition && !paymentCondition) || (upload !== null && !(upload instanceof File))) return NextResponse.json({ error: "invalid_document" }, { status: 400 });
+  if (upload instanceof File && (upload.size === 0 || upload.size > 52_428_800 || !new Set(["application/pdf", "image/jpeg", "image/png"]).has(upload.type))) return NextResponse.json({ error: "invalid_document_attachment" }, { status: 400 });
 
   const { data: memberships, error: membershipsError } = await supabase
     .from("organization_memberships")
@@ -130,14 +105,7 @@ export async function POST(request: NextRequest) {
   const eligibleMemberships = (memberships ?? []).filter((membership) =>
     writeRoles.has(membership.role),
   );
-  const requestedOrganizationId = body?.organizationId;
-  const membership = isUuid(requestedOrganizationId)
-    ? eligibleMemberships.find(
-        (item) => item.organization_id === requestedOrganizationId,
-      )
-    : (eligibleMemberships.find(
-        (item) => item.organization_id === profile?.active_organization_id,
-      ) ?? (eligibleMemberships.length === 1 ? eligibleMemberships[0] : null));
+  const membership = eligibleMemberships.find((item) => item.organization_id === profile?.active_organization_id) ?? (eligibleMemberships.length === 1 ? eligibleMemberships[0] : null);
 
   if (!membership) {
     return NextResponse.json(
@@ -151,37 +119,61 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const [{ data: organization, error: organizationError }, { data: client, error: clientError }] = await Promise.all([
+    supabase.from("organizations").select("legal_name, tax_id").eq("id", membership.organization_id).maybeSingle(),
+    supabase.from("counterparties").select("id, legal_name, trade_name, tax_id").eq("id", clientId).eq("organization_id", membership.organization_id).in("kind", ["customer", "both"]).eq("is_active", true).maybeSingle(),
+  ]);
+  if (organizationError || clientError || !organization || !client) return NextResponse.json({ error: "issuer_or_customer_not_found" }, { status: 400 });
+  const { data: contact, error: contactError } = contactId ? await supabase.from("counterparty_contacts").select("id, full_name").eq("id", contactId).eq("counterparty_id", client.id).eq("organization_id", membership.organization_id).maybeSingle() : { data: null, error: null };
+  if (contactError || (contactId && !contact)) return NextResponse.json({ error: "customer_contact_not_found" }, { status: 400 });
+
+  const vatAmount = documentType === "Factura afecta" ? Math.round(netAmount * 0.19 * 100) / 100 : 0;
+  const totalAmount = Math.round((netAmount + vatAmount) * 100) / 100;
+  const safeName = upload instanceof File ? upload.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "factura" : null;
+  const attachmentPath = upload instanceof File ? `${membership.organization_id}/${client.id}/${crypto.randomUUID()}-${safeName}` : null;
+  if (upload instanceof File && attachmentPath) {
+    const { error } = await supabase.storage.from("issued-document-files").upload(attachmentPath, upload, { contentType: upload.type, upsert: false });
+    if (error) return NextResponse.json({ error: "unable_to_upload_document_attachment" }, { status: 409 });
+  }
+
   const { data, error } = await supabase
     .from("issued_documents")
     .insert({
       organization_id: membership.organization_id,
-      document_number: readText(body?.invoiceNumber, 80),
+      counterparty_id: client.id,
+      document_number: readText(form.get("invoiceNumber"), 80),
       issue_date: issueDate,
       document_type: documentType,
-      issuer_name: issuer,
-      issuer_tax_id: readText(body?.issuerRut, 40),
-      client_name: client,
-      recipient_name: readText(body?.recipient, 180),
-      recipient_tax_id: readText(body?.recipientRut, 40),
+      issuer_name: organization.legal_name,
+      issuer_tax_id: organization.tax_id,
+      client_name: client.trade_name || client.legal_name,
+      recipient_name: contact?.full_name || client.trade_name || client.legal_name,
+      recipient_tax_id: client.tax_id,
       net_amount: netAmount,
       vat_amount: vatAmount,
       total_amount: totalAmount,
       payment_status: status,
       payment_condition: paymentCondition,
-      source_file_name: "Atlas Financiero",
+      attachment_path: attachmentPath,
+      attachment_name: upload instanceof File ? upload.name.slice(0, 300) : null,
+      attachment_mime_type: upload instanceof File ? upload.type : null,
+      attachment_size: upload instanceof File ? upload.size : null,
+      source_file_name: upload instanceof File ? upload.name.slice(0, 300) : "Atlas Financiero",
       source_sheet_name: "Registro manual",
       source_row: 0,
     })
     .select(
-      "id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, payment_status, payment_condition, source_file_name, source_sheet_name, source_row",
+      "id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, payment_status, payment_condition, attachment_path, attachment_name, attachment_mime_type, attachment_size, source_file_name, source_sheet_name, source_row",
     )
     .single();
 
-  if (error)
+  if (error) {
+    if (attachmentPath) await supabase.storage.from("issued-document-files").remove([attachmentPath]);
     return NextResponse.json(
       { error: "unable_to_create_document" },
       { status: 403 },
     );
+  }
   return NextResponse.json({ document: data }, { status: 201 });
 }
 
@@ -218,6 +210,7 @@ export async function PATCH(request: NextRequest) {
   if (
     !isUuid(documentId) ||
     !status ||
+    !paymentStatuses.has(status) ||
     (paymentDateValue && !paymentDate) ||
     (body?.factoredAt && !factoredAt) ||
     (body?.factoringSettledAt && !factoringSettledAt) ||
@@ -284,7 +277,7 @@ export async function PATCH(request: NextRequest) {
   return NextResponse.json({ document: data });
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const supabase = await createClient();
   const {
     data: { user },
@@ -335,10 +328,20 @@ export async function GET() {
       { status: 403 },
     );
 
+  const fileId = request.nextUrl.searchParams.get("fileId");
+  if (fileId) {
+    if (!isUuid(fileId)) return NextResponse.json({ error: "invalid_document_file" }, { status: 400 });
+    const { data: document, error } = await supabase.from("issued_documents").select("attachment_path").eq("id", fileId).eq("organization_id", organizationId).maybeSingle();
+    if (error || !document?.attachment_path) return NextResponse.json({ error: "document_file_not_found" }, { status: 404 });
+    const { data: signed, error: signedError } = await supabase.storage.from("issued-document-files").createSignedUrl(document.attachment_path, 60);
+    if (signedError || !signed) return NextResponse.json({ error: "unable_to_open_document_file" }, { status: 409 });
+    return NextResponse.json({ signedUrl: signed.signedUrl });
+  }
+
   const { data, error } = await supabase
     .from("issued_documents")
     .select(
-      "id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_date, payment_method, payment_condition, factoring_entity, factored_at, factoring_settled_at, factoring_recourse_at, origin_account_or_tax_id, destination_bank, destination_account, source_file_name, source_sheet_name, source_row",
+      "id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_date, payment_method, payment_condition, factoring_entity, factored_at, factoring_settled_at, factoring_recourse_at, origin_account_or_tax_id, destination_bank, destination_account, attachment_path, attachment_name, attachment_mime_type, attachment_size, source_file_name, source_sheet_name, source_row",
     )
     .eq("organization_id", organizationId)
     .order("issue_date", { ascending: false });

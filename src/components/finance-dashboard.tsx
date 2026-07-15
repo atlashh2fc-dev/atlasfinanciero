@@ -38,6 +38,7 @@ import { ProcureToPayWorkbench } from "@/components/procure-to-pay-workbench";
 import { FinancialPlanningDashboard } from "@/components/financial-planning-dashboard";
 import { FinancialCloseWorkbench } from "@/components/financial-close-workbench";
 import { ActivityAuditLog } from "@/components/activity-audit-log";
+import { AtlasAssistant } from "@/components/atlas-assistant";
 import {
   isCreditNoteDocument,
   isPurchaseOrderDocument,
@@ -157,6 +158,7 @@ type AccessProfile = {
   membership: {
     organizationId: string;
     organizationName: string;
+    organizationTaxId: string | null;
     role: OrganizationRole;
   };
   organizations: Array<{ id: string; name: string; role: OrganizationRole }>;
@@ -166,17 +168,15 @@ type InvoiceDraft = {
   invoiceNumber: string;
   issueDate: string;
   documentType: string;
-  issuer: string;
-  issuerRut: string;
-  client: string;
-  recipient: string;
-  recipientRut: string;
+  clientId: string;
+  contactId: string;
   netAmount: string;
-  vatAmount: string;
-  totalAmount: string;
   status: string;
   paymentCondition: string;
 };
+
+type DocumentCustomer = { id: string; legal_name: string; trade_name: string | null; tax_id: string | null };
+type DocumentContact = { id: string; counterparty_id: string; full_name: string; contact_area: string | null; email: string | null; is_primary: boolean };
 
 type DocumentUpdateDraft = {
   status: string;
@@ -193,17 +193,12 @@ type DocumentUpdateDraft = {
 const blankDraft: InvoiceDraft = {
   invoiceNumber: "",
   issueDate: "",
-  documentType: "",
-  issuer: "",
-  issuerRut: "",
-  client: "",
-  recipient: "",
-  recipientRut: "",
+  documentType: "Factura afecta",
+  clientId: "",
+  contactId: "",
   netAmount: "",
-  vatAmount: "",
-  totalAmount: "",
-  status: "",
-  paymentCondition: "",
+  status: "Pendiente",
+  paymentCondition: "post_service",
 };
 
 const money = new Intl.NumberFormat("es-CL", {
@@ -1573,6 +1568,10 @@ type StoredDocument = {
   origin_account_or_tax_id: string | null;
   destination_bank: string | null;
   destination_account: string | null;
+  attachment_path: string | null;
+  attachment_name: string | null;
+  attachment_mime_type: string | null;
+  attachment_size: number | null;
   source_file_name: string | null;
   source_sheet_name: string | null;
   source_row: number | null;
@@ -1647,6 +1646,11 @@ export function FinanceDashboard() {
     factoringRecourseAt: "",
   });
   const [draft, setDraft] = useState<InvoiceDraft>(blankDraft);
+  const [documentCustomers, setDocumentCustomers] = useState<DocumentCustomer[]>([]);
+  const [documentContacts, setDocumentContacts] = useState<DocumentContact[]>([]);
+  const [documentFile, setDocumentFile] = useState<File | null>(null);
+  const [loadingDocumentSources, setLoadingDocumentSources] = useState(false);
+  const [attachmentByDocument, setAttachmentByDocument] = useState<Record<string, boolean>>({});
   const [formError, setFormError] = useState("");
   const [sessionRecords, setSessionRecords] = useState<InvoiceRecord[]>([]);
   const [databaseRecords, setDatabaseRecords] = useState<
@@ -1663,14 +1667,32 @@ export function FinanceDashboard() {
           : null,
       )
       .then((payload) => {
-        if (active && payload)
+        if (active && payload) {
           setDatabaseRecords(payload.documents.map(mapStoredDocument));
+          setAttachmentByDocument(Object.fromEntries(payload.documents.map((document) => [document.id, Boolean(document.attachment_path)])));
+        }
       })
       .catch(() => undefined);
     return () => {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!showEntry || !access) return;
+    let active = true;
+    setLoadingDocumentSources(true);
+    fetch(`/api/customer-profiles?organizationId=${encodeURIComponent(access.membership.organizationId)}`, { cache: "no-store" })
+      .then((response) => response.ok ? response.json() as Promise<{ customers: DocumentCustomer[]; contacts: DocumentContact[] }> : null)
+      .then((payload) => {
+        if (!active || !payload) return;
+        setDocumentCustomers(payload.customers);
+        setDocumentContacts(payload.contacts);
+      })
+      .catch(() => undefined)
+      .finally(() => { if (active) setLoadingDocumentSources(false); });
+    return () => { active = false; };
+  }, [showEntry, access]);
 
   useEffect(() => {
     let active = true;
@@ -1695,6 +1717,11 @@ export function FinanceDashboard() {
     () => databaseRecords ?? [...facturasEmitidas2026, ...sessionRecords],
     [databaseRecords, sessionRecords],
   );
+  const contactsForDraftCustomer = useMemo(() => documentContacts.filter((contact) => contact.counterparty_id === draft.clientId), [documentContacts, draft.clientId]);
+  const selectedDraftCustomer = useMemo(() => documentCustomers.find((customer) => customer.id === draft.clientId) ?? null, [documentCustomers, draft.clientId]);
+  const entryNetAmount = Number(draft.netAmount || 0);
+  const entryVatAmount = draft.documentType === "Factura afecta" ? Math.round(entryNetAmount * 0.19 * 100) / 100 : 0;
+  const entryTotalAmount = Math.round((entryNetAmount + entryVatAmount) * 100) / 100;
   const availableYears = useMemo(
     () =>
       Array.from(
@@ -1855,23 +1882,30 @@ export function FinanceDashboard() {
     if (
       !draft.issueDate ||
       !draft.documentType ||
-      !draft.issuer ||
-      !draft.client ||
+      !draft.clientId ||
       !draft.netAmount ||
-      !draft.totalAmount ||
       !draft.status ||
       (draft.documentType.toLocaleLowerCase().includes("factura") &&
         !draft.paymentCondition)
     ) {
       setFormError(
-        "Completa fecha, tipo, emisor, cliente, montos, estado y condición del servicio para facturas. No se crearán valores de relleno.",
+        "Completa fecha, tipo, cliente, monto neto, estado y condición del servicio para facturas.",
       );
       return;
     }
+    const formData = new FormData();
+    formData.set("invoiceNumber", draft.invoiceNumber);
+    formData.set("issueDate", draft.issueDate);
+    formData.set("documentType", draft.documentType);
+    formData.set("clientId", draft.clientId);
+    formData.set("contactId", draft.contactId);
+    formData.set("netAmount", draft.netAmount);
+    formData.set("status", draft.status);
+    formData.set("paymentCondition", draft.paymentCondition);
+    if (documentFile) formData.set("file", documentFile);
     const response = await fetch("/api/issued-documents", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(draft),
+      body: formData,
     });
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as {
@@ -1882,6 +1916,8 @@ export function FinanceDashboard() {
           ? "Inicia sesión con un usuario autorizado para guardar el documento."
           : payload?.error === "organization_selection_required"
             ? "Selecciona la empresa activa antes de registrar documentos."
+            : payload?.error === "invalid_document_attachment"
+              ? "El adjunto debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
             : "No fue posible guardar el documento. Revisa tus permisos y los datos ingresados.",
       );
       return;
@@ -1901,6 +1937,10 @@ export function FinanceDashboard() {
         vat_amount: number | null;
         total_amount: number;
         payment_status: string;
+        attachment_path: string | null;
+        attachment_name: string | null;
+        attachment_mime_type: string | null;
+        attachment_size: number | null;
         source_file_name: string;
         source_sheet_name: string;
         source_row: number;
@@ -1926,6 +1966,10 @@ export function FinanceDashboard() {
       origin_account_or_tax_id: null,
       destination_bank: null,
       destination_account: null,
+      attachment_path: payload.document.attachment_path,
+      attachment_name: payload.document.attachment_name,
+      attachment_mime_type: payload.document.attachment_mime_type,
+      attachment_size: payload.document.attachment_size,
       source_file_name: payload.document.source_file_name,
       source_sheet_name: payload.document.source_sheet_name,
       source_row: payload.document.source_row,
@@ -1935,10 +1979,19 @@ export function FinanceDashboard() {
         current ? [created, ...current] : [created],
       );
     else setSessionRecords((current) => [created, ...current]);
+    if (payload.document.attachment_path) setAttachmentByDocument((current) => ({ ...current, [created.id]: true }));
     setDraft(blankDraft);
+    setDocumentFile(null);
     setFormError("");
     setShowEntry(false);
     setActiveModule("Facturas");
+  }
+
+  async function openDocumentAttachment(documentId: string) {
+    const response = await fetch(`/api/issued-documents?fileId=${encodeURIComponent(documentId)}`);
+    const payload = await response.json().catch(() => null) as { signedUrl?: string } | null;
+    if (response.ok && payload?.signedUrl) window.open(payload.signedUrl, "_blank", "noopener,noreferrer");
+    else setFormError("No fue posible abrir el archivo adjunto.");
   }
 
   async function signOut() {
@@ -2594,17 +2647,11 @@ export function FinanceDashboard() {
                           </span>
                         </td>
                         <td>
-                          {hasEditPermission && databaseRecords ? (
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() => startDocumentEdit(record)}
-                            >
-                              Editar
-                            </button>
-                          ) : (
-                            "—"
-                          )}
+                          <div className="document-row-actions">
+                            {attachmentByDocument[record.id] && <button type="button" className="text-button" onClick={() => void openDocumentAttachment(record.id)}>Ver adjunto</button>}
+                            {hasEditPermission && databaseRecords && <button type="button" className="secondary-button" onClick={() => startDocumentEdit(record)}>Editar</button>}
+                            {!attachmentByDocument[record.id] && !(hasEditPermission && databaseRecords) && "—"}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -2626,11 +2673,11 @@ export function FinanceDashboard() {
           >
             <div className="modal-header">
               <div>
-                <span className="eyebrow">REGISTRO MANUAL</span>
-                <h2 id="entry-title">Registrar documento</h2>
+                <span className="eyebrow">REGISTRO CONTROLADO</span>
+                <h2 id="entry-title">Registrar factura o documento</h2>
                 <p>
-                  El documento se guarda en Atlas sólo con una sesión y
-                  membresía autorizadas.
+                  El emisor, cliente y destinatario se obtienen desde la empresa
+                  activa y sus fichas comerciales. IVA y total se calculan automáticamente.
                 </p>
               </div>
               <button
@@ -2665,23 +2712,21 @@ export function FinanceDashboard() {
                 </label>
                 <label>
                   Tipo documento *
-                  <input
+                  <select
                     value={draft.documentType}
                     onChange={(event) =>
                       updateDraft("documentType", event.target.value)
                     }
-                    placeholder="Ej. Factura"
-                  />
+                  ><option value="Factura afecta">Factura afecta</option><option value="Factura exenta">Factura exenta</option><option value="Nota de crédito">Nota de crédito</option><option value="Nota de débito">Nota de débito</option></select>
                 </label>
                 <label>
                   Estado *
-                  <input
+                  <select
                     value={draft.status}
                     onChange={(event) =>
                       updateDraft("status", event.target.value)
                     }
-                    placeholder="Valor definido por el usuario"
-                  />
+                  ><option value="Pendiente">Pendiente</option><option value="Pagada">Pagada</option><option value="Factorizada">Factorizada</option><option value="Pagada al factoring">Pagada al factoring</option><option value="Recomprada al factoring">Recomprada al factoring</option><option value="Anulada">Anulada</option><option value="Nota de crédito">Nota de crédito</option></select>
                 </label>
                 <label>
                   Condición del servicio (facturas) *
@@ -2699,55 +2744,31 @@ export function FinanceDashboard() {
                   </select>
                 </label>
                 <label>
-                  Empresa emisora *
-                  <input
-                    value={draft.issuer}
-                    onChange={(event) =>
-                      updateDraft("issuer", event.target.value)
-                    }
-                  />
+                  Empresa emisora
+                  <input value={access?.membership.organizationName ?? "Empresa activa"} readOnly />
                 </label>
                 <label>
                   RUT emisor
-                  <input
-                    value={draft.issuerRut}
-                    onChange={(event) =>
-                      updateDraft("issuerRut", event.target.value)
-                    }
-                  />
+                  <input value={access?.membership.organizationTaxId || "Sin RUT registrado en la empresa activa"} readOnly />
                 </label>
                 <label>
                   Cliente *
-                  <input
-                    value={draft.client}
-                    onChange={(event) =>
-                      updateDraft("client", event.target.value)
-                    }
-                  />
+                  <select value={draft.clientId} disabled={loadingDocumentSources} onChange={(event) => { updateDraft("clientId", event.target.value); updateDraft("contactId", ""); }} required><option value="">{loadingDocumentSources ? "Cargando clientes…" : "Selecciona cliente"}</option>{documentCustomers.map((customer) => <option key={customer.id} value={customer.id}>{customer.trade_name || customer.legal_name}{customer.tax_id ? ` · ${customer.tax_id}` : ""}</option>)}</select>
                 </label>
                 <label>
                   Destinatario
-                  <input
-                    value={draft.recipient}
-                    onChange={(event) =>
-                      updateDraft("recipient", event.target.value)
-                    }
-                  />
+                  <select value={draft.contactId} disabled={!draft.clientId || loadingDocumentSources} onChange={(event) => updateDraft("contactId", event.target.value)}><option value="">Facturación general del cliente</option>{contactsForDraftCustomer.map((contact) => <option key={contact.id} value={contact.id}>{contact.full_name}{contact.contact_area ? ` · ${contact.contact_area}` : ""}</option>)}</select>
                 </label>
                 <label>
                   RUT destinatario
-                  <input
-                    value={draft.recipientRut}
-                    onChange={(event) =>
-                      updateDraft("recipientRut", event.target.value)
-                    }
-                  />
+                  <input value={selectedDraftCustomer?.tax_id || "Se obtiene del cliente seleccionado"} readOnly />
                 </label>
                 <label>
                   Monto neto *
                   <input
                     type="number"
                     min="0"
+                    step="0.01"
                     value={draft.netAmount}
                     onChange={(event) =>
                       updateDraft("netAmount", event.target.value)
@@ -2756,25 +2777,16 @@ export function FinanceDashboard() {
                 </label>
                 <label>
                   IVA
-                  <input
-                    type="number"
-                    min="0"
-                    value={draft.vatAmount}
-                    onChange={(event) =>
-                      updateDraft("vatAmount", event.target.value)
-                    }
-                  />
+                  <input value={money.format(entryVatAmount)} readOnly />
                 </label>
                 <label>
-                  Monto total *
-                  <input
-                    type="number"
-                    min="0"
-                    value={draft.totalAmount}
-                    onChange={(event) =>
-                      updateDraft("totalAmount", event.target.value)
-                    }
-                  />
+                  Monto total
+                  <input value={money.format(entryTotalAmount)} readOnly />
+                </label>
+                <label>
+                  Adjuntar factura
+                  <input type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" onChange={(event) => setDocumentFile(event.target.files?.[0] ?? null)} />
+                  <small>PDF, JPG o PNG · máximo 50 MB</small>
                 </label>
               </div>
               {formError && <p className="form-error">{formError}</p>}
@@ -2988,6 +3000,7 @@ export function FinanceDashboard() {
           </section>
         </div>
       )}
+      {access && <AtlasAssistant organizationId={access.membership.organizationId} />}
     </div>
   );
 }
