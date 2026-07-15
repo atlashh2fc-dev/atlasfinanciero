@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ServiceCatalogManagement } from "@/components/service-catalog-management";
 
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
 type Organization = { id: string; legal_name: string; tax_id: string | null };
@@ -261,6 +262,8 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
             <button className="primary-button" type="submit" disabled={isSaving || !organizationId}>Crear usuario</button>
           </form>
         </section>
+
+        {organizationId && <ServiceCatalogManagement organizationId={organizationId} />}
 
         <section className="table-section">
           <div className="table-heading"><div><span className="panel-label">MIEMBROS</span><h2>Accesos de {current?.legal_name ?? "la organización"}</h2><p>{membersLoadError ?? `${members.length} activo(s) · ${invitations.length} invitación(es) pendiente(s).`}</p></div><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void loadMembers(organizationId)}>Actualizar</button></div>

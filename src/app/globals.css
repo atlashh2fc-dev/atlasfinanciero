@@ -1565,6 +1565,110 @@ td small {
 .customer-profile-card .secondary-button {
   justify-self: start;
 }
+.customer-control {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  padding-top: 18px;
+  border-top: 1px solid #e8edf3;
+}
+.customer-control-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.customer-control-heading h3 {
+  margin: 5px 0 3px;
+  color: #35425a;
+  font-size: 14px;
+}
+.customer-control-heading p {
+  margin: 0;
+  color: #7d899b;
+  font-size: 10px;
+}
+.customer-control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.customer-control-section {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid #e4eaf1;
+  border-radius: 9px;
+  background: #fbfcfe;
+}
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.section-title h4 {
+  margin: 0;
+  color: #39475d;
+  font-size: 12px;
+}
+.section-title span {
+  display: grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 99px;
+  background: #eaf0ff;
+  color: #5366b4;
+  font-size: 10px;
+  font-weight: 700;
+}
+.control-list {
+  display: grid;
+  margin-top: 10px;
+}
+.control-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #edf0f4;
+}
+.control-list > div:last-child { border-bottom: 0; }
+.control-list strong, .control-list b { color: #3e4c62; font-size: 11px; }
+.control-list strong { display: block; }
+.control-list small { display: block; margin-top: 3px; color: #7e8a9d; font-size: 9px; line-height: 1.35; }
+.control-list b { white-space: nowrap; font-size: 10px; }
+.control-empty { margin: 12px 0; color: #8995a7; font-size: 10px; }
+.contract-upload, .service-assignment {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid #edf0f4;
+}
+.contract-upload label, .service-assignment label {
+  display: grid;
+  gap: 5px;
+  color: #637087;
+  font-size: 9px;
+  font-weight: 700;
+}
+.contract-upload input, .service-assignment input, .service-assignment select {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #dfe5ed;
+  border-radius: 6px;
+  padding: 7px;
+  background: #fff;
+  color: #26334a;
+  font-size: 10px;
+}
+.service-assignment { grid-template-columns: minmax(130px, 1.6fr) repeat(3, minmax(80px, 1fr)); }
+.service-assignment .primary-button { grid-column: 1 / -1; justify-self: start; }
+.service-catalog-panel { margin: 0 0 18px; }
+.form-field-wide { grid-column: 1 / -1; }
+.form-field-wide textarea { min-height: 74px; resize: vertical; }
 .customer-profile-modal {
   width: min(960px, 100%);
 }
@@ -1710,6 +1814,10 @@ td small {
   .admin-invite-form,
   .decision-grid,
   .customer-review-summary {
+    grid-template-columns: 1fr;
+  }
+  .customer-control-grid,
+  .service-assignment {
     grid-template-columns: 1fr;
   }
   .filters {
