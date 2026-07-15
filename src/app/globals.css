@@ -39,6 +39,8 @@ button {
   min-height: 100vh;
   flex-direction: column;
   overflow: visible;
+  position: relative;
+  z-index: 10;
 }
 .brand {
   display: flex;
@@ -225,6 +227,8 @@ button {
 }
 .content-area {
   min-width: 0;
+  position: relative;
+  z-index: 1;
 }
 .topbar {
   height: 72px;
