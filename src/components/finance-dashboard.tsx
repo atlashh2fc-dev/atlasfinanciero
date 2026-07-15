@@ -1630,6 +1630,7 @@ export function FinanceDashboard() {
   const [year, setYear] = useState("Todos");
   const [month, setMonth] = useState("Todos");
   const [status, setStatus] = useState("Todos");
+  const [documentOrder, setDocumentOrder] = useState("Fecha más reciente");
   const [showEntry, setShowEntry] = useState(false);
   const [editingRecord, setEditingRecord] = useState<InvoiceRecord | null>(
     null,
@@ -1762,6 +1763,25 @@ export function FinanceDashboard() {
           (status === "Todos" || record.status === status),
       ),
     [yearFilteredRecords, month, status],
+  );
+  const orderedDocuments = useMemo(
+    () =>
+      [...filtered].sort((first, second) => {
+        if (documentOrder === "Tipo: A-Z") {
+          return (first.documentType ?? "").localeCompare(
+            second.documentType ?? "",
+            "es",
+          );
+        }
+        if (documentOrder === "Tipo: Z-A") {
+          return (second.documentType ?? "").localeCompare(
+            first.documentType ?? "",
+            "es",
+          );
+        }
+        return (second.issueDate ?? "").localeCompare(first.issueDate ?? "");
+      }),
+    [filtered, documentOrder],
   );
 
   const monthly = useMemo(
@@ -2599,6 +2619,17 @@ export function FinanceDashboard() {
                       ))}
                     </select>
                   </label>
+                  <label>
+                    Ordenar
+                    <select
+                      value={documentOrder}
+                      onChange={(event) => setDocumentOrder(event.target.value)}
+                    >
+                      <option>Fecha más reciente</option>
+                      <option>Tipo: A-Z</option>
+                      <option>Tipo: Z-A</option>
+                    </select>
+                  </label>
                 </div>
               </div>
               <div className="table-scroll">
@@ -2616,7 +2647,7 @@ export function FinanceDashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map((record) => (
+                    {orderedDocuments.map((record) => (
                       <tr key={record.id}>
                         <td>
                           <strong>N° {record.invoiceNumber ?? "—"}</strong>
