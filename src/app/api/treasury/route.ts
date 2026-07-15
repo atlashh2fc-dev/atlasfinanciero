@@ -15,8 +15,6 @@ type ReconcileRequest = {
   notes?: unknown;
 };
 
-const paymentMethod = "Conciliación bancaria";
-
 function readAmount(value: unknown) {
   const amount = typeof value === "number" ? value : Number(value);
   return Number.isFinite(amount) && amount > 0 ? amount : null;
@@ -199,28 +197,6 @@ export async function POST(request: NextRequest) {
     .update({ reconciliation_status: transactionStatus })
     .eq("id", bankTransactionId)
     .eq("organization_id", organizationId);
-
-  if (matchedForDocument >= documentTotal) {
-    const paymentUpdate =
-      documentType === "issued"
-        ? {
-            payment_status: "Pagada",
-            payment_date: transaction.booked_on,
-            payment_method: paymentMethod,
-          }
-        : {
-            payment_status: "Pagada",
-            payment_date: transaction.booked_on,
-            payment_method: paymentMethod,
-            payment_reference: transaction.id,
-            payment_notes: "Pago conciliado desde tesorería.",
-          };
-    await context.supabase
-      .from(documentTable)
-      .update(paymentUpdate)
-      .eq("id", documentId)
-      .eq("organization_id", organizationId);
-  }
 
   return NextResponse.json({
     match,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 type PayrollPerson = {
@@ -43,6 +43,7 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
   const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [year, setYear] = useState(() => new Date().getFullYear());
+  const [expandedAreas, setExpandedAreas] = useState<Set<string>>(() => new Set());
 
   const load = useCallback(async () => {
     if (!organizationId) return;
@@ -73,6 +74,36 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
   if (!payload) return <main className="dashboard"><p className="operation-message">{message ?? "No hay información disponible."}</p></main>;
 
   const { summary } = payload;
+  const peopleByArea = useMemo(() => {
+    const groups = new Map<string, PayrollPerson[]>();
+    for (const person of payload.persons) {
+      const area = person.management?.trim() || "Sin área informada";
+      groups.set(area, [...(groups.get(area) ?? []), person]);
+    }
+    return [...groups.entries()]
+      .map(([area, people]) => ({
+        area,
+        people: [...people].sort((left, right) => (left.jobTitle ?? "").localeCompare(right.jobTitle ?? "") || left.name.localeCompare(right.name)),
+        active: people.filter((person) => person.active).length,
+        inactive: people.filter((person) => !person.active).length,
+        gross: people.reduce((total, person) => total + (person.monthlyGrossSalary ?? 0), 0),
+        absences: people.reduce((total, person) => total + person.absenceDays, 0),
+        vacations: people.reduce((total, person) => total + person.vacationDays, 0),
+      }))
+      .sort((left, right) => right.active - left.active || right.people.length - left.people.length || left.area.localeCompare(right.area));
+  }, [payload.persons]);
+
+  function toggleArea(area: string) {
+    setExpandedAreas((current) => {
+      const next = new Set(current);
+      if (next.has(area)) next.delete(area); else next.add(area);
+      return next;
+    });
+  }
+
+  function toggleAllAreas() {
+    setExpandedAreas((current) => current.size === peopleByArea.length ? new Set() : new Set(peopleByArea.map((group) => group.area)));
+  }
   return <main className="dashboard payroll-dashboard">
     <section className="headline">
       <div><span className="eyebrow">PERSONAS · PEOPLEWORK</span><h1>Remuneraciones y dotación</h1><p>Contratos, personas y distribución de remuneración bruta contractual para {summary.periodYear}. El estado de resultados se consulta en Reportes.</p></div>
@@ -99,8 +130,18 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
     </section>
 
     <section className="table-section">
-      <div className="table-heading"><div><span className="panel-label">DOTACIÓN</span><h2>Detalle por persona</h2><p>{payload.persons.length} colaborador(es) sincronizados. El identificador tributario se muestra parcialmente protegido.</p></div><button type="button" className="secondary-button" onClick={() => void load()}>Actualizar</button></div>
-      <div className="table-scroll"><table className="payroll-people-table"><thead><tr><th>Colaborador</th><th>Área / cargo</th><th>Contrato</th><th className="money-col">Bruto contractual</th><th className="money-col">Ausencias</th><th className="money-col">Vacaciones</th><th>Estado</th></tr></thead><tbody>{payload.persons.map((person) => <tr key={person.id}><td><strong>{person.name}</strong><small>RUT {maskRut(person.nationalIdentification)}</small></td><td><strong>{person.management ?? "—"}</strong><small>{person.jobTitle ?? "Sin cargo informado"}</small></td><td>{person.contractType ?? "—"}<small>{person.contractStatus ?? "Vigencia no informada"}</small></td><td className="money-col">{person.monthlyGrossSalary === null ? "—" : money.format(person.monthlyGrossSalary)}</td><td className="money-col">{amount.format(person.absenceDays)} días</td><td className="money-col">{amount.format(person.vacationDays)} días</td><td><span className={`status ${person.active ? "paid" : "neutral"}`}>{person.active ? "Activo" : "Inactivo"}</span></td></tr>)}</tbody></table></div>
+      <div className="table-heading"><div><span className="panel-label">DOTACIÓN</span><h2>Dotación por área y cargo</h2><p>{payload.persons.length} colaborador(es) agrupados por área. Despliega sólo el equipo que necesitas revisar; el identificador tributario permanece protegido.</p></div><div className="form-actions"><button type="button" className="secondary-button" onClick={toggleAllAreas}>{expandedAreas.size === peopleByArea.length ? "Contraer áreas" : "Expandir áreas"}</button><button type="button" className="secondary-button" onClick={() => void load()}>Actualizar</button></div></div>
+      <div className="payroll-area-list">{peopleByArea.map((group) => {
+        const expanded = expandedAreas.has(group.area);
+        return <article className="panel payroll-area-group" key={group.area}>
+          <button type="button" className="payroll-area-summary" onClick={() => toggleArea(group.area)} aria-expanded={expanded}>
+            <span><strong>{group.area}</strong><small>{group.people.length} persona(s) · {group.active} activa(s) · {group.inactive} inactiva(s)</small></span>
+            <span><strong>{money.format(group.gross)}</strong><small>{amount.format(group.absences)} ausencia(s) · {amount.format(group.vacations)} vacaciones</small></span>
+            <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
+          </button>
+          {expanded && <div className="table-scroll"><table className="payroll-people-table"><thead><tr><th>Colaborador / cargo</th><th>Contrato</th><th className="money-col">Bruto contractual</th><th className="money-col">Ausencias</th><th className="money-col">Vacaciones</th><th>Estado</th></tr></thead><tbody>{group.people.map((person) => <tr key={person.id}><td><strong>{person.name}</strong><small>{person.jobTitle ?? "Sin cargo informado"} · RUT {maskRut(person.nationalIdentification)}</small></td><td>{person.contractType ?? "—"}<small>{person.contractStatus ?? "Vigencia no informada"}</small></td><td className="money-col">{person.monthlyGrossSalary === null ? "—" : money.format(person.monthlyGrossSalary)}</td><td className="money-col">{amount.format(person.absenceDays)} días</td><td className="money-col">{amount.format(person.vacationDays)} días</td><td><span className={`status ${person.active ? "paid" : "neutral"}`}>{person.active ? "Activo" : "Inactivo"}</span></td></tr>)}</tbody></table></div>}
+        </article>;
+      })}</div>
     </section>
   </main>;
 }

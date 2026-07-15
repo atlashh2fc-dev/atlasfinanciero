@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type JsonRecord = Record<string, unknown> | null;
 type AuditEvent = {
@@ -65,11 +65,18 @@ export function ActivityAuditLog({ organizationId }: { organizationId: string | 
   const [payload, setPayload] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
+  const [filters, setFilters] = useState({ actorId: "", from: "", to: "", entityType: "", action: "", search: "" });
 
   async function load() {
     if (!organizationId) { setPayload(null); setLoading(false); return; }
     setLoading(true);
-    const response = await fetch(`/api/audit-log?organizationId=${encodeURIComponent(organizationId)}`, { cache: "no-store" });
+    const query = new URLSearchParams({ organizationId });
+    if (filters.actorId) query.set("actorId", filters.actorId);
+    if (filters.from) query.set("from", filters.from);
+    if (filters.to) query.set("to", filters.to);
+    if (filters.entityType) query.set("entityType", filters.entityType);
+    if (filters.action) query.set("action", filters.action);
+    const response = await fetch(`/api/audit-log?${query.toString()}`, { cache: "no-store" });
     const next = await response.json().catch(() => null) as Payload | null;
     if (!response.ok || !next) {
       setPayload(null);
@@ -81,11 +88,31 @@ export function ActivityAuditLog({ organizationId }: { organizationId: string | 
     setLoading(false);
   }
 
-  useEffect(() => { void load(); }, [organizationId]);
+  useEffect(() => { void load(); }, [organizationId, filters.actorId, filters.from, filters.to, filters.entityType, filters.action]);
+
+  const actors = useMemo(() => {
+    const values = new Map<string, string>();
+    for (const event of payload?.events ?? []) if (event.actor_id) values.set(event.actor_id, actor(event));
+    return [...values.entries()].sort((left, right) => left[1].localeCompare(right[1]));
+  }, [payload]);
+  const entityTypes = useMemo(() => [...new Set((payload?.events ?? []).map((event) => event.entity_type))].sort(), [payload]);
+  const actions = useMemo(() => [...new Set((payload?.events ?? []).map((event) => event.action))].sort(), [payload]);
+  const visibleEvents = useMemo(() => {
+    const search = filters.search.trim().toLocaleLowerCase();
+    if (!search) return payload?.events ?? [];
+    return (payload?.events ?? []).filter((event) => `${actor(event)} ${changeSummary(event)} ${event.entity_type} ${event.action}`.toLocaleLowerCase().includes(search));
+  }, [filters.search, payload]);
+
+  function clearFilters() {
+    setFilters({ actorId: "", from: "", to: "", entityType: "", action: "", search: "" });
+  }
 
   return <main className="dashboard">
     <section className="headline"><div><span className="eyebrow">ADMINISTRACIÓN · AUDITORÍA</span><h1>Bitácora de actividad</h1><p>Registro inalterable de cambios por usuario: qué se modificó, quién lo hizo y cuándo ocurrió.</p></div><button className="secondary-button" type="button" disabled={loading} onClick={() => void load()}>{loading ? "Actualizando…" : "Actualizar"}</button></section>
     {message && <p className="operation-message">{message}</p>}
-    <section className="table-section"><div className="table-heading"><div><span className="panel-label">ÚLTIMOS 250 EVENTOS</span><h2>Trazabilidad operativa</h2><p>Los eventos se registran desde la base de datos y no se pueden editar desde esta vista.</p></div></div>{loading ? <p className="billing-empty">Cargando bitácora…</p> : <div className="table-scroll"><table><thead><tr><th>Usuario</th><th>Acción / cambio</th><th>Fecha y hora</th></tr></thead><tbody>{payload?.events.map((event) => <tr key={event.id}><td><strong>{actor(event)}</strong><small>{event.actor?.email && event.actor.full_name ? event.actor.email : event.actor_id ? "Usuario registrado" : "Proceso automático"}</small></td><td>{changeSummary(event)}</td><td>{when(event.created_at)}</td></tr>)}</tbody></table></div>}{!loading && !payload?.events.length && <p className="billing-empty">Aún no hay eventos auditables para esta organización.</p>}</section>
+    <section className="table-section"><div className="table-heading"><div><span className="panel-label">TRAZABILIDAD FILTRABLE</span><h2>Quién hizo qué y cuándo</h2><p>Los eventos se registran desde la base de datos y no se pueden editar desde esta vista.</p></div><button type="button" className="secondary-button" onClick={clearFilters}>Limpiar filtros</button></div>
+      <div className="expense-filter-row audit-filter-row"><label><span>Usuario</span><select value={filters.actorId} onChange={(event) => setFilters((current) => ({ ...current, actorId: event.target.value }))}><option value="">Todos los usuarios</option><option value="system">Sistema automático</option>{actors.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label><label><span>Desde</span><input type="date" value={filters.from} onChange={(event) => setFilters((current) => ({ ...current, from: event.target.value }))} /></label><label><span>Hasta</span><input type="date" value={filters.to} onChange={(event) => setFilters((current) => ({ ...current, to: event.target.value }))} /></label><label><span>Objeto</span><select value={filters.entityType} onChange={(event) => setFilters((current) => ({ ...current, entityType: event.target.value }))}><option value="">Todos los objetos</option>{entityTypes.map((item) => <option key={item} value={item}>{entityLabels[item] ?? item.replaceAll("_", " ")}</option>)}</select></label><label><span>Acción</span><select value={filters.action} onChange={(event) => setFilters((current) => ({ ...current, action: event.target.value }))}><option value="">Todas las acciones</option>{actions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label><span>Buscar</span><input value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Usuario, cambio o acción" /></label></div>
+      {!loading && <p className="table-count">{visibleEvents.length} evento(s) encontrado(s)</p>}
+      {loading ? <p className="billing-empty">Cargando bitácora…</p> : <div className="table-scroll"><table><thead><tr><th>Usuario</th><th>Acción / cambio</th><th>Fecha y hora</th></tr></thead><tbody>{visibleEvents.map((event) => <tr key={event.id}><td><strong>{actor(event)}</strong><small>{event.actor?.email && event.actor.full_name ? event.actor.email : event.actor_id ? "Usuario registrado" : "Proceso automático"}</small></td><td>{changeSummary(event)}</td><td>{when(event.created_at)}</td></tr>)}</tbody></table></div>}{!loading && !visibleEvents.length && <p className="billing-empty">No hay eventos para los filtros seleccionados.</p>}</section>
   </main>;
 }

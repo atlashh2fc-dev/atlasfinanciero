@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isUuid, requireOrganizationFinanceAccess } from "@/lib/admin-access";
-import { forecastMonthly2026 } from "@/data/forecast-2026";
 
 export const dynamic = "force-dynamic";
 
@@ -28,21 +27,28 @@ export async function GET(request: NextRequest) {
   const yearParam = Number(request.nextUrl.searchParams.get("year"));
   const year = Number.isInteger(yearParam) && yearParam >= 2000 && yearParam <= new Date().getFullYear() ? yearParam : new Date().getFullYear();
   const month = `${year}-01-01`;
-  const [integrationResult, peopleResult, contractsResult, metricsResult, payrollResult, documentsResult, receivablesResult, centersResult, customerLinksResult, purchaseOrdersResult, purchaseOrderBillingsResult, recurrenceRulesResult] = await Promise.all([
+  const [integrationResult, peopleResult, contractsResult, metricsResult, payrollResult, documentsResult, receivedExpensesResult, receivablesResult, centersResult, customerLinksResult, purchaseOrdersResult, purchaseOrderBillingsResult, recurrenceRulesResult, activePlanResult] = await Promise.all([
     supabase.from("payroll_integrations").select("is_active, last_sync_at, last_sync_status, last_period_month").eq("organization_id", organizationId).eq("provider", "peoplework").maybeSingle(),
     supabase.from("payroll_people").select("id, full_name, national_identification, is_active, management_name, job_title").eq("organization_id", organizationId).eq("provider", "peoplework").order("full_name"),
     supabase.from("payroll_contracts").select("person_id, contract_status, contract_type, start_date, end_date, monthly_gross_salary, currency_code, weekly_hours, payment_schedule, management_name, job_title, cost_centers").eq("organization_id", organizationId).eq("provider", "peoplework"),
     supabase.from("payroll_person_period_metrics").select("person_id, absence_days, vacation_days").eq("organization_id", organizationId).eq("period_month", month),
     supabase.from("payroll_cost_lines").select("period_month, amount, cost_center_code").eq("organization_id", organizationId).gte("period_month", `${year}-01-01`).lte("period_month", `${year}-12-01`),
     supabase.from("issued_documents").select("issue_date, document_type, net_amount, counterparty_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
+    supabase.from("received_documents").select("issue_date, document_type, net_amount").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
     supabase.from("issued_documents").select("issue_date, document_type, net_amount, payment_status, due_date, payment_date").eq("organization_id", organizationId),
     supabase.from("cost_centers").select("id, code, name").eq("organization_id", organizationId).eq("is_active", true),
     supabase.from("cost_center_customer_links").select("cost_center_id, counterparty_id, allocation_percentage, effective_from, effective_to").eq("organization_id", organizationId),
     supabase.from("customer_purchase_orders").select("id, net_amount, status").eq("organization_id", organizationId).neq("status", "cancelled"),
     supabase.from("customer_purchase_order_billings").select("purchase_order_id, allocated_net_amount").eq("organization_id", organizationId),
     supabase.from("billing_recurrence_rules").select("expected_net_amount").eq("organization_id", organizationId).eq("status", "active"),
+    supabase.from("financial_plan_versions").select("id, name").eq("organization_id", organizationId).eq("fiscal_year", year).eq("status", "active").maybeSingle(),
   ]);
-  if (integrationResult.error || peopleResult.error || contractsResult.error || metricsResult.error || payrollResult.error || documentsResult.error || receivablesResult.error || centersResult.error || customerLinksResult.error || purchaseOrdersResult.error || purchaseOrderBillingsResult.error || recurrenceRulesResult.error) return NextResponse.json({ error: "unable_to_load_peoplework_summary" }, { status: 500 });
+  if (integrationResult.error || peopleResult.error || contractsResult.error || metricsResult.error || payrollResult.error || documentsResult.error || receivedExpensesResult.error || receivablesResult.error || centersResult.error || customerLinksResult.error || purchaseOrdersResult.error || purchaseOrderBillingsResult.error || recurrenceRulesResult.error || activePlanResult.error) return NextResponse.json({ error: "unable_to_load_peoplework_summary" }, { status: 500 });
+  const activePlan = activePlanResult.data;
+  const budgetLinesResult = activePlan
+    ? await supabase.from("financial_budget_lines").select("period_month, kind, amount").eq("organization_id", organizationId).eq("plan_version_id", activePlan.id)
+    : { data: [], error: null };
+  if (budgetLinesResult.error) return NextResponse.json({ error: "unable_to_load_peoplework_summary" }, { status: 500 });
 
   const people = peopleResult.data ?? [];
   const activePeople = people.filter((person) => person.is_active);
@@ -103,18 +109,37 @@ export async function GET(request: NextRequest) {
     const key = document.issue_date.slice(0, 7);
     revenueByMonth.set(key, (revenueByMonth.get(key) ?? 0) + amount);
   }
-  const planByPeriod = new Map(year === 2026 ? forecastMonthly2026.map((item) => [item.period.slice(0, 7), item]) : []);
+  const expenseByMonth = new Map<string, number>();
+  for (const document of receivedExpensesResult.data ?? []) {
+    if (!document.issue_date) continue;
+    const type = normalizedType(document.document_type);
+    if (type.includes("guia de despacho")) continue;
+    const net = asNumber(document.net_amount);
+    const amount = type.includes("nota de credito") ? -Math.abs(net) : net;
+    const key = document.issue_date.slice(0, 7);
+    expenseByMonth.set(key, (expenseByMonth.get(key) ?? 0) + amount);
+  }
+  const planByPeriod = new Map<string, { revenue: number; expense: number }>();
+  for (const line of budgetLinesResult.data ?? []) {
+    const period = line.period_month.slice(0, 7);
+    const current = planByPeriod.get(period) ?? { revenue: 0, expense: 0 };
+    if (line.kind === "revenue") current.revenue += asNumber(line.amount);
+    else current.expense += asNumber(line.amount);
+    planByPeriod.set(period, current);
+  }
   const currentMonthStart = new Date().toISOString().slice(0, 8) + "01";
   const incomeStatement = months.map((period) => {
     const revenue = revenueByMonth.get(period) ?? 0;
+    const expenses = expenseByMonth.get(period) ?? 0;
     const payroll = payrollByMonth.get(period) ?? 0;
     const plan = planByPeriod.get(period);
-    const budgetRevenue = plan?.projectedRevenue ?? null;
-    const budgetExpense = plan?.projectedExpense ?? null;
+    const budgetRevenue = plan ? plan.revenue : null;
+    const budgetExpense = plan ? plan.expense : null;
     const isClosedPeriod = `${period}-01` < currentMonthStart;
     const forecastRevenue = budgetRevenue === null ? null : isClosedPeriod ? revenue : budgetRevenue;
-    const forecastResult = budgetExpense === null || forecastRevenue === null ? null : forecastRevenue - budgetExpense;
-    return { period, revenue, payroll, operatingResultBeforeOtherExpenses: revenue - payroll, payrollAvailable: payrollByMonth.has(period), budgetRevenue, budgetExpense, budgetResult: budgetRevenue === null || budgetExpense === null ? null : budgetRevenue - budgetExpense, forecastRevenue, forecastResult, isClosedPeriod };
+    const forecastExpense = budgetExpense === null ? null : isClosedPeriod ? expenses : budgetExpense;
+    const forecastResult = forecastExpense === null || forecastRevenue === null ? null : forecastRevenue - payroll - forecastExpense;
+    return { period, revenue, expenses, payroll, operatingResultBeforeOtherExpenses: revenue - payroll - expenses, payrollAvailable: payrollByMonth.has(period), budgetRevenue, budgetExpense, budgetResult: budgetRevenue === null || budgetExpense === null ? null : budgetRevenue - budgetExpense, forecastRevenue, forecastExpense, forecastResult, isClosedPeriod };
   });
   const centerById = new Map((centersResult.data ?? []).map((center) => [center.id, center]));
   const centerPerformance = new Map<string, { code: string; name: string; revenue: number; payroll: number }>();
@@ -160,6 +185,7 @@ export async function GET(request: NextRequest) {
     costCenters: [...centerTotals.values()].sort((a, b) => b.amount - a.amount),
     persons,
     incomeStatement,
+    activePlan: activePlan ? { id: activePlan.id, name: activePlan.name } : null,
     centerPerformance: [...centerPerformance.values()].map((item) => ({ ...item, result: item.revenue - item.payroll })).sort((a, b) => b.revenue - a.revenue),
     commercial: { totalReceivable, overdueReceivable, dueNextSevenDays, pendingDocuments: receivables.length, averageCollectionDays, openPurchaseOrderBalance, recurringMonthlyCommitment },
   });
