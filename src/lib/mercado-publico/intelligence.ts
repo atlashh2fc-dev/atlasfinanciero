@@ -295,6 +295,11 @@ export function parseTenderPage(html: string, sourceUrl: string) {
     const title = stripHtml(match[2]).replace(/\s+/g, " ").slice(0, 600) || "Documento de licitación";
     if (!documents.some((document) => document.sourceUrl === absolute.toString())) documents.push({ category: attachmentCategory(match[1]), title, sourceUrl: absolute.toString() });
   }
+  const generalAttachments = html.match(/onclick=["']open\(&#39;([\s\S]*?)&#39;,&#39;MercadoPublico/i)?.[1];
+  if (generalAttachments) {
+    const absolute = new URL(decodeHtml(generalAttachments), sourceUrl);
+    if (absolute.hostname === MARKET_HOST && absolute.pathname.toLowerCase().includes("/attachment/viewattachment.aspx") && !documents.some((document) => document.sourceUrl === absolute.toString())) documents.push({ category: "other", title: "Anexos generales de la licitación", sourceUrl: absolute.toString() });
+  }
   const durationValue = idText(html, "lblFicha7TiempoDuracionContrato");
   const durationUnit = idText(html, "lblFicha7UnidadTiempoDuracionContrato");
   const guaranteeMessage = idText(html, "lblMensajeGarantia");
@@ -457,7 +462,13 @@ export async function enrichTender(tender: NormalizedTender, options: { customKe
 
 function hiddenFields(html: string) {
   const fields = new URLSearchParams();
-  for (const match of html.matchAll(/<input[^>]+type=["']hidden["'][^>]+name=["']([^"']+)["'][^>]*(?:value=["']([^"']*)["'])?[^>]*>/gi)) fields.set(decodeHtml(match[1]), decodeHtml(match[2] || ""));
+  for (const match of html.matchAll(/<input\b[^>]*>/gi)) {
+    const tag = match[0];
+    const attribute = (name: string) => tag.match(new RegExp(`\\b${name}=["']([^"']*)["']`, "i"))?.[1] ?? null;
+    if (attribute("type")?.toLowerCase() !== "hidden") continue;
+    const name = attribute("name");
+    if (name) fields.set(decodeHtml(name), decodeHtml(attribute("value") || ""));
+  }
   return fields;
 }
 

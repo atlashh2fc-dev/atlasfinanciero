@@ -34,6 +34,8 @@ includes(component, "CONDICIONES CRÍTICAS", "La ficha no muestra condiciones cr
 includes(component, "MULTAS Y SANCIONES DETECTADAS", "La ficha no muestra multas detectadas.");
 
 includes(intelligence, "downloadFromAttachmentPage", "No existe descarga de anexos oficiales.");
+includes(intelligence, "/attachment/viewattachment.aspx", "No se conserva el acceso a anexos generales protegidos por ChileCompra.");
+includes(intelligence, 'attribute("type")?.toLowerCase() !== "hidden"', "El formulario documental no tolera variaciones de orden en atributos HTML.");
 includes(intelligence, "readLimited", "La descarga documental no tiene límite de seguridad.");
 includes(intelligence, 'storage.from("public-market-documents").upload', "Los anexos no se conservan en almacenamiento privado.");
 includes(api, 'body?.action === "capture_tender"', "La API no implementa la captura integral de licitación.");
