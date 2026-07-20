@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: context.error }, { status: context.status });
 
   const range = dateRangeForYear(year);
-  const [membership, plans, budgetLines, settings, adjustments, issued, received, directPayables, amortizationSchedules, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations] = await Promise.all([
+  const [membership, plans, budgetLines, settings, adjustments, issued, received, directPayables, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations] = await Promise.all([
     context.supabase
       .from("organization_memberships")
       .select("role")
@@ -123,6 +123,12 @@ export async function GET(request: NextRequest) {
       .gte("period_month", range.from)
       .lte("period_month", range.to),
     context.supabase
+      .from("asset_financing_plans")
+      .select("id, plan_kind, status, currency_code, disbursement_date, disbursement_amount")
+      .eq("organization_id", organizationId)
+      .eq("plan_kind", "credit")
+      .eq("status", "approved"),
+    context.supabase
       .from("bank_accounts")
       .select("id, name, opening_balance, is_active")
       .eq("organization_id", organizationId)
@@ -167,7 +173,7 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId),
   ]);
 
-  const results = [plans, budgetLines, settings, adjustments, issued, received, directPayables, amortizationSchedules, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations];
+  const results = [plans, budgetLines, settings, adjustments, issued, received, directPayables, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations];
   if (results.some((result) => result.error))
     return NextResponse.json({ error: "unable_to_load_financial_planning" }, { status: 500 });
 
@@ -182,6 +188,7 @@ export async function GET(request: NextRequest) {
     receivedDocuments: received.data ?? [],
     directPayables: directPayables.data ?? [],
     amortizationSchedules: amortizationSchedules.data ?? [],
+    financingPlans: financingPlans.data ?? [],
     bankAccounts: accounts.data ?? [],
     bankTransactions: transactions.data ?? [],
     customers: (customers.data ?? []).filter((item) => item.kind === "customer" || item.kind === "both"),

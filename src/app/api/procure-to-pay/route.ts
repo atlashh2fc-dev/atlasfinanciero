@@ -83,7 +83,7 @@ export async function GET(request: NextRequest) {
     context.supabase.from("payment_batch_items").select("id, payment_batch_id, received_document_id, direct_payable_id, supplier_name_snapshot, document_number_snapshot, due_date_snapshot, amount").eq("organization_id", organizationId),
     context.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, document_number, issue_date, due_date, net_amount, total_amount, payment_status, vendor_purchase_order_id, purchase_match_status, purchase_match_approved_at, purchase_match_approved_by").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
     context.supabase.from("direct_payables").select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, description, issue_date, due_date, total_amount, currency_code, status, notes, payment_reference").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
-    context.supabase.from("asset_financing_plans").select("id, plan_number, supplier_name, asset_name, currency_code, financing_total_amount, asset_cost_clp, installment_count, first_due_date, useful_life_months, status").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(100),
+    context.supabase.from("asset_financing_plans").select("id, plan_number, plan_kind, supplier_name, asset_name, currency_code, principal_amount, financing_total_amount, asset_cost_clp, installment_count, first_due_date, useful_life_months, disbursement_date, disbursement_amount, status").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(100),
     context.supabase.from("counterparties").select("id, legal_name, trade_name, tax_id").eq("organization_id", organizationId).in("kind", ["supplier", "both"]).eq("is_active", true).order("legal_name"),
     context.supabase.from("bank_accounts").select("id, name, bank_name, account_number_masked").eq("organization_id", organizationId).eq("is_active", true).order("name"),
   ]);
@@ -223,32 +223,40 @@ export async function POST(request: NextRequest) {
   if (action === "create_asset_financing_plan") {
     const planNumber = text(body?.planNumber, 100, true);
     const supplierName = text(body?.supplierName, 300, true);
-    const assetName = text(body?.assetName, 500, true);
-    const assetAcquisitionAmount = positive(body?.assetAcquisitionAmount);
+    const planKind = body?.planKind === "credit" || body?.planKind === "supplier_debt" || body?.planKind === "asset_financing" ? body.planKind : null;
+    const assetName = text(body?.assetName, 500, planKind === "asset_financing");
+    const principalAmount = positive(body?.principalAmount);
     const financingTotalAmount = positive(body?.financingTotalAmount);
-    const assetCostClp = positive(body?.assetCostClp);
+    const assetCostClp = planKind === "asset_financing" ? positive(body?.assetCostClp) : null;
     const residualValueClp = body?.residualValueClp === undefined || body?.residualValueClp === "" ? 0 : positive(body?.residualValueClp);
     const installmentCount = Number(body?.installmentCount);
     const firstDueDate = date(body?.firstDueDate);
-    const usefulLifeMonths = Number(body?.usefulLifeMonths);
-    const amortizationStartMonth = month(body?.amortizationStartMonth);
+    const usefulLifeMonths = planKind === "asset_financing" ? Number(body?.usefulLifeMonths) : null;
+    const amortizationStartMonth = planKind === "asset_financing" ? month(body?.amortizationStartMonth) : null;
+    const disbursementDate = planKind === "credit" ? date(body?.disbursementDate) : null;
+    const disbursementAmount = planKind === "credit" ? positive(body?.disbursementAmount) : null;
     const currencyCode = body?.currencyCode === "UF" ? "UF" : body?.currencyCode === "CLP" ? "CLP" : null;
     const supplierId = body?.supplierId ? (isUuid(body.supplierId) ? body.supplierId : null) : null;
-    if (!planNumber || !supplierName || !assetName || !assetAcquisitionAmount || !financingTotalAmount || financingTotalAmount < assetAcquisitionAmount || !assetCostClp || residualValueClp === null || residualValueClp >= assetCostClp || !Number.isInteger(installmentCount) || installmentCount < 1 || installmentCount > 240 || !firstDueDate || !Number.isInteger(usefulLifeMonths) || usefulLifeMonths < 1 || usefulLifeMonths > 600 || !amortizationStartMonth || !currencyCode || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_asset_financing_plan" }, { status: 400 });
-    const { data: plan, error: planError } = await context.supabase.from("asset_financing_plans").insert({ organization_id: organizationId, plan_number: planNumber, supplier_counterparty_id: supplierId, supplier_name: supplierName, asset_name: assetName, contract_reference: text(body?.contractReference, 180), currency_code: currencyCode, asset_acquisition_amount: assetAcquisitionAmount, financing_total_amount: financingTotalAmount, asset_cost_clp: assetCostClp, residual_value_clp: residualValueClp, installment_count: installmentCount, first_due_date: firstDueDate, useful_life_months: usefulLifeMonths, amortization_start_month: amortizationStartMonth, notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
+    const invalidAsset = planKind === "asset_financing" && (!assetName || !assetCostClp || residualValueClp === null || residualValueClp >= assetCostClp || !Number.isInteger(usefulLifeMonths) || (usefulLifeMonths ?? 0) < 1 || (usefulLifeMonths ?? 0) > 600 || !amortizationStartMonth);
+    if (!planNumber || !supplierName || !planKind || !principalAmount || !financingTotalAmount || financingTotalAmount < principalAmount || !Number.isInteger(installmentCount) || installmentCount < 1 || installmentCount > 240 || !firstDueDate || !currencyCode || invalidAsset || (planKind === "credit" && (!disbursementDate || !disbursementAmount)) || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_financing_plan" }, { status: 400 });
+    const { data: plan, error: planError } = await context.supabase.from("asset_financing_plans").insert({ organization_id: organizationId, plan_number: planNumber, plan_kind: planKind, supplier_counterparty_id: supplierId, supplier_name: supplierName, asset_name: assetName, contract_reference: text(body?.contractReference, 180), currency_code: currencyCode, principal_amount: principalAmount, asset_acquisition_amount: planKind === "asset_financing" ? principalAmount : null, financing_total_amount: financingTotalAmount, asset_cost_clp: assetCostClp, residual_value_clp: planKind === "asset_financing" ? residualValueClp : 0, installment_count: installmentCount, first_due_date: firstDueDate, useful_life_months: usefulLifeMonths, amortization_start_month: amortizationStartMonth, disbursement_date: disbursementDate, disbursement_amount: disbursementAmount, notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
     if (planError || !plan) return NextResponse.json({ error: "unable_to_create_asset_financing_plan" }, { status: 409 });
     const installmentRows = Array.from({ length: installmentCount }, (_, index) => {
-      const principal = index === installmentCount - 1 ? assetAcquisitionAmount - Math.floor(assetAcquisitionAmount / installmentCount * 10_000) / 10_000 * (installmentCount - 1) : Math.floor(assetAcquisitionAmount / installmentCount * 10_000) / 10_000;
+      const principal = index === installmentCount - 1 ? principalAmount - Math.floor(principalAmount / installmentCount * 10_000) / 10_000 * (installmentCount - 1) : Math.floor(principalAmount / installmentCount * 10_000) / 10_000;
       const total = index === installmentCount - 1 ? financingTotalAmount - Math.floor(financingTotalAmount / installmentCount * 10_000) / 10_000 * (installmentCount - 1) : Math.floor(financingTotalAmount / installmentCount * 10_000) / 10_000;
       return { organization_id: organizationId, plan_id: plan.id, installment_number: index + 1, due_date: addMonths(firstDueDate, index), currency_amount: total, principal_amount: principal, finance_charge_amount: total - principal };
     });
-    const amortizable = assetCostClp - residualValueClp;
-    const amortizationRows = Array.from({ length: usefulLifeMonths }, (_, index) => {
-      const amortization = index === usefulLifeMonths - 1 ? amortizable - Math.floor(amortizable / usefulLifeMonths * 100) / 100 * (usefulLifeMonths - 1) : Math.floor(amortizable / usefulLifeMonths * 100) / 100;
-      const opening = index === 0 ? assetCostClp : assetCostClp - Math.floor(amortizable / usefulLifeMonths * 100) / 100 * index;
-      return { organization_id: organizationId, plan_id: plan.id, period_month: addMonths(amortizationStartMonth, index), opening_balance_clp: opening, amortization_amount_clp: amortization, closing_balance_clp: opening - amortization };
-    });
-    const [{ error: installmentsError }, { error: amortizationError }] = await Promise.all([context.supabase.from("asset_financing_installments").insert(installmentRows), context.supabase.from("asset_amortization_schedules").insert(amortizationRows)]);
+    const assetCost = assetCostClp ?? 0;
+    const amortizationMonths = usefulLifeMonths ?? 0;
+    const amortizationStart = amortizationStartMonth ?? firstDueDate;
+    const amortizable = assetCost - (residualValueClp ?? 0);
+    const amortizationRows = planKind === "asset_financing" ? Array.from({ length: amortizationMonths }, (_, index) => {
+      const amortization = index === amortizationMonths - 1 ? amortizable - Math.floor(amortizable / amortizationMonths * 100) / 100 * (amortizationMonths - 1) : Math.floor(amortizable / amortizationMonths * 100) / 100;
+      const opening = index === 0 ? assetCost : assetCost - Math.floor(amortizable / amortizationMonths * 100) / 100 * index;
+      return { organization_id: organizationId, plan_id: plan.id, period_month: addMonths(amortizationStart, index), opening_balance_clp: opening, amortization_amount_clp: amortization, closing_balance_clp: opening - amortization };
+    }) : [];
+    const [{ error: installmentsError }, amortizationResult] = await Promise.all([context.supabase.from("asset_financing_installments").insert(installmentRows), amortizationRows.length ? context.supabase.from("asset_amortization_schedules").insert(amortizationRows) : Promise.resolve({ error: null })]);
+    const amortizationError = amortizationResult.error;
     if (installmentsError || amortizationError) { await context.supabase.from("asset_financing_plans").delete().eq("id", plan.id).eq("organization_id", organizationId); return NextResponse.json({ error: "unable_to_generate_asset_financing_schedule" }, { status: 409 }); }
     return NextResponse.json({ id: plan.id }, { status: 201 });
   }
