@@ -217,6 +217,11 @@ export async function POST(request: NextRequest) {
     if (!payableNumber || !supplierName || !description || !totalAmount || (body?.dueDate && !dueDate) || (dueDate && dueDate < issueDate) || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_direct_payable" }, { status: 400 });
     const { data, error } = await context.supabase.from("direct_payables").insert({ organization_id: organizationId, payable_number: payableNumber, supplier_counterparty_id: supplierId, supplier_name: supplierName, invoice_number: invoiceNumber, category, description, issue_date: issueDate, due_date: dueDate, total_amount: totalAmount, currency_code: "CLP", notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
     if (error || !data) return NextResponse.json({ error: "unable_to_create_direct_payable" }, { status: 409 });
+    const { error: submitError } = await context.supabase.from("direct_payables").update({ status: "review" }).eq("id", data.id).eq("organization_id", organizationId);
+    if (submitError) {
+      await context.supabase.from("direct_payables").delete().eq("id", data.id).eq("organization_id", organizationId);
+      return NextResponse.json({ error: "unable_to_submit_direct_payable_for_approval" }, { status: 409 });
+    }
     return NextResponse.json({ id: data.id }, { status: 201 });
   }
 
