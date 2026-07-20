@@ -142,13 +142,24 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
     const controller = new AbortController();
     setDossierLoading(true);
     const params = new URLSearchParams({ organizationId, code: selectedTenderCode });
-    void fetch(`/api/mercado-publico/intelligence?${params.toString()}`, { cache: "no-store", signal: controller.signal })
-      .then(async (response) => response.ok ? response.json() as Promise<PublicMarketDossier> : null)
-      .then((payload) => { if (payload) setOpportunityDossier(payload); })
+    const loadDossier = async () => {
+      const read = async () => {
+        const response = await fetch(`/api/mercado-publico/intelligence?${params.toString()}`, { cache: "no-store", signal: controller.signal });
+        return response.ok ? response.json() as Promise<PublicMarketDossier> : null;
+      };
+      let payload = await read();
+      const needsRefresh = payload?.tender && !payload.tender.executive_summary?.historySearch;
+      if (needsRefresh && canManage) {
+        const refresh = await fetch("/api/mercado-publico/intelligence", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "capture_tender", organizationId, code: selectedTenderCode, opportunityId: selectedOpportunityId }), signal: controller.signal });
+        if (refresh.ok) payload = await read();
+      }
+      if (payload) setOpportunityDossier(payload);
+    };
+    void loadDossier()
       .catch((error: unknown) => { if (!(error instanceof DOMException && error.name === "AbortError")) setOpportunityDossier(null); })
       .finally(() => { if (!controller.signal.aborted) setDossierLoading(false); });
     return () => controller.abort();
-  }, [organizationId, selectedOpportunityId, selectedTenderCode]);
+  }, [canManage, organizationId, selectedOpportunityId, selectedTenderCode]);
 
   async function save(action: string, record: Record<string, unknown>, onSuccess: () => void, successMessage: string) {
     if (!organizationId) return;
