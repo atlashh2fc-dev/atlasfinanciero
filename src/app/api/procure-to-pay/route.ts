@@ -55,6 +55,18 @@ async function activeCostCenterId(
 function amountMatchesOrder(documentTotal: number | string | null, orderTotal: number | string | null) {
   return Number(documentTotal ?? 0) > 0 && Number(documentTotal ?? 0) <= Number(orderTotal ?? 0) + 0.01;
 }
+function amountMatchesReceived(
+  documentTotal: number | string | null,
+  order: { net_amount: number | string | null; total_amount: number | string | null; status: string },
+  orderLines: { quantity: number | string; unit_price: number | string; received_quantity: number | string }[],
+) {
+  const receivedNet = orderLines.reduce((sum, line) => sum + Math.min(Number(line.quantity ?? 0), Number(line.received_quantity ?? 0)) * Number(line.unit_price ?? 0), 0);
+  // OCs históricas recibidas antes del registro por línea conservan el control previo.
+  const receivedTotal = receivedNet > 0
+    ? receivedNet * (Number(order.total_amount ?? 0) / Math.max(Number(order.net_amount ?? 0), 0.01))
+    : order.status === "received" ? Number(order.total_amount ?? 0) : 0;
+  return Number(documentTotal ?? 0) > 0 && Number(documentTotal ?? 0) <= receivedTotal + 0.01;
+}
 async function canWriteProcurement(
   supabase: NonNullable<Awaited<ReturnType<typeof requireOrganizationProcurementAccess>>["supabase"]>,
   organizationId: string,
@@ -117,10 +129,12 @@ export async function GET(request: NextRequest) {
   const context = await requireOrganizationProcurementAccess(organizationId);
   if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
 
-  const [requests, orders, orderLines, batches, batchItems, documents, directPayables, financingPlans, suppliers, bankAccounts, costCenters] = await Promise.all([
+  const [requests, orders, orderLines, receipts, receiptLines, batches, batchItems, documents, directPayables, financingPlans, suppliers, bankAccounts, costCenters] = await Promise.all([
     context.supabase.from("purchase_requests").select("id, request_number, supplier_counterparty_id, supplier_name, description, requested_on, needed_by, cost_center_id, currency_code, estimated_amount, status, notes, approved_at, cancellation_reason").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(200),
     context.supabase.from("vendor_purchase_orders").select("id, purchase_order_number, purchase_request_id, supplier_counterparty_id, supplier_name, supplier_tax_id, ordered_on, expected_on, currency_code, net_amount, vat_amount, total_amount, status, notes, approved_at, sent_at, received_at, cancellation_reason").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(200),
     context.supabase.from("vendor_purchase_order_lines").select("id, purchase_order_id, line_number, description, quantity, unit_price, net_amount, received_quantity, cost_center_id").eq("organization_id", organizationId).order("line_number"),
+    context.supabase.from("vendor_purchase_order_receipts").select("id, purchase_order_id, received_on, notes, received_by, created_at").eq("organization_id", organizationId).order("received_on", { ascending: false }).limit(500),
+    context.supabase.from("vendor_purchase_order_receipt_lines").select("id, receipt_id, purchase_order_line_id, received_quantity").eq("organization_id", organizationId).limit(2_000),
     context.supabase.from("payment_batches").select("id, batch_number, bank_account_id, scheduled_for, currency_code, total_amount, status, notes, submitted_at, approved_at, processed_at, paid_at, payment_reference, cancellation_reason").eq("organization_id", organizationId).order("scheduled_for", { ascending: false }).limit(100),
     context.supabase.from("payment_batch_items").select("id, payment_batch_id, received_document_id, direct_payable_id, supplier_name_snapshot, document_number_snapshot, due_date_snapshot, amount").eq("organization_id", organizationId),
     context.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, document_number, issue_date, due_date, net_amount, total_amount, payment_status, vendor_purchase_order_id, purchase_match_status, purchase_match_approved_at, purchase_match_approved_by").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
@@ -130,16 +144,19 @@ export async function GET(request: NextRequest) {
     context.supabase.from("bank_accounts").select("id, name, bank_name, account_number_masked").eq("organization_id", organizationId).eq("is_active", true).order("name"),
     context.supabase.from("cost_centers").select("id, code, name").eq("organization_id", organizationId).eq("is_active", true).order("code"),
   ]);
-  if ([requests, orders, orderLines, batches, batchItems, documents, directPayables, financingPlans, suppliers, bankAccounts, costCenters].some((result) => result.error)) return NextResponse.json({ error: "unable_to_load_procure_to_pay" }, { status: 500 });
+  if ([requests, orders, orderLines, receipts, receiptLines, batches, batchItems, documents, directPayables, financingPlans, suppliers, bankAccounts, costCenters].some((result) => result.error)) return NextResponse.json({ error: "unable_to_load_procure_to_pay" }, { status: 500 });
   const activeBatchIds = new Set((batches.data ?? []).filter((batch) => !["cancelled", "paid"].includes(batch.status)).map((batch) => batch.id));
   const reservedDocumentIds = new Set((batchItems.data ?? []).filter((item) => activeBatchIds.has(item.payment_batch_id)).map((item) => item.received_document_id));
   const reservedDirectPayableIds = new Set((batchItems.data ?? []).filter((item) => activeBatchIds.has(item.payment_batch_id)).map((item) => item.direct_payable_id));
   const ordersById = new Map((orders.data ?? []).map((order) => [order.id, order]));
+  const linesByOrder = new Map<string, typeof orderLines.data>();
+  for (const line of orderLines.data ?? []) linesByOrder.set(line.purchase_order_id, [...(linesByOrder.get(line.purchase_order_id) ?? []), line]);
   const availableDocuments = (documents.data ?? []).filter((document) => !isPaid(document.payment_status)).map((document) => {
     const order = document.vendor_purchase_order_id ? ordersById.get(document.vendor_purchase_order_id) : null;
+    const alreadyLinkedTotal = (documents.data ?? []).filter((item) => item.vendor_purchase_order_id === document.vendor_purchase_order_id && item.id !== document.id).reduce((sum, item) => sum + Number(item.total_amount ?? 0), 0);
     const approvedException = document.purchase_match_status === "exception" && Boolean(document.purchase_match_approved_at && document.purchase_match_approved_by);
     const matchedOrder = document.purchase_match_status === "matched" && order
-      ? isReceivedOrder(order.status) && sameSupplier(document, order) && amountMatchesOrder(document.total_amount, order.total_amount)
+      ? isReceivedOrder(order.status) && sameSupplier(document, order) && amountMatchesOrder(document.total_amount, order.total_amount) && amountMatchesReceived(alreadyLinkedTotal + Number(document.total_amount ?? 0), order, linesByOrder.get(order.id) ?? [])
       : false;
     const paymentEligible = document.purchase_match_status === "not_required"
       ? !reservedDocumentIds.has(document.id)
@@ -150,6 +167,7 @@ export async function GET(request: NextRequest) {
   });
   return NextResponse.json({
     purchaseRequests: requests.data ?? [], purchaseOrders: orders.data ?? [], purchaseOrderLines: orderLines.data ?? [],
+    purchaseOrderReceipts: receipts.data ?? [], purchaseOrderReceiptLines: receiptLines.data ?? [],
     paymentBatches: batches.data ?? [], paymentBatchItems: batchItems.data ?? [],
     receivedDocuments: availableDocuments,
     directPayables: (directPayables.data ?? []).map((payable) => ({ ...payable, payment_eligible: !payable.is_reference && payable.status === "approved" && !reservedDirectPayableIds.has(payable.id), payment_block_reason: payable.is_reference ? "reference_only" : payable.status === "review" ? "awaiting_approval" : payable.status === "draft" ? "not_submitted" : payable.status === "approved" ? "already_in_payment_batch" : payable.status === "paid" ? "already_paid" : "not_approved" })),
@@ -227,21 +245,56 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ id: order.id }, { status: 201 });
   }
 
+  if (action === "record_purchase_receipt") {
+    const purchaseOrderId = isUuid(body?.purchaseOrderId) ? body.purchaseOrderId : null;
+    const receivedOn = date(body?.receivedOn) ?? new Date().toISOString().slice(0, 10);
+    const submittedLines = Array.isArray(body?.lines) && body.lines.length > 0 && body.lines.length <= 100
+      ? body.lines.map((value) => {
+        const line = value as { purchaseOrderLineId?: unknown; receivedQuantity?: unknown };
+        return isUuid(line.purchaseOrderLineId) && positive(line.receivedQuantity)
+          ? { purchaseOrderLineId: line.purchaseOrderLineId, receivedQuantity: positive(line.receivedQuantity)! }
+          : null;
+      })
+      : null;
+    if (!purchaseOrderId || !submittedLines || submittedLines.some((line) => !line) || new Set(submittedLines.map((line) => line!.purchaseOrderLineId)).size !== submittedLines.length) return NextResponse.json({ error: "invalid_purchase_receipt" }, { status: 400 });
+    const { data: order, error: orderError } = await context.supabase
+      .from("vendor_purchase_orders").select("id, status").eq("id", purchaseOrderId).eq("organization_id", organizationId).maybeSingle();
+    if (orderError || !order || !["sent", "partially_received"].includes(order.status)) return NextResponse.json({ error: "purchase_order_not_available_for_receipt" }, { status: 409 });
+    const { data: orderLines, error: orderLinesError } = await context.supabase
+      .from("vendor_purchase_order_lines").select("id, quantity, received_quantity").eq("purchase_order_id", purchaseOrderId).eq("organization_id", organizationId);
+    const receivedLineMap = new Map((orderLines ?? []).map((line) => [line.id, line]));
+    if (orderLinesError || submittedLines.some((line) => !line || !receivedLineMap.has(line.purchaseOrderLineId) || Number(receivedLineMap.get(line.purchaseOrderLineId)!.received_quantity) + line.receivedQuantity > Number(receivedLineMap.get(line.purchaseOrderLineId)!.quantity))) return NextResponse.json({ error: "purchase_receipt_quantity_invalid" }, { status: 409 });
+    const { data: receipt, error: receiptError } = await context.supabase
+      .from("vendor_purchase_order_receipts")
+      .insert({ organization_id: organizationId, purchase_order_id: purchaseOrderId, received_on: receivedOn, notes: text(body?.notes, 2_000), received_by: context.user.id })
+      .select("id").single();
+    if (receiptError || !receipt) return NextResponse.json({ error: "unable_to_create_purchase_receipt" }, { status: 409 });
+    const { error: receiptLinesError } = await context.supabase.from("vendor_purchase_order_receipt_lines").insert(submittedLines.map((line) => ({ organization_id: organizationId, receipt_id: receipt.id, purchase_order_line_id: line!.purchaseOrderLineId, received_quantity: line!.receivedQuantity })));
+    if (receiptLinesError) {
+      await context.supabase.from("vendor_purchase_order_receipts").delete().eq("id", receipt.id).eq("organization_id", organizationId);
+      return NextResponse.json({ error: "unable_to_record_purchase_receipt_lines" }, { status: 409 });
+    }
+    return NextResponse.json({ id: receipt.id }, { status: 201 });
+  }
+
   if (action === "link_received_document_to_purchase_order") {
     const receivedDocumentId = isUuid(body?.receivedDocumentId) ? body.receivedDocumentId : null;
     const purchaseOrderId = isUuid(body?.purchaseOrderId) ? body.purchaseOrderId : null;
     if (!receivedDocumentId || !purchaseOrderId) return NextResponse.json({ error: "invalid_document_purchase_order_link" }, { status: 400 });
     const [{ data: document, error: documentError }, { data: order, error: orderError }] = await Promise.all([
       context.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, total_amount, payment_status, vendor_purchase_order_id").eq("id", receivedDocumentId).eq("organization_id", organizationId).maybeSingle(),
-      context.supabase.from("vendor_purchase_orders").select("id, supplier_counterparty_id, supplier_name, total_amount, status").eq("id", purchaseOrderId).eq("organization_id", organizationId).maybeSingle(),
+      context.supabase.from("vendor_purchase_orders").select("id, supplier_counterparty_id, supplier_name, net_amount, total_amount, status").eq("id", purchaseOrderId).eq("organization_id", organizationId).maybeSingle(),
     ]);
     if (documentError || orderError || !document || !order) return NextResponse.json({ error: "document_or_purchase_order_not_found" }, { status: 404 });
     if (isPaid(document.payment_status)) return NextResponse.json({ error: "paid_document_cannot_be_linked" }, { status: 409 });
     if (document.vendor_purchase_order_id && document.vendor_purchase_order_id !== order.id) return NextResponse.json({ error: "document_already_linked_to_another_purchase_order" }, { status: 409 });
     if (!isReceivedOrder(order.status) || !sameSupplier(document, order) || !amountMatchesOrder(document.total_amount, order.total_amount)) return NextResponse.json({ error: "document_does_not_match_purchase_order" }, { status: 409 });
-    const { data: linkedDocuments, error: linkedDocumentsError } = await context.supabase.from("received_documents").select("id, total_amount").eq("organization_id", organizationId).eq("vendor_purchase_order_id", order.id).neq("id", document.id);
+    const [{ data: linkedDocuments, error: linkedDocumentsError }, { data: receivedLines, error: receivedLinesError }] = await Promise.all([
+      context.supabase.from("received_documents").select("id, total_amount").eq("organization_id", organizationId).eq("vendor_purchase_order_id", order.id).neq("id", document.id),
+      context.supabase.from("vendor_purchase_order_lines").select("quantity, unit_price, received_quantity").eq("organization_id", organizationId).eq("purchase_order_id", order.id),
+    ]);
     const linkedTotal = (linkedDocuments ?? []).reduce((sum, item) => sum + Number(item.total_amount ?? 0), Number(document.total_amount ?? 0));
-    if (linkedDocumentsError || linkedTotal > Number(order.total_amount ?? 0) + 0.01) return NextResponse.json({ error: linkedDocumentsError ? "unable_to_validate_purchase_order_amount" : "purchase_order_amount_exceeded" }, { status: 409 });
+    if (linkedDocumentsError || receivedLinesError || linkedTotal > Number(order.total_amount ?? 0) + 0.01 || !amountMatchesReceived(linkedTotal, order, receivedLines ?? [])) return NextResponse.json({ error: linkedDocumentsError || receivedLinesError ? "unable_to_validate_purchase_order_amount" : "purchase_order_received_amount_exceeded" }, { status: 409 });
     const { data, error } = await context.supabase.from("received_documents").update({ vendor_purchase_order_id: order.id, purchase_match_status: "matched", purchase_match_note: null }).eq("id", document.id).eq("organization_id", organizationId).select("id, vendor_purchase_order_id").maybeSingle();
     if (error || !data) return NextResponse.json({ error: "unable_to_link_received_document" }, { status: 409 });
     return NextResponse.json({ document: data });
@@ -376,7 +429,6 @@ export async function PATCH(request: NextRequest) {
     submit_purchase_request: { table: "purchase_requests", values: { status: "review" } },
     submit_purchase_order: { table: "vendor_purchase_orders", values: { status: "review" } },
     send_purchase_order: { table: "vendor_purchase_orders", values: { status: "sent", sent_at: new Date().toISOString() } },
-    receive_purchase_order: { table: "vendor_purchase_orders", values: { status: "received", received_at: new Date().toISOString() } },
     submit_payment_batch: { table: "payment_batches", values: { status: "review", submitted_at: new Date().toISOString() } },
     start_payment_batch: { table: "payment_batches", values: { status: "processing", processed_at: new Date().toISOString() } },
     mark_payment_batch_paid: { table: "payment_batches", values: { status: "paid", paid_at: new Date().toISOString(), payment_reference: text(body?.paymentReference, 180) } },

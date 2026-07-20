@@ -2790,8 +2790,9 @@ td small {
 }
 .treasury-execution-summary {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   margin: 18px 0;
   padding: 14px 16px;
   border: 1px solid #dfe6f5;
@@ -2800,7 +2801,10 @@ td small {
   color: #718098;
   font-size: 12px;
 }
+.treasury-execution-summary > div { display: flex; align-items: baseline; gap: 10px; }
 .treasury-execution-summary strong { color: #263b60; font-size: 25px; letter-spacing: -.5px; }
+.treasury-execution-summary label { display: grid; gap: 5px; color: #62718a; font-size: 10px; font-weight: 700; }
+.treasury-execution-summary select { min-width: 112px; border: 1px solid #d7dfec; border-radius: 7px; padding: 7px 9px; background: #fff; color: #334563; font: inherit; font-size: 12px; }
 .treasury-executions-table { max-height: min(52vh, 530px); }
 .treasury-executions-table table { min-width: 820px; }
 .collection-modal .form-grid select,
@@ -2980,6 +2984,14 @@ td small {
 .kpis-six {
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
+.management-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.management-kpis .kpi-card.danger { border-top: 3px solid #de7a68; }
+.management-worklists { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .8fr); gap: 18px; }
+.management-action-list { display: grid; gap: 1px; border-top: 1px solid var(--line); }
+.management-action-list button { display: grid; gap: 4px; padding: 17px 28px; border: 0; border-bottom: 1px solid var(--line); text-align: left; background: #fff; color: #2b3a55; cursor: pointer; font: inherit; }
+.management-action-list button:hover { background: #f7f9ff; }
+.management-action-list span { color: #7f8ca0; font-size: 11px; }
+@media (max-width: 960px) { .management-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .management-worklists { grid-template-columns: 1fr; } }
 .treasury-onboarding,
 .treasury-import-panel {
   padding: 22px 28px;
@@ -3041,6 +3053,7 @@ td small {
 .treasury-preview .table-scroll { max-height: 275px; }
 @media (max-width: 760px) {
   .treasury-import-form { grid-template-columns: 1fr; }
+  .treasury-execution-summary { align-items: stretch; flex-direction: column; }
 }
 .report-grid {
   display: grid;

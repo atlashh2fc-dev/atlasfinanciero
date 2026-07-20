@@ -191,6 +191,7 @@ export function TreasuryDashboard({
   const [previewingStatement, setPreviewingStatement] = useState(false);
   const [importingStatement, setImportingStatement] = useState(false);
   const [executionsModalOpen, setExecutionsModalOpen] = useState(false);
+  const [executionYear, setExecutionYear] = useState(() => String(new Date().getFullYear()));
 
   async function loadTreasury() {
     if (!organizationId) {
@@ -425,7 +426,16 @@ export function TreasuryDashboard({
 
   const clpPosition = accountPositions.filter((account) => account.currency_code === "CLP").reduce((total, account) => total + account.position, 0);
   const nonClpAccounts = accountPositions.filter((account) => account.currency_code !== "CLP");
-  const executionsToVerify = (data?.paymentExecutions ?? []).filter((execution) => execution.status !== "reconciled");
+  const executionYears = useMemo(() => {
+    const years = new Set<string>([String(new Date().getFullYear())]);
+    for (const execution of data?.paymentExecutions ?? []) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(execution.executed_on)) years.add(execution.executed_on.slice(0, 4));
+    }
+    return [...years].sort((left, right) => Number(right) - Number(left));
+  }, [data?.paymentExecutions]);
+  const executionsToVerify = (data?.paymentExecutions ?? []).filter(
+    (execution) => execution.status !== "reconciled" && execution.executed_on.startsWith(`${executionYear}-`),
+  );
 
   return (
     <main className="dashboard">
@@ -471,9 +481,9 @@ export function TreasuryDashboard({
           <small>Movimientos con aplicación total</small>
         </article>
         <button type="button" className="kpi-card kpi-card-button" onClick={() => setExecutionsModalOpen(true)} aria-label="Ver detalle de ejecuciones por respaldar">
-          <span>Ejecuciones por respaldar</span>
+          <span>Ejecuciones por respaldar · {executionYear}</span>
           <strong>{executionsToVerify.length}</strong>
-          <small>Ver detalle · no se incluyen en posición hasta cargar cartola</small>
+          <small>Ver detalle anual · no se incluyen en posición hasta cargar cartola</small>
         </button>
       </section>
 
@@ -645,14 +655,14 @@ export function TreasuryDashboard({
             <div className="modal-header">
               <div>
                 <span className="eyebrow">CONTROL OPERATIVO · TESORERÍA</span>
-                <h2 id="treasury-executions-title">Ejecuciones por respaldar</h2>
-                <p>Son pagos o abonos registrados en los módulos financieros. Revisa aquí qué debe aparecer en una cartola; no afecta la posición bancaria hasta que el banco lo confirme.</p>
+                <h2 id="treasury-executions-title">Ejecuciones por respaldar · {executionYear}</h2>
+                <p>Son pagos o abonos registrados en los módulos financieros. El control se consulta por año contable; no afecta la posición bancaria hasta que el banco lo confirme.</p>
               </div>
               <button type="button" className="close-button" onClick={() => setExecutionsModalOpen(false)} aria-label="Cerrar">×</button>
             </div>
             <div className="treasury-execution-summary">
-              <strong>{executionsToVerify.length}</strong>
-              <span>ejecuciones pendientes de respaldo en cartola</span>
+              <div><strong>{executionsToVerify.length}</strong><span>ejecuciones pendientes de respaldo en cartola</span></div>
+              <label>Año contable<select value={executionYear} onChange={(event) => setExecutionYear(event.target.value)}>{executionYears.map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
             </div>
             <div className="table-scroll treasury-executions-table">
               <table>

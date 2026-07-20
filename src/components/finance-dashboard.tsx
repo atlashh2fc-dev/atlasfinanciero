@@ -41,6 +41,8 @@ import { FinancialCloseWorkbench } from "@/components/financial-close-workbench"
 import { ActivityAuditLog } from "@/components/activity-audit-log";
 import { SupplierConsolidation } from "@/components/supplier-consolidation";
 import { AtlasAssistant } from "@/components/atlas-assistant";
+import { ManagementCenter } from "@/components/management-center";
+import { AccountingWorkbench } from "@/components/accounting-workbench";
 import {
   isCreditNoteDocument,
   isPurchaseOrderDocument,
@@ -73,6 +75,8 @@ const pieColors = [
 const modulePreviews: Record<Module, string> = {
   Inicio:
     "Cockpit ejecutivo: crecimiento, cobranza, concentración y referencias de mercado.",
+  "Gestión 360": "Prioridades operativas anuales que abren directamente cobranza, pagos, aprobaciones, tesorería e imputaciones.",
+  Contabilidad: "Libro diario, mayor, balance y asientos manuales con cuadratura y bloqueo de períodos.",
   Facturas:
     "Documentos emitidos, estados, pagos, notas de crédito y evolución neta por período.",
   "OC de clientes":
@@ -114,6 +118,8 @@ const modulePreviews: Record<Module, string> = {
 
 type Module =
   | "Inicio"
+  | "Gestión 360"
+  | "Contabilidad"
   | "Facturas"
   | "OC de clientes"
   | "Proyecciones"
@@ -135,7 +141,7 @@ type Module =
   | "Administración"
   | "Bitácora de actividad";
 const navigationGroups: Array<{ label: string; items: Module[] }> = [
-  { label: "RESUMEN", items: ["Inicio"] },
+  { label: "RESUMEN", items: ["Gestión 360", "Inicio"] },
   {
     label: "INGRESOS",
     items: [
@@ -153,7 +159,7 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
   },
   {
     label: "PLANIFICACIÓN Y ANÁLISIS",
-    items: ["Proyecciones", "Planificación financiera", "Centros de costo", "Imputaciones pendientes", "Reportes"],
+    items: ["Contabilidad", "Proyecciones", "Planificación financiera", "Centros de costo", "Imputaciones pendientes", "Reportes"],
   },
   {
     label: "PERSONAS Y CONTROL",
@@ -331,6 +337,8 @@ function EmptyModule({
   module: Exclude<
     Module,
     | "Inicio"
+    | "Gestión 360"
+    | "Contabilidad"
     | "Facturas"
     | "OC de clientes"
     | "Proyecciones"
@@ -2269,7 +2277,11 @@ export function FinanceDashboard() {
                   aria-describedby={`module-preview-${item.replaceAll(" ", "-")}`}
                 >
                   <span className="nav-icon">
-                  {item === "Inicio"
+                  {item === "Gestión 360"
+                      ? "◈"
+                      : item === "Contabilidad"
+                        ? "⌘"
+                      : item === "Inicio"
                       ? "⌂"
                       : item === "Facturas"
                         ? "▤"
@@ -2366,7 +2378,14 @@ export function FinanceDashboard() {
           </div>
         </header>
 
-        {activeModule === "Inicio" ? (
+        {activeModule === "Gestión 360" ? (
+          <ManagementCenter
+            organizationId={access?.membership.organizationId ?? null}
+            onNavigate={(module) => selectModule(module, navigationGroups.find((group) => group.items.includes(module))?.label ?? "RESUMEN")}
+          />
+        ) : activeModule === "Contabilidad" ? (
+          canReadExpenses ? <AccountingWorkbench organizationId={access?.membership.organizationId ?? null} /> : null
+        ) : activeModule === "Inicio" ? (
           <ExecutiveDashboard records={records} />
         ) : activeModule === "OC de clientes" ? (
           <CustomerPurchaseOrders

@@ -1,0 +1,3 @@
+-- Remote migration history already contains this version from a concurrent
+-- workspace operation. It is retained locally as a history placeholder so
+-- subsequent linked migrations can be applied safely.
