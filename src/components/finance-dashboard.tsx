@@ -28,6 +28,7 @@ import { AdministrationConsole } from "@/components/administration-console";
 import { PayrollDashboard } from "@/components/payroll-dashboard";
 import { CustomerPurchaseOrders } from "@/components/customer-purchase-orders";
 import { CustomerProfiles } from "@/components/customer-profiles";
+import { CommercialControl } from "@/components/commercial-control";
 import { PublicMarketCrm } from "@/components/public-market-crm";
 import { ReportsDashboard } from "@/components/reports-dashboard";
 import { CostCenterManagement } from "@/components/cost-center-management";
@@ -86,8 +87,8 @@ const modulePreviews: Record<Module, string> = {
     "Calendario y alertas para que las facturas periódicas estén listas antes de su fecha límite.",
   Prefacturación:
     "Borradores desde servicios contratados, revisión financiera y vínculo con la emisión real.",
-  Clientes:
-    "Evolución comercial y ficha tributaria, facturación y contactos por área de cada cliente.",
+  "CRM y clientes":
+    "Resumen, pipeline, clientes 360, contratos, proyectos y evolución comercial en un workspace integrado.",
   "Mercado Público":
     "Búsqueda oficial de licitaciones ChileCompra y conversión trazable a oportunidades del CRM.",
   "Cuentas por cobrar":
@@ -127,7 +128,7 @@ type Module =
   | "OC de clientes"
   | "Proyecciones"
   | "Planificación financiera"
-  | "Clientes"
+  | "CRM y clientes"
   | "Mercado Público"
   | "Cuentas por cobrar"
   | "Recurrentes"
@@ -149,7 +150,7 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
   {
     label: "INGRESOS",
     items: [
-      "Clientes",
+      "CRM y clientes",
       "Mercado Público",
       "Prefacturación",
       "Facturas",
@@ -348,7 +349,7 @@ function EmptyModule({
     | "OC de clientes"
     | "Proyecciones"
     | "Planificación financiera"
-    | "Clientes"
+    | "CRM y clientes"
     | "Mercado Público"
     | "Cuentas por cobrar"
     | "Recurrentes"
@@ -897,6 +898,62 @@ type CustomerEvolution = {
   byMonth: Record<string, number>;
 };
 
+type CustomerWorkspaceView =
+  | "summary"
+  | "pipeline"
+  | "customers"
+  | "contracts"
+  | "evolution";
+
+const customerWorkspaceViews: Array<{
+  key: CustomerWorkspaceView;
+  label: string;
+  eyebrow: string;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "summary",
+    label: "Resumen",
+    eyebrow: "CRM · VISIÓN EJECUTIVA",
+    title: "Clientes y evolución",
+    description:
+      "Una vista ejecutiva de clientes, facturación y seguimiento comercial.",
+  },
+  {
+    key: "pipeline",
+    label: "Pipeline",
+    eyebrow: "CRM · OPORTUNIDADES",
+    title: "Pipeline comercial",
+    description:
+      "Avanza oportunidades por etapa y mantén visible la próxima acción.",
+  },
+  {
+    key: "customers",
+    label: "Clientes 360",
+    eyebrow: "CRM · CLIENTES",
+    title: "Clientes 360",
+    description:
+      "Directorio, contactos, documentos, alertas e historia financiera por cliente.",
+  },
+  {
+    key: "contracts",
+    label: "Contratos y proyectos",
+    eyebrow: "CRM · EJECUCIÓN COMERCIAL",
+    title: "Contratos y proyectos",
+    description:
+      "Conecta ventas ganadas con contratos, centros de costo, proyectos y renovación.",
+  },
+  {
+    key: "evolution",
+    label: "Evolución",
+    eyebrow: "CRM · ANÁLISIS COMERCIAL",
+    title: "Evolución de clientes",
+    description:
+      "Compara facturación, concentración y seguimiento por cliente y período.",
+  },
+];
+
 function buildCustomerEvolution(records: InvoiceRecord[]) {
   const result = records.reduce<Record<string, CustomerEvolution>>(
     (accumulator, record) => {
@@ -937,7 +994,10 @@ function CustomerModule({
   organizationId: string | null;
   canManage: boolean;
 }) {
+  const [workspaceView, setWorkspaceView] =
+    useState<CustomerWorkspaceView>("summary");
   const [isEvolutionExpanded, setIsEvolutionExpanded] = useState(false);
+  const [evolutionSearch, setEvolutionSearch] = useState("");
   const [customerYear, setCustomerYear] = useState(
     String(new Date().getFullYear()),
   );
@@ -954,6 +1014,14 @@ function CustomerModule({
       ).sort((first, second) => second - first),
     [records],
   );
+  useEffect(() => {
+    if (
+      availableYears.length > 0 &&
+      !availableYears.includes(Number(customerYear))
+    ) {
+      setCustomerYear(String(availableYears[0]));
+    }
+  }, [availableYears, customerYear]);
   const customerRecords = useMemo(
     () =>
       customerYear === "Todos"
@@ -963,6 +1031,15 @@ function CustomerModule({
   );
   const customers = buildCustomerEvolution(customerRecords);
   const totalNet = sumRecognizedNet(customerRecords);
+  const evolutionRecords = useMemo(() => {
+    const needle = evolutionSearch.trim().toLocaleLowerCase("es-CL");
+    if (!needle) return customerRecords;
+    return customerRecords.filter((record) => (record.client || record.recipient || "No informado").toLocaleLowerCase("es-CL").includes(needle));
+  }, [customerRecords, evolutionSearch]);
+  const evolutionCustomers = buildCustomerEvolution(evolutionRecords);
+  const evolutionTotalNet = sumRecognizedNet(evolutionRecords);
+  const evolutionPendingNet = evolutionCustomers.reduce((total, client) => total + client.pendingNet, 0);
+  const evolutionPaymentDateCount = evolutionCustomers.reduce((total, client) => total + client.withPaymentDate, 0);
   const topClient = customers[0];
   const pendingNet = customers.reduce(
     (total, client) => total + client.pendingNet,
@@ -995,45 +1072,76 @@ function CustomerModule({
   const pendingWithoutCondition = pendingClientDocuments.filter(
     (record) => !record.paymentCondition,
   );
+  const activeWorkspaceView =
+    customerWorkspaceViews.find((item) => item.key === workspaceView) ??
+    customerWorkspaceViews[0];
+  const showYearFilter =
+    workspaceView === "summary" || workspaceView === "evolution";
 
   return (
     <main className="dashboard customer-dashboard">
       <section className="headline">
         <div>
-          <span className="eyebrow">
-            ANÁLISIS COMERCIAL ·{" "}
-            {customerYear === "Todos" ? "TODOS LOS AÑOS" : customerYear}
-          </span>
-          <h1>Clientes y evolución</h1>
-          <p>
-            Facturas y exentos, menos notas de crédito. Las órdenes de compra no
-            se contabilizan como ingreso facturado.
-          </p>
+          <span className="eyebrow">{activeWorkspaceView.eyebrow}</span>
+          <h1>{activeWorkspaceView.title}</h1>
+          <p>{activeWorkspaceView.description}</p>
         </div>
         <div className="headline-actions">
-          <label className="period-picker">
-            Año
-            <select
-              value={customerYear}
-              onChange={(event) => {
-                setCustomerYear(event.target.value);
-                setSelectedPendingClient(null);
-              }}
-            >
-              <option value="Todos">Todos los años</option>
-              {availableYears.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-          </label>
-          <span className="refresh">
-            ● {number.format(customerRecords.length)} documentos trazables
-          </span>
+          {showYearFilter && (
+            <label className="period-picker">
+              Año
+              <select
+                value={customerYear}
+                onChange={(event) => {
+                  setCustomerYear(event.target.value);
+                  setSelectedPendingClient(null);
+                }}
+              >
+                {availableYears.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {showYearFilter && (
+            <span className="refresh">
+              ● {number.format(customerRecords.length)} documentos trazables
+            </span>
+          )}
         </div>
       </section>
 
+      <section
+        className="panel customer-workspace-navigation"
+        aria-label="Navegación de CRM y clientes"
+      >
+        <div className="table-actions" role="tablist" aria-label="CRM y clientes">
+          {customerWorkspaceViews.map((item) => (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceView === item.key}
+              className={
+                workspaceView === item.key
+                  ? "primary-button"
+                  : "secondary-button"
+              }
+              key={item.key}
+              onClick={() => {
+                setWorkspaceView(item.key);
+                setSelectedPendingClient(null);
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {workspaceView === "summary" && (
+        <section className="customer-workspace-content" role="tabpanel">
       <section className="kpis" aria-label="Indicadores de clientes">
         <article className="kpi-card">
           <span>Clientes con documentos</span>
@@ -1062,8 +1170,107 @@ function CustomerModule({
         </article>
       </section>
 
-      <CustomerProfiles organizationId={organizationId} canManage={canManage} />
+          <section className="customer-workspace-overview-grid">
+            <article className="table-section customer-workspace-focus">
+              <div className="table-heading">
+                <div>
+                  <span className="panel-label">CONCENTRACIÓN COMERCIAL</span>
+                  <h2>Principales clientes</h2>
+                  <p>Participación sobre el ingreso documentado del año seleccionado.</p>
+                </div>
+              </div>
+              <div className="customer-workspace-ranking">
+                {customers.slice(0, 5).map((customer, index) => (
+                  <div key={customer.client}>
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <div><strong>{customer.client}</strong><small>{customer.documents} documento(s)</small></div>
+                    <b>{formatMoney(customer.total)}<small>{totalNet ? `${number.format(customer.total / totalNet * 100)}%` : "0%"}</small></b>
+                  </div>
+                ))}
+                {!customers.length && <p className="billing-empty">Sin ingresos documentados para este período.</p>}
+              </div>
+            </article>
+            <article className="table-section customer-workspace-focus">
+              <div className="table-heading">
+                <div>
+                  <span className="panel-label">ACCIÓN COMERCIAL Y COBRANZA</span>
+                  <h2>Clientes por gestionar</h2>
+                  <p>Mayores saldos con estado pendiente en la fuente.</p>
+                </div>
+              </div>
+              <div className="customer-workspace-ranking is-pending">
+                {customers.filter((customer) => customer.pendingNet > 0).sort((left, right) => right.pendingNet - left.pendingNet).slice(0, 5).map((customer) => (
+                  <button type="button" key={customer.client} onClick={() => setSelectedPendingClient(customer)}>
+                    <div><strong>{customer.client}</strong><small>Revisar documentos y vencimientos</small></div>
+                    <b>{formatMoney(customer.pendingNet)}<small>Ver detalle →</small></b>
+                  </button>
+                ))}
+                {!customers.some((customer) => customer.pendingNet > 0) && <p className="billing-empty">Sin clientes pendientes para este período.</p>}
+              </div>
+            </article>
+          </section>
 
+          <section className="panel customer-workspace-summary">
+            <div className="panel-heading">
+              <div>
+                <span className="panel-label">LECTURA EJECUTIVA</span>
+                <h2>Del cliente a la ejecución</h2>
+                <p>
+                  Usa las vistas superiores para gestionar oportunidades,
+                  clientes, contratos y evolución sin recorrer una página
+                  interminable.
+                </p>
+              </div>
+            </div>
+            <div className="table-actions">
+              {customerWorkspaceViews.slice(1).map((item) => (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  key={item.key}
+                  onClick={() => setWorkspaceView(item.key)}
+                >
+                  Abrir {item.label}
+                </button>
+              ))}
+            </div>
+          </section>
+        </section>
+      )}
+
+      {workspaceView === "pipeline" && (
+        <section className="customer-workspace-content" role="tabpanel">
+          <CommercialControl
+            organizationId={organizationId}
+            canManage={canManage}
+            initialView="pipeline"
+            allowedViews={["pipeline"]}
+          />
+        </section>
+      )}
+
+      {workspaceView === "customers" && (
+        <section className="customer-workspace-content" role="tabpanel">
+          <CustomerProfiles
+            organizationId={organizationId}
+            canManage={canManage}
+          />
+        </section>
+      )}
+
+      {workspaceView === "contracts" && (
+        <section className="customer-workspace-content" role="tabpanel">
+          <CommercialControl
+            organizationId={organizationId}
+            canManage={canManage}
+            initialView="contracts"
+            allowedViews={["contracts", "projects"]}
+          />
+        </section>
+      )}
+
+      {workspaceView === "evolution" && (
+        <section className="customer-workspace-content" role="tabpanel">
       <section className="table-section evolution-matrix-section">
         <div className="table-heading">
           <div>
@@ -1080,6 +1287,7 @@ function CustomerModule({
             </p>
           </div>
           <div className="table-actions">
+            <label className="customer-evolution-search">Buscar cliente<input type="search" value={evolutionSearch} onChange={(event) => setEvolutionSearch(event.target.value)} placeholder="Nombre del cliente" /></label>
             <span className="unit">CLP neto</span>
             <button
               type="button"
@@ -1108,7 +1316,7 @@ function CustomerModule({
                 </tr>
               </thead>
               <tbody>
-                {customers.map((customer) => (
+                {evolutionCustomers.map((customer) => (
                   <tr key={customer.client}>
                     <td>
                       <strong>{customer.client}</strong>
@@ -1158,7 +1366,7 @@ function CustomerModule({
                     <td className="money-col" key={month}>
                       {formatMoney(
                         sumRecognizedNet(
-                          customerRecords.filter(
+                          evolutionRecords.filter(
                             (record) => record.month === month,
                           ),
                         ),
@@ -1166,10 +1374,10 @@ function CustomerModule({
                     </td>
                   ))}
                   <td className="money-col total-column">
-                    <strong>{formatMoney(totalNet)}</strong>
+                    <strong>{formatMoney(evolutionTotalNet)}</strong>
                   </td>
                   <td className="money-col">
-                    <strong>{number.format(customerRecords.length)}</strong>
+                    <strong>{number.format(evolutionRecords.length)}</strong>
                   </td>
                   <td>{customerYear === "Todos" ? "Todos" : customerYear}</td>
                 </tr>
@@ -1190,7 +1398,7 @@ function CustomerModule({
                 </tr>
               </thead>
               <tbody>
-                {customers.map((customer) => (
+                {evolutionCustomers.map((customer) => (
                   <tr key={customer.client}>
                     <td>
                       <strong>{customer.client}</strong>
@@ -1233,14 +1441,14 @@ function CustomerModule({
                     <strong>Total neto/exento</strong>
                   </td>
                   <td className="money-col">
-                    <strong>{formatMoney(totalNet)}</strong>
+                    <strong>{formatMoney(evolutionTotalNet)}</strong>
                   </td>
                   <td className="money-col">
-                    <strong>{number.format(customerRecords.length)}</strong>
+                    <strong>{number.format(evolutionRecords.length)}</strong>
                   </td>
-                  <td className="money-col">{formatMoney(pendingNet)}</td>
+                  <td className="money-col">{formatMoney(evolutionPendingNet)}</td>
                   <td className="money-col">
-                    {number.format(paymentDateCount)}
+                    {number.format(evolutionPaymentDateCount)}
                   </td>
                   <td>{customerYear === "Todos" ? "Todos" : customerYear}</td>
                 </tr>
@@ -1249,6 +1457,9 @@ function CustomerModule({
           </div>
         )}
       </section>
+        </section>
+      )}
+
       {selectedPendingClient && (
         <div
           className="modal-backdrop customer-review-backdrop"
@@ -2299,7 +2510,7 @@ export function FinanceDashboard() {
                             ? "↻"
                             : item === "Prefacturación"
                               ? "✦"
-                            : item === "Clientes"
+                            : item === "CRM y clientes"
                                 ? "◉"
                                 : item === "Mercado Público"
                                   ? "◎"
@@ -2409,7 +2620,7 @@ export function FinanceDashboard() {
               organizationId={access?.membership.organizationId ?? null}
             />
           ) : null
-        ) : activeModule === "Clientes" ? (
+        ) : activeModule === "CRM y clientes" ? (
           <CustomerModule
             records={records}
             organizationId={access?.membership.organizationId ?? null}
