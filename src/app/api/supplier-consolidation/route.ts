@@ -89,8 +89,8 @@ export async function GET(request: NextRequest) {
     const overdueDocuments = openDocuments.filter((document) => document.due_date && document.due_date < today);
     const overduePayables = openPayables.filter((payable) => payable.due_date && payable.due_date < today);
     const alerts = [
-      ...(overdueDocuments.length ? [{ level: "critical", message: `${overdueDocuments.length} factura(s) recibida(s) vencida(s).` }] : []),
-      ...(overduePayables.length ? [{ level: "critical", message: `${overduePayables.length} cuenta(s) por pagar vencida(s).` }] : []),
+      ...(overdueDocuments.length ? [{ level: "critical", message: `${overdueDocuments.length} factura(s) recibida(s) vencida(s).`, target: "received_document", recordIds: overdueDocuments.map((document) => document.id) }] : []),
+      ...(overduePayables.length ? [{ level: "critical", message: `${overduePayables.length} cuenta(s) por pagar vencida(s).`, target: "direct_payable", recordIds: overduePayables.map((payable) => payable.id) }] : []),
       ...(!(contacts.data ?? []).length ? [{ level: "warning", message: "No hay contactos comerciales ni financieros registrados." }] : []),
       ...(!supplier.data.billing_email && !supplier.data.email ? [{ level: "warning", message: "No hay correo de facturación o contacto registrado." }] : []),
       ...(!(files.data ?? []).length && !(financingPlans.data ?? []).some((plan) => plan.contract_reference) && !(documents.data ?? []).some((document) => document.source_file_name) ? [{ level: "info", message: "No hay contrato ni respaldo documental registrado en esta ficha." }] : []),
