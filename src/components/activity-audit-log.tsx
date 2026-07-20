@@ -14,7 +14,8 @@ type AuditEvent = {
   after_state: JsonRecord;
   created_at: string;
 };
-type Payload = { events: AuditEvent[] };
+type AuditActor = { id: string; full_name: string | null; email: string | null };
+type Payload = { actors: AuditActor[]; events: AuditEvent[] };
 
 const entityLabels: Record<string, string> = {
   approval_request: "solicitud de aprobación",
@@ -42,6 +43,10 @@ const fieldLabels: Record<string, string> = {
 
 function actor(event: AuditEvent) {
   return event.actor?.full_name || event.actor?.email || (event.actor_id ? "Usuario eliminado o sin perfil" : "Sistema");
+}
+
+function actorName(value: AuditActor) {
+  return value.full_name || value.email || "Usuario registrado sin nombre";
 }
 
 function changedFields(before: JsonRecord, after: JsonRecord) {
@@ -91,9 +96,9 @@ export function ActivityAuditLog({ organizationId }: { organizationId: string | 
   useEffect(() => { void load(); }, [organizationId, filters.actorId, filters.from, filters.to, filters.entityType, filters.action]);
 
   const actors = useMemo(() => {
-    const values = new Map<string, string>();
-    for (const event of payload?.events ?? []) if (event.actor_id) values.set(event.actor_id, actor(event));
-    return [...values.entries()].sort((left, right) => left[1].localeCompare(right[1]));
+    return (payload?.actors ?? [])
+      .map((value) => [value.id, actorName(value)] as const)
+      .sort((left, right) => left[1].localeCompare(right[1]));
   }, [payload]);
   const entityTypes = useMemo(() => [...new Set((payload?.events ?? []).map((event) => event.entity_type))].sort(), [payload]);
   const actions = useMemo(() => [...new Set((payload?.events ?? []).map((event) => event.action))].sort(), [payload]);

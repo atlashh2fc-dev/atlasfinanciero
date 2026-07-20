@@ -30,14 +30,28 @@ export async function GET(request: NextRequest) {
   const { data: events, error } = await query;
   if (error) return NextResponse.json({ error: "unable_to_load_audit_log" }, { status: 500 });
 
-  const actorIds = [...new Set((events ?? []).map((event) => event.actor_id).filter((actorId): actorId is string => Boolean(actorId)))];
+  const eventActorIds = [...new Set((events ?? []).map((event) => event.actor_id).filter((actorId): actorId is string => Boolean(actorId)))];
   let actors = new Map<string, { full_name: string | null; email: string | null }>();
-  if (actorIds.length && hasSupabaseAdminKey()) {
-    const { data: profiles } = await createAdminClient().from("profiles").select("id, full_name, email").in("id", actorIds);
+  let organizationActorIds: string[] = [];
+  if (hasSupabaseAdminKey()) {
+    const admin = createAdminClient();
+    const { data: memberships, error: membershipsError } = await admin
+      .from("organization_memberships")
+      .select("user_id")
+      .eq("organization_id", organizationId);
+    if (membershipsError) return NextResponse.json({ error: "unable_to_load_organization_users" }, { status: 500 });
+
+    organizationActorIds = [...new Set((memberships ?? []).map((membership) => membership.user_id))];
+    const profileIds = [...new Set([...eventActorIds, ...organizationActorIds])];
+    const { data: profiles, error: profilesError } = profileIds.length
+      ? await admin.from("profiles").select("id, full_name, email").in("id", profileIds)
+      : { data: [], error: null };
+    if (profilesError) return NextResponse.json({ error: "unable_to_load_user_profiles" }, { status: 500 });
     actors = new Map((profiles ?? []).map((profile) => [profile.id, profile]));
   }
 
   return NextResponse.json({
+    actors: organizationActorIds.map((id) => ({ id, ...(actors.get(id) ?? { full_name: null, email: null }) })),
     events: (events ?? []).map((event) => ({
       ...event,
       actor: event.actor_id ? actors.get(event.actor_id) ?? null : null,
