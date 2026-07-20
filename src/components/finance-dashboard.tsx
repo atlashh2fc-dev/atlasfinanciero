@@ -39,6 +39,7 @@ import { ProcureToPayWorkbench } from "@/components/procure-to-pay-workbench";
 import { FinancialPlanningDashboard } from "@/components/financial-planning-dashboard";
 import { FinancialCloseWorkbench } from "@/components/financial-close-workbench";
 import { ActivityAuditLog } from "@/components/activity-audit-log";
+import { SupplierConsolidation } from "@/components/supplier-consolidation";
 import { AtlasAssistant } from "@/components/atlas-assistant";
 import {
   isCreditNoteDocument,
@@ -90,6 +91,8 @@ const modulePreviews: Record<Module, string> = {
     "Presupuesto versionado, caja semanal de 13 semanas y rentabilidad por cliente y servicio.",
   "Cuentas por pagar":
     "Facturas recibidas, proveedores, vencimientos y registro individual de pagos.",
+  Proveedores:
+    "Directorio único de proveedores y consolidación segura de fichas duplicadas.",
   "Compras y lotes de pago":
     "Solicitudes, órdenes a proveedor y lotes de pago con aprobación antes de ejecutar.",
   Tesorería:
@@ -120,6 +123,7 @@ type Module =
   | "Recurrentes"
   | "Prefacturación"
   | "Cuentas por pagar"
+  | "Proveedores"
   | "Compras y lotes de pago"
   | "Tesorería"
   | "Remuneraciones"
@@ -145,7 +149,7 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
   },
   {
     label: "COMPRAS Y CAJA",
-    items: ["Compras y lotes de pago", "Cuentas por pagar", "Tesorería"],
+    items: ["Compras y lotes de pago", "Cuentas por pagar", "Proveedores", "Tesorería"],
   },
   {
     label: "PLANIFICACIÓN Y ANÁLISIS",
@@ -305,6 +309,7 @@ function EmptyModule({
     | "Cuentas por cobrar"
     | "Recurrentes"
     | "Prefacturación"
+    | "Proveedores"
     | "Compras y lotes de pago"
     | "Tesorería"
     | "Remuneraciones"
@@ -2075,6 +2080,7 @@ export function FinanceDashboard() {
           (item !== "Centros de costo" || canManageCostCenters) &&
           (item !== "Imputaciones pendientes" || canManageCostCenters) &&
           (item !== "Cuentas por pagar" || canReadExpenses) &&
+          (item !== "Proveedores" || canReadExpenses) &&
           (item !== "Compras y lotes de pago" || canReadProcurement) &&
           (item !== "Tesorería" || canReadExpenses) &&
           (item !== "Planificación financiera" || canReadExpenses) &&
@@ -2307,6 +2313,13 @@ export function FinanceDashboard() {
             canManage={hasEditPermission}
             canManagePayments={access?.membership.role === "administrator" || access?.membership.role === "finance"}
           />
+        ) : activeModule === "Proveedores" ? (
+          canReadExpenses ? (
+            <SupplierConsolidation
+              organizationId={access?.membership.organizationId ?? null}
+              canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
+            />
+          ) : null
         ) : activeModule === "Tesorería" ? (
           canReadExpenses ? (
             <TreasuryDashboard
