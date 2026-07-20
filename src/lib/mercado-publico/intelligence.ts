@@ -571,6 +571,7 @@ export async function persistTenderDocuments(admin: SupabaseClient, organization
     }
     if (!downloads.length) {
       const status = errorText ? "failed" : "source_only";
+      await admin.from("public_market_documents").delete().eq("organization_id", organizationId).eq("tender_id", tenderId).eq("category", manifest.category).eq("title", manifest.title).in("download_status", ["failed", "source_only"]);
       await admin.from("public_market_documents").upsert({ organization_id: organizationId, tender_id: tenderId, category: manifest.category, title: manifest.title, source_url: manifest.sourceUrl, storage_path: null, download_status: status, error_text: errorText, source_updated_at: manifest.sourceUpdatedAt ?? null }, { onConflict: "tender_id,source_url,title" });
       results.push({ title: manifest.title, status, storagePath: null, error: errorText });
       continue;
@@ -584,10 +585,12 @@ export async function persistTenderDocuments(admin: SupabaseClient, organization
       const title = download.fileName || manifest.title;
       const status = uploadError ? "failed" : "downloaded";
       const uploadMessage = uploadError?.message?.slice(0, 500) ?? null;
+      await admin.from("public_market_documents").delete().eq("organization_id", organizationId).eq("tender_id", tenderId).eq("category", manifest.category).eq("title", title);
       await admin.from("public_market_documents").upsert({ organization_id: organizationId, tender_id: tenderId, category: manifest.category, title, source_url: manifest.sourceUrl, storage_path: uploadError ? null : storagePath, mime_type: download.mimeType, size_bytes: download.bytes.byteLength, download_status: status, error_text: uploadMessage, source_updated_at: manifest.sourceUpdatedAt ?? null }, { onConflict: "tender_id,source_url,title" });
       results.push({ title, status, storagePath: uploadError ? null : storagePath, error: uploadMessage });
     }
   }
+  if (!results.some((item) => item.status === "failed")) await admin.from("public_market_documents").delete().eq("organization_id", organizationId).eq("tender_id", tenderId).eq("download_status", "failed");
   return results;
 }
 
