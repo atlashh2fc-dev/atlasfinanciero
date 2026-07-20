@@ -28,6 +28,7 @@ import { AdministrationConsole } from "@/components/administration-console";
 import { PayrollDashboard } from "@/components/payroll-dashboard";
 import { CustomerPurchaseOrders } from "@/components/customer-purchase-orders";
 import { CustomerProfiles } from "@/components/customer-profiles";
+import { PublicMarketCrm } from "@/components/public-market-crm";
 import { ReportsDashboard } from "@/components/reports-dashboard";
 import { CostCenterManagement } from "@/components/cost-center-management";
 import { CostCenterImputationInbox } from "@/components/cost-center-imputation-inbox";
@@ -87,6 +88,8 @@ const modulePreviews: Record<Module, string> = {
     "Borradores desde servicios contratados, revisión financiera y vínculo con la emisión real.",
   Clientes:
     "Evolución comercial y ficha tributaria, facturación y contactos por área de cada cliente.",
+  "Mercado Público":
+    "Búsqueda oficial de licitaciones ChileCompra y conversión trazable a oportunidades del CRM.",
   "Cuentas por cobrar":
     "Cartera pendiente por vencimiento, gestión, compromisos de pago y factoring.",
   Proyecciones:
@@ -125,6 +128,7 @@ type Module =
   | "Proyecciones"
   | "Planificación financiera"
   | "Clientes"
+  | "Mercado Público"
   | "Cuentas por cobrar"
   | "Recurrentes"
   | "Prefacturación"
@@ -146,6 +150,7 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
     label: "INGRESOS",
     items: [
       "Clientes",
+      "Mercado Público",
       "Prefacturación",
       "Facturas",
       "Recurrentes",
@@ -344,6 +349,7 @@ function EmptyModule({
     | "Proyecciones"
     | "Planificación financiera"
     | "Clientes"
+    | "Mercado Público"
     | "Cuentas por cobrar"
     | "Recurrentes"
     | "Prefacturación"
@@ -2295,6 +2301,8 @@ export function FinanceDashboard() {
                               ? "✦"
                             : item === "Clientes"
                                 ? "◉"
+                                : item === "Mercado Público"
+                                  ? "◎"
                                 : item === "Cuentas por cobrar"
                                   ? "◷"
                                   : item === "Cuentas por pagar"
@@ -2404,6 +2412,11 @@ export function FinanceDashboard() {
         ) : activeModule === "Clientes" ? (
           <CustomerModule
             records={records}
+            organizationId={access?.membership.organizationId ?? null}
+            canManage={hasEditPermission}
+          />
+        ) : activeModule === "Mercado Público" ? (
+          <PublicMarketCrm
             organizationId={access?.membership.organizationId ?? null}
             canManage={hasEditPermission}
           />
