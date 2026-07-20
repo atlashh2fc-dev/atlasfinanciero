@@ -426,6 +426,21 @@ button {
   display: flex;
   flex-direction: column;
 }
+.kpi-card-button {
+  width: 100%;
+  border: 1px solid var(--line);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+.kpi-card-button:hover,
+.kpi-card-button:focus-visible {
+  transform: translateY(-2px);
+  border-color: #aeb9f2;
+  box-shadow: 0 12px 26px #31477716;
+  outline: none;
+}
 .kpi-card span {
   color: #78869a;
   font-size: 11px;
@@ -2766,6 +2781,28 @@ td small {
 .collection-modal {
   width: min(690px, 100%);
 }
+.treasury-executions-modal {
+  width: min(1120px, 100%);
+  background: linear-gradient(135deg, #ffffffef, #f4f7ffdf);
+  border: 1px solid #ffffffcc;
+  box-shadow: 0 28px 90px #101b374f, inset 0 1px 0 #ffffff;
+  backdrop-filter: blur(24px) saturate(1.2);
+}
+.treasury-execution-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 18px 0;
+  padding: 14px 16px;
+  border: 1px solid #dfe6f5;
+  border-radius: 10px;
+  background: #ffffffa8;
+  color: #718098;
+  font-size: 12px;
+}
+.treasury-execution-summary strong { color: #263b60; font-size: 25px; letter-spacing: -.5px; }
+.treasury-executions-table { max-height: min(52vh, 530px); }
+.treasury-executions-table table { min-width: 820px; }
 .collection-modal .form-grid select,
 .collection-modal .form-grid textarea {
   width: 100%;

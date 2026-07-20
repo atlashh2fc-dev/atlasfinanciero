@@ -172,7 +172,7 @@ export async function GET(request: NextRequest) {
         .limit(12),
       context.supabase
         .from("payment_executions")
-        .select("id, direction, status, amount, executed_on, source")
+        .select("id, direction, status, amount, executed_on, source, payment_method, payment_reference, notes")
         .eq("organization_id", organizationId)
         .order("executed_on", { ascending: false })
         .limit(500),

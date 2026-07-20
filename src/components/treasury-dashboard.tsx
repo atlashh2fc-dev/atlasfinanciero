@@ -82,6 +82,9 @@ type PaymentExecution = {
   amount: number | string;
   executed_on: string;
   source: string;
+  payment_method: string | null;
+  payment_reference: string | null;
+  notes: string | null;
 };
 
 type StatementPreview = {
@@ -148,6 +151,22 @@ function reconciliationClass(status: BankTransaction["reconciliation_status"]) {
       : "status neutral";
 }
 
+function executionSourceLabel(source: string) {
+  return {
+    payment_batch: "Lote de pago",
+    bank_reconciliation: "Conciliación bancaria",
+    legacy_import: "Registro histórico",
+  }[source] || source;
+}
+
+function executionStatusLabel(status: string) {
+  return {
+    executed: "Ejecutada",
+    reconciled: "Respaldada en cartola",
+    legacy: "Histórica",
+  }[status] || status;
+}
+
 export function TreasuryDashboard({
   organizationId,
   canManage,
@@ -171,6 +190,7 @@ export function TreasuryDashboard({
   const [statementPreview, setStatementPreview] = useState<StatementPreview | null>(null);
   const [previewingStatement, setPreviewingStatement] = useState(false);
   const [importingStatement, setImportingStatement] = useState(false);
+  const [executionsModalOpen, setExecutionsModalOpen] = useState(false);
 
   async function loadTreasury() {
     if (!organizationId) {
@@ -450,11 +470,11 @@ export function TreasuryDashboard({
           </strong>
           <small>Movimientos con aplicación total</small>
         </article>
-        <article className="kpi-card" data-help="Son ejecuciones registradas en compras y pagos. Sirven para controlar qué debe aparecer en una cartola, pero no cambian el saldo bancario sin movimiento del banco.">
+        <button type="button" className="kpi-card kpi-card-button" onClick={() => setExecutionsModalOpen(true)} aria-label="Ver detalle de ejecuciones por respaldar">
           <span>Ejecuciones por respaldar</span>
           <strong>{executionsToVerify.length}</strong>
-          <small>No se incluyen en posición hasta cargar cartola</small>
-        </article>
+          <small>Ver detalle · no se incluyen en posición hasta cargar cartola</small>
+        </button>
       </section>
 
       {!loading && !accountPositions.length && (
@@ -617,6 +637,43 @@ export function TreasuryDashboard({
 
       {accountEditorOpen && (
         <div className="modal-backdrop" role="presentation"><section className="entry-modal collection-modal" role="dialog" aria-modal="true" aria-labelledby="bank-account-title"><div className="modal-header"><div><span className="eyebrow">CONFIGURACIÓN BANCARIA</span><h2 id="bank-account-title">Nueva cuenta bancaria</h2><p>El saldo inicial sólo se usa hasta que la cartola informe un saldo posterior.</p></div><button type="button" className="close-button" onClick={() => setAccountEditorOpen(false)} aria-label="Cerrar">×</button></div><form onSubmit={saveAccount}><div className="form-grid"><label>Nombre de la cuenta *<input required maxLength={140} value={accountDraft.name} onChange={(event) => setAccountDraft({ ...accountDraft, name: event.target.value })} placeholder="Ej. Cuenta corriente operaciones" /></label><label>Banco<input maxLength={140} value={accountDraft.bankName} onChange={(event) => setAccountDraft({ ...accountDraft, bankName: event.target.value })} placeholder="Ej. Banco de Chile" /></label><label>Número enmascarado<input maxLength={80} value={accountDraft.accountNumberMasked} onChange={(event) => setAccountDraft({ ...accountDraft, accountNumberMasked: event.target.value })} placeholder="Ej. **** 4582" /></label><label>Moneda *<select value={accountDraft.currencyCode} onChange={(event) => setAccountDraft({ ...accountDraft, currencyCode: event.target.value })}><option value="CLP">CLP · Pesos chilenos</option><option value="USD">USD · Dólares</option><option value="UF">UF · Unidad de Fomento</option></select></label><label>Saldo inicial<input type="number" step="any" value={accountDraft.openingBalance} onChange={(event) => setAccountDraft({ ...accountDraft, openingBalance: event.target.value })} /></label><label>Fecha del saldo inicial<input type="date" value={accountDraft.openingBalanceDate} onChange={(event) => setAccountDraft({ ...accountDraft, openingBalanceDate: event.target.value })} /></label></div><div className="form-actions"><button type="button" className="secondary-button" onClick={() => setAccountEditorOpen(false)}>Cancelar</button><button type="submit" className="primary-button" disabled={saving}>{saving ? "Guardando…" : "Guardar cuenta"}</button></div></form></section></div>
+      )}
+
+      {executionsModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="entry-modal treasury-executions-modal" role="dialog" aria-modal="true" aria-labelledby="treasury-executions-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">CONTROL OPERATIVO · TESORERÍA</span>
+                <h2 id="treasury-executions-title">Ejecuciones por respaldar</h2>
+                <p>Son pagos o abonos registrados en los módulos financieros. Revisa aquí qué debe aparecer en una cartola; no afecta la posición bancaria hasta que el banco lo confirme.</p>
+              </div>
+              <button type="button" className="close-button" onClick={() => setExecutionsModalOpen(false)} aria-label="Cerrar">×</button>
+            </div>
+            <div className="treasury-execution-summary">
+              <strong>{executionsToVerify.length}</strong>
+              <span>ejecuciones pendientes de respaldo en cartola</span>
+            </div>
+            <div className="table-scroll treasury-executions-table">
+              <table>
+                <thead><tr><th>Fecha</th><th>Origen</th><th>Referencia</th><th>Medio / observación</th><th className="money-col">Monto</th><th>Estado</th></tr></thead>
+                <tbody>
+                  {executionsToVerify.length ? executionsToVerify.map((execution) => (
+                    <tr key={execution.id}>
+                      <td>{displayDate(execution.executed_on)}</td>
+                      <td><strong>{execution.direction === "outflow" ? "Egreso" : "Ingreso"}</strong><small>{executionSourceLabel(execution.source)}</small></td>
+                      <td>{execution.payment_reference || "Sin referencia informada"}</td>
+                      <td>{execution.payment_method || "Medio no informado"}<small>{execution.notes || "Sin observación"}</small></td>
+                      <td className={`money-col ${execution.direction === "outflow" ? "is-negative" : ""}`}>{execution.direction === "outflow" ? "−" : "+"}{money.format(amount(execution.amount))}</td>
+                      <td><span className={execution.status === "reconciled" ? "status paid" : "status pending"}>{executionStatusLabel(execution.status)}</span></td>
+                    </tr>
+                  )) : <tr><td colSpan={6}>No hay ejecuciones pendientes de respaldo.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            <div className="form-actions"><button type="button" className="secondary-button" onClick={() => setExecutionsModalOpen(false)}>Cerrar</button></div>
+          </section>
+        </div>
       )}
     </main>
   );
