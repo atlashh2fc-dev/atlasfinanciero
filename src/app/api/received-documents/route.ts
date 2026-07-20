@@ -16,17 +16,26 @@ export async function GET(request: NextRequest) {
   const context = await requireOrganizationExpenseReadAccess(organizationId);
   if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
 
-  let query = context.supabase
+  let documentsQuery = context.supabase
     .from("received_documents")
     .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_method, payment_bank, payment_reference, payment_notes, payment_date, payment_recorded_at, payment_recorded_by, source_file_name, source_sheet_name, source_row")
     .eq("organization_id", organizationId)
     .order("issue_date", { ascending: false })
     .order("source_row", { ascending: false });
-  if (year !== null) query = query.gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`);
+  let directPayablesQuery = context.supabase
+    .from("direct_payables")
+    .select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, status, notes, payment_reference, paid_at")
+    .eq("organization_id", organizationId)
+    .neq("status", "cancelled")
+    .order("issue_date", { ascending: false });
+  if (year !== null) {
+    documentsQuery = documentsQuery.gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`);
+    directPayablesQuery = directPayablesQuery.gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`);
+  }
 
-  const { data, error } = await query;
-  if (error) return NextResponse.json({ error: "unable_to_load_received_documents" }, { status: 500 });
-  return NextResponse.json({ documents: data ?? [] });
+  const [documents, directPayables] = await Promise.all([documentsQuery, directPayablesQuery]);
+  if (documents.error || directPayables.error) return NextResponse.json({ error: "unable_to_load_accounts_payable" }, { status: 500 });
+  return NextResponse.json({ documents: documents.data ?? [], directPayables: directPayables.data ?? [] });
 }
 
 export async function PATCH(request: NextRequest) {

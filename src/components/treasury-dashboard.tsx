@@ -30,6 +30,7 @@ type ReconciliationMatch = {
   bank_transaction_id: string;
   issued_document_id: string | null;
   received_document_id: string | null;
+  direct_payable_id: string | null;
   matched_amount: number | string;
   matched_on: string;
   notes: string | null;
@@ -53,12 +54,24 @@ type ReceivedDocument = {
   payment_status: string | null;
 };
 
+type DirectPayable = {
+  id: string;
+  payable_number: string;
+  invoice_number: string | null;
+  issue_date: string;
+  supplier_name: string;
+  total_amount: number | string;
+  currency_code: string;
+  status: string;
+};
+
 type TreasuryPayload = {
   accounts: BankAccount[];
   transactions: BankTransaction[];
   matches: ReconciliationMatch[];
   issuedDocuments: IssuedDocument[];
   receivedDocuments: ReceivedDocument[];
+  directPayables: DirectPayable[];
 };
 
 const money = new Intl.NumberFormat("es-CL", {
@@ -150,7 +163,7 @@ export function TreasuryDashboard({
   const matchedByDocument = useMemo(() => {
     const values = new Map<string, number>();
     for (const match of data?.matches ?? []) {
-      const documentId = match.issued_document_id ?? match.received_document_id;
+      const documentId = match.issued_document_id ?? match.received_document_id ?? match.direct_payable_id;
       if (!documentId) continue;
       values.set(documentId, (values.get(documentId) ?? 0) + amount(match.matched_amount));
     }
@@ -205,11 +218,10 @@ export function TreasuryDashboard({
             kind: "issued" as const,
             name: document.client_name || "Cliente sin nombre",
           }))
-        : data.receivedDocuments.map((document) => ({
-            ...document,
-            kind: "received" as const,
-            name: document.supplier_name,
-          }));
+        : [
+            ...data.receivedDocuments.map((document) => ({ ...document, kind: "received" as const, name: document.supplier_name })),
+            ...data.directPayables.filter((payable) => payable.currency_code === "CLP").map((payable) => ({ ...payable, document_number: payable.invoice_number || payable.payable_number, kind: "direct" as const, name: payable.supplier_name })),
+          ];
     return documents
       .map((document) => ({
         ...document,
@@ -371,7 +383,7 @@ export function TreasuryDashboard({
           <div>
             <span className="panel-label">CONCILIACIÓN</span>
             <h2>Movimientos pendientes</h2>
-            <p>Un abono se aplica a una factura emitida y un cargo a una factura recibida. Las aplicaciones parciales se conservan con trazabilidad.</p>
+            <p>Un abono se aplica a una factura emitida y un cargo a una factura recibida o cuenta directa ya ejecutada por lote. Las aplicaciones parciales se conservan con trazabilidad.</p>
           </div>
         </div>
         <div className="table-scroll">
@@ -426,10 +438,10 @@ export function TreasuryDashboard({
             <form onSubmit={reconcile}>
               <div className="form-grid">
                 <label>
-                  {amount(selectedTransaction.amount) > 0 ? "Factura emitida" : "Factura recibida"} *
+                  {amount(selectedTransaction.amount) > 0 ? "Factura emitida" : "Factura recibida o cuenta directa"} *
                   <select required value={selectedDocumentId} onChange={(event) => { const id = event.target.value; setSelectedDocumentId(id); const doc = selectedDocuments.find((item) => item.id === id); setMatchAmount(doc ? String(Math.min(selectedTransactionRemaining, doc.remaining)) : ""); }}>
-                    <option value="">Selecciona un documento</option>
-                    {selectedDocuments.map((document) => <option key={document.id} value={document.id}>{document.document_number || "Sin folio"} · {document.name} · Disponible {money.format(document.remaining)}</option>)}
+                    <option value="">Selecciona un documento o cuenta</option>
+                    {selectedDocuments.map((document) => <option key={document.id} value={document.id}>{document.kind === "direct" ? "Cuenta directa" : "Documento"} · {document.document_number || "Sin folio"} · {document.name} · Disponible {money.format(document.remaining)}</option>)}
                   </select>
                 </label>
                 <label>

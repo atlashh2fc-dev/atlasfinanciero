@@ -30,7 +30,6 @@ function readNotes(value: unknown) {
 function isPaid(status: string | null) {
   return status?.toLocaleLowerCase().includes("pagada") ?? false;
 }
-
 export async function GET(request: NextRequest) {
   const organizationId = request.nextUrl.searchParams.get("organizationId");
   if (!isUuid(organizationId))
@@ -40,7 +39,7 @@ export async function GET(request: NextRequest) {
   if (context.error || !context.supabase)
     return NextResponse.json({ error: context.error }, { status: context.status });
 
-  const [accountsResult, transactionsResult, matchesResult, issuedResult, receivedResult] =
+  const [accountsResult, transactionsResult, matchesResult, issuedResult, receivedResult, directPayablesResult] =
     await Promise.all([
       context.supabase
         .from("bank_accounts")
@@ -57,7 +56,7 @@ export async function GET(request: NextRequest) {
         .limit(250),
       context.supabase
         .from("bank_reconciliation_matches")
-        .select("id, bank_transaction_id, issued_document_id, received_document_id, matched_amount, matched_on, notes")
+        .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, matched_amount, matched_on, notes")
         .eq("organization_id", organizationId)
         .order("created_at", { ascending: false })
         .limit(500),
@@ -73,6 +72,13 @@ export async function GET(request: NextRequest) {
         .eq("organization_id", organizationId)
         .order("issue_date", { ascending: false })
         .limit(250),
+      context.supabase
+        .from("direct_payables")
+        .select("id, payable_number, invoice_number, issue_date, supplier_name, total_amount, currency_code, status")
+        .eq("organization_id", organizationId)
+        .eq("status", "paid")
+        .order("issue_date", { ascending: false })
+        .limit(250),
     ]);
 
   if (
@@ -80,7 +86,8 @@ export async function GET(request: NextRequest) {
     transactionsResult.error ||
     matchesResult.error ||
     issuedResult.error ||
-    receivedResult.error
+    receivedResult.error ||
+    directPayablesResult.error
   )
     return NextResponse.json({ error: "unable_to_load_treasury" }, { status: 500 });
 
@@ -94,6 +101,7 @@ export async function GET(request: NextRequest) {
     receivedDocuments: (receivedResult.data ?? []).filter(
       (document) => !isPaid(document.payment_status),
     ),
+    directPayables: directPayablesResult.data ?? [],
   });
 }
 
@@ -110,7 +118,7 @@ export async function POST(request: NextRequest) {
     !isUuid(organizationId) ||
     !isUuid(bankTransactionId) ||
     !isUuid(documentId) ||
-    (documentType !== "issued" && documentType !== "received") ||
+    (documentType !== "issued" && documentType !== "received" && documentType !== "direct") ||
     !matchedAmount ||
     (body?.notes !== undefined &&
       body?.notes !== null &&
@@ -133,21 +141,22 @@ export async function POST(request: NextRequest) {
 
   if (
     (documentType === "issued" && Number(transaction.amount) <= 0) ||
-    (documentType === "received" && Number(transaction.amount) >= 0)
+    ((documentType === "received" || documentType === "direct") && Number(transaction.amount) >= 0)
   )
     return NextResponse.json({ error: "transaction_direction_mismatch" }, { status: 400 });
 
-  const documentTable =
-    documentType === "issued" ? "issued_documents" : "received_documents";
+  const documentTable = documentType === "issued" ? "issued_documents" : documentType === "direct" ? "direct_payables" : "received_documents";
   const { data: document, error: documentError } = await context.supabase
     .from(documentTable)
-    .select("id, total_amount, payment_status")
+    .select(documentType === "direct" ? "id, total_amount, status" : "id, total_amount, payment_status")
     .eq("id", documentId)
     .eq("organization_id", organizationId)
     .maybeSingle();
   if (documentError || !document)
     return NextResponse.json({ error: "document_not_found" }, { status: 404 });
-  if (isPaid(document.payment_status))
+  const directDocument = document as { status?: string | null };
+  const invoiceDocument = document as { payment_status?: string | null };
+  if ((documentType === "direct" && directDocument.status !== "paid") || (documentType !== "direct" && isPaid(invoiceDocument.payment_status ?? null)))
     return NextResponse.json({ error: "document_already_paid" }, { status: 409 });
 
   const matchPayload = {
@@ -155,6 +164,7 @@ export async function POST(request: NextRequest) {
     bank_transaction_id: bankTransactionId,
     issued_document_id: documentType === "issued" ? documentId : null,
     received_document_id: documentType === "received" ? documentId : null,
+    direct_payable_id: documentType === "direct" ? documentId : null,
     matched_amount: matchedAmount,
     matched_on: transaction.booked_on,
     notes,
@@ -162,7 +172,7 @@ export async function POST(request: NextRequest) {
   const { data: match, error: matchError } = await context.supabase
     .from("bank_reconciliation_matches")
     .insert(matchPayload)
-    .select("id, bank_transaction_id, issued_document_id, received_document_id, matched_amount, matched_on, notes")
+    .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, matched_amount, matched_on, notes")
     .single();
   if (matchError || !match)
     return NextResponse.json({ error: "unable_to_reconcile" }, { status: 409 });
@@ -175,7 +185,7 @@ export async function POST(request: NextRequest) {
     context.supabase
       .from("bank_reconciliation_matches")
       .select("matched_amount")
-      .eq(documentType === "issued" ? "issued_document_id" : "received_document_id", documentId),
+      .eq(documentType === "issued" ? "issued_document_id" : documentType === "direct" ? "direct_payable_id" : "received_document_id", documentId),
   ]);
   const matchedForTransaction = (transactionMatches ?? []).reduce(
     (total, item) => total + Number(item.matched_amount),
