@@ -613,6 +613,24 @@ export async function persistAwardHistory(admin: SupabaseClient, organizationId:
   if (error) throw new Error(error.message);
 }
 
+export async function captureTenderDossier(admin: SupabaseClient, organizationId: string, code: string, opportunityId: string) {
+  const [{ tenders }, { data: settings }] = await Promise.all([
+    fetchChileCompra({ code }),
+    admin.from("public_market_radar_settings").select("search_keywords, excluded_keywords").eq("organization_id", organizationId).maybeSingle(),
+  ]);
+  const tender = tenders[0];
+  if (!tender) throw new Error("La licitación no existe en la fuente oficial.");
+  const intelligence = await enrichTender(tender, { customKeywords: settings?.search_keywords ?? [], excludedKeywords: settings?.excluded_keywords ?? [], includeProbablePredecessors: true });
+  const snapshot = await persistTenderSnapshot(admin, organizationId, tender, intelligence, { opportunityId, status: "enriching" });
+  await persistAwardHistory(admin, organizationId, snapshot.id, intelligence.awards);
+  const files = await persistTenderDocuments(admin, organizationId, snapshot.id, intelligence.documents);
+  const failed = files.filter((file) => file.status === "failed").length;
+  const downloaded = files.filter((file) => file.status === "downloaded").length;
+  const enrichmentStatus = failed ? (downloaded ? "partial" : "failed") : "ready";
+  await admin.from("public_market_tenders").update({ enrichment_status: enrichmentStatus }).eq("organization_id", organizationId).eq("id", snapshot.id);
+  return { tenderId: snapshot.id, code: tender.code, documents: { total: files.length, downloaded, failed, sourceOnly: files.filter((file) => file.status === "source_only").length }, awards: intelligence.awards.length, match: intelligence.match, enrichmentStatus };
+}
+
 function chileDate(value = new Date()) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santiago", year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
 }

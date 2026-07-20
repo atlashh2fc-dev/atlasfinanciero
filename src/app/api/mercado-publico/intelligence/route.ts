@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
-import { enrichTender, fetchChileCompra, persistAwardHistory, persistTenderDocuments, persistTenderSnapshot, runDailyRadar } from "@/lib/mercado-publico/intelligence";
+import { captureTenderDossier, runDailyRadar } from "@/lib/mercado-publico/intelligence";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -75,21 +75,7 @@ export async function POST(request: NextRequest) {
     const { data: opportunity } = await access.supabase.from("commercial_opportunities").select("id").eq("organization_id", access.organizationId).eq("id", opportunityId).maybeSingle();
     if (!opportunity) return NextResponse.json({ error: "opportunity_not_found" }, { status: 404 });
     try {
-      const [{ tenders }, { data: settings }] = await Promise.all([
-        fetchChileCompra({ code }),
-        access.supabase.from("public_market_radar_settings").select("search_keywords, excluded_keywords").eq("organization_id", access.organizationId).maybeSingle(),
-      ]);
-      const tender = tenders[0];
-      if (!tender) return NextResponse.json({ error: "tender_not_found" }, { status: 404 });
-      const intelligence = await enrichTender(tender, { customKeywords: settings?.search_keywords ?? [], excludedKeywords: settings?.excluded_keywords ?? [], includeProbablePredecessors: true });
-      const snapshot = await persistTenderSnapshot(admin, access.organizationId, tender, intelligence, { opportunityId, status: "enriching" });
-      await persistAwardHistory(admin, access.organizationId, snapshot.id, intelligence.awards);
-      const files = await persistTenderDocuments(admin, access.organizationId, snapshot.id, intelligence.documents);
-      const failed = files.filter((file) => file.status === "failed").length;
-      const downloaded = files.filter((file) => file.status === "downloaded").length;
-      const enrichmentStatus = failed ? (downloaded ? "partial" : "failed") : "ready";
-      await admin.from("public_market_tenders").update({ enrichment_status: enrichmentStatus }).eq("organization_id", access.organizationId).eq("id", snapshot.id);
-      return NextResponse.json({ tenderId: snapshot.id, documents: { total: files.length, downloaded, failed, sourceOnly: files.filter((file) => file.status === "source_only").length }, awards: intelligence.awards.length, match: intelligence.match, enrichmentStatus });
+      return NextResponse.json(await captureTenderDossier(admin, access.organizationId, code, opportunityId));
     } catch (error) {
       return NextResponse.json({ error: "tender_capture_failed", detail: error instanceof Error ? error.message.slice(0, 500) : undefined }, { status: 502 });
     }

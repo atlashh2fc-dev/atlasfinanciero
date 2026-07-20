@@ -39,6 +39,9 @@ includes(intelligence, 'storage.from("public-market-documents").upload', "Los an
 includes(api, 'body?.action === "capture_tender"', "La API no implementa la captura integral de licitación.");
 includes(component, 'action: "capture_tender"', "El pipeline no dispara la preparación del expediente.");
 includes(component, "captureExistingOpportunity", "Las oportunidades antiguas no pueden completar su expediente sin duplicarse.");
+includes(intelligence, "captureTenderDossier", "La captura no está centralizada para altas nuevas y backfill.");
+includes(cron, 'body?.action !== "backfill_pipeline"', "No existe backfill protegido para oportunidades históricas del pipeline.");
+includes(cron, '.ilike("source", "Mercado Público%")', "El backfill no descubre oportunidades históricas de Mercado Público.");
 
 includes(intelligence, "probable_predecessor", "No existe búsqueda de procesos predecesores comparables.");
 includes(component, "Predecesor probable", "La inferencia histórica no está claramente rotulada.");
