@@ -8,7 +8,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "verify:crm": "node scripts/verify-crm-workspace.mjs",
-    "verify:contrast": "node scripts/verify-evolution-total-contrast.mjs"
+    "verify:contrast": "node scripts/verify-evolution-total-contrast.mjs",
+    "verify:public-market": "node scripts/verify-public-market-intelligence.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "0.12.3",

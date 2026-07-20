@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/mercado-publico/radar",
+      "schedule": "30 11 * * *"
+    }
+  ]
+}
