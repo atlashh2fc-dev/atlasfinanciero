@@ -2737,6 +2737,24 @@ export function FinanceDashboard() {
                 </div>
                 <div className="filters">
                   <label>
+                    Año
+                    <select
+                      value={year}
+                      onChange={(event) => {
+                        setYear(event.target.value);
+                        setMonth("Todos");
+                        setStatus("Todos");
+                      }}
+                    >
+                      <option value="Todos">Todos los años</option>
+                      {availableYears.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
                     Mes
                     <select
                       value={month}
