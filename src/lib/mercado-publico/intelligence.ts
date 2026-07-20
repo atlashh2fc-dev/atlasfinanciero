@@ -4,6 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export const CHILECOMPRA_API_URL = "https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json";
 export const CHILECOMPRA_DOCUMENTATION_TICKET = "F8537A18-6766-4DEF-9E59-426B4FEE2844";
 const OCDS_BASE = "https://api.mercadopublico.cl/APISOCDS/OCDS";
+const OCDS_LIST_BASE = `${OCDS_BASE}/listaOCDSAgnoMes`;
 const MARKET_HOST = "www.mercadopublico.cl";
 const MAX_DOCUMENT_BYTES = 15 * 1024 * 1024;
 const MAX_DOCUMENTS = 30;
@@ -229,14 +230,20 @@ export function scoreTender(tender: NormalizedTender, critical?: TenderCritical,
 }
 
 function decodeHtml(value: string) {
-  const named: Record<string, string> = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " " };
-  return value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, code: string) => {
-    if (code[0] === "#") {
-      const numericCode = code[1].toLowerCase() === "x" ? Number.parseInt(code.slice(2), 16) : Number.parseInt(code.slice(1), 10);
-      return Number.isFinite(numericCode) ? String.fromCodePoint(numericCode) : entity;
-    }
-    return named[code.toLowerCase()] ?? entity;
-  });
+  const named: Record<string, string> = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " ", aacute: "á", eacute: "é", iacute: "í", oacute: "ó", uacute: "ú", ntilde: "ñ", Aacute: "Á", Eacute: "É", Iacute: "Í", Oacute: "Ó", Uacute: "Ú", Ntilde: "Ñ", uuml: "ü", Uuml: "Ü" };
+  let decoded = value;
+  for (let pass = 0; pass < 3; pass += 1) {
+    const next = decoded.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, code: string) => {
+      if (code[0] === "#") {
+        const numericCode = code[1].toLowerCase() === "x" ? Number.parseInt(code.slice(2), 16) : Number.parseInt(code.slice(1), 10);
+        return Number.isFinite(numericCode) ? String.fromCodePoint(numericCode) : entity;
+      }
+      return named[code] ?? named[code.toLowerCase()] ?? entity;
+    });
+    if (next === decoded) break;
+    decoded = next;
+  }
+  return decoded;
 }
 
 function stripHtml(value: string) {
@@ -252,7 +259,8 @@ function idText(html: string, id: string) {
 function sectionText(html: string, startId: string, endId: string, max = 2500) {
   const start = html.search(new RegExp(`id=["']${startId}["']`, "i"));
   if (start < 0) return null;
-  const remaining = html.slice(start);
+  const tagStart = html.lastIndexOf("<", start);
+  const remaining = html.slice(tagStart >= 0 ? tagStart : start);
   const endOffset = remaining.search(new RegExp(`id=["']${endId}["']`, "i"));
   const value = stripHtml(endOffset > 0 ? remaining.slice(0, endOffset) : remaining.slice(0, 12_000));
   return value ? value.slice(0, max) : null;
@@ -276,6 +284,21 @@ function keywordContexts(html: string, keywords: string[]) {
     }
   }
   return contexts;
+}
+
+function gridValue(html: string, suffix: string) {
+  const match = html.match(new RegExp(`<[^>]+id=["']grvGarantias_ctl\\d+_${suffix}["'][^>]*>([\\s\\S]*?)<\\/[^>]+>`, "i"));
+  return match ? stripHtml(match[1]) : "";
+}
+
+function guaranteeSummary(html: string) {
+  const type = gridValue(html, "lblFicha8TituloTipoGarantia");
+  const amount = [gridValue(html, "lblFicha8Monto"), gridValue(html, "lblFicha8TipoMoneda")].filter(Boolean).join(" ");
+  const expiry = gridValue(html, "lblFicha8FechaVencimiento");
+  const beneficiary = gridValue(html, "lblFicha8Beneficiario");
+  const description = gridValue(html, "lblFicha8Descripcion");
+  const parts = [type, amount ? `Monto: ${amount}` : "", expiry ? `Vence: ${expiry}` : "", beneficiary ? `Beneficiario: ${beneficiary}` : "", description ? description.slice(0, 480) : ""].filter(Boolean);
+  return parts.length ? parts.join(" · ") : null;
 }
 
 function parseEvaluationCriteria(html: string) {
@@ -308,7 +331,7 @@ export function parseTenderPage(html: string, sourceUrl: string) {
     const absolute = new URL(decodeHtml(generalAttachments), sourceUrl);
     if (absolute.hostname === MARKET_HOST && absolute.pathname.toLowerCase().includes("/attachment/viewattachment.aspx") && !documents.some((document) => document.sourceUrl === absolute.toString())) documents.push({ category: "other", title: "Anexos generales de la licitación", sourceUrl: absolute.toString() });
   }
-  const durationValue = idText(html, "lblFicha7TiempoDuracionContrato");
+  const durationValue = idText(html, "lblFicha7TiempoContrato") || idText(html, "lblFicha7TiempoDuracionContrato");
   const durationUnit = idText(html, "lblFicha7UnidadTiempoDuracionContrato");
   const guaranteeMessage = idText(html, "lblMensajeGarantia");
   const guaranteeSection = sectionText(html, "Ficha8", "Ficha9", 3000);
@@ -316,8 +339,8 @@ export function parseTenderPage(html: string, sourceUrl: string) {
     contractDuration: [durationValue, durationUnit].filter(Boolean).join(" ") || null,
     paymentTerms: idText(html, "lblFicha7Plazos"),
     paymentMethod: idText(html, "lblFicha7Opciones"),
-    guarantees: guaranteeMessage || (guaranteeSection && !/no hay informaci[oó]n de garant/i.test(guaranteeSection) ? guaranteeSection : null),
-    fines: keywordContexts(html, ["multa", "sanción", "término anticipado"]),
+    guarantees: guaranteeMessage || guaranteeSummary(html) || (guaranteeSection && !/no hay informaci[oó]n de garant/i.test(guaranteeSection) ? guaranteeSection : null),
+    fines: keywordContexts(html, ["multa", "término anticipado"]),
     evaluationCriteria: parseEvaluationCriteria(html),
     renewal: idText(html, "lblFicha7ContratoRenovacion"),
     subcontracting: idText(html, "lblFicha7Subcontratacion"),
@@ -399,29 +422,58 @@ function tokenSimilarity(left: string, right: string) {
   return Math.round((intersection / union) * 100);
 }
 
-function probableCodes(code: string) {
+function priorYearCodes(code: string, years = 5) {
   const match = code.match(/^(\d+)-(\d+)-([A-Z]+)(\d{2})$/i);
   if (!match) return [];
-  const [, buyer, sequenceText, type, yearText] = match;
-  const sequence = Number(sequenceText); const year = Number(yearText);
-  const codes: string[] = [];
-  for (let offsetYear = 1; offsetYear <= 3; offsetYear += 1) for (let delta = -2; delta <= 2; delta += 1) if (sequence + delta > 0) codes.push(`${buyer}-${sequence + delta}-${type.toUpperCase()}${String((year - offsetYear + 100) % 100).padStart(2, "0")}`);
-  return codes;
+  const [, buyer, sequence, type, yearText] = match;
+  const year = Number(yearText);
+  return Array.from({ length: years }, (_, index) => `${buyer}-${sequence}-${type.toUpperCase()}${String((year - index - 1 + 100) % 100).padStart(2, "0")}`);
+}
+
+async function buyerYearCodes(buyerCode: string, year: number) {
+  const indexes = await Promise.all(Array.from({ length: 12 }, async (_, index) => {
+    const url = `${OCDS_LIST_BASE}/${year}/${index + 1}/0/20000`;
+    try {
+      const response = await fetch(url, { headers: { Accept: "application/json", "User-Agent": "Atlas-Financiero/2.0" }, cache: "no-store", signal: AbortSignal.timeout(25_000) });
+      if (!response.ok) return [] as string[];
+      const payload = record(await response.json());
+      return (Array.isArray(payload.data) ? payload.data.map(record) : []).flatMap((item) => {
+        const tenderUrlValue = text(item.urlTender);
+        const code = tenderUrlValue.split("/").at(-1)?.toUpperCase() ?? "";
+        return code.startsWith(`${buyerCode}-`) ? [code] : [];
+      });
+    } catch { return [] as string[]; }
+  }));
+  return [...new Set(indexes.flat())];
 }
 
 export async function fetchAwardIntelligence(tender: NormalizedTender, includeProbablePredecessors = false) {
   const current = await fetchOcds("award", tender.code).catch(() => null);
   const rows = current ? awardRows(tender.code, "current_process", 100, current.url, current.payload) : [];
   if (!includeProbablePredecessors) return rows;
-  const candidates = await Promise.all(probableCodes(tender.code).map(async (code) => {
+  const codeParts = tender.code.match(/^(\d+)-(\d+)-([A-Z]+)(\d{2})$/i);
+  if (!codeParts) return rows;
+  const exactCodes = priorYearCodes(tender.code);
+  const exactCandidates = await Promise.all(exactCodes.map(async (code) => {
+    const result = await fetchOcds("tender", code).catch(() => null);
+    if (!result) return null;
+    const release = latestRelease(result.payload);
+    const candidate = record(release.tender);
+    if (!text(candidate.title)) return null;
+    const similarity = tokenSimilarity(tender.name, text(candidate.title));
+    return similarity >= 35 ? { code, similarity } : null;
+  }));
+  const currentYear = 2000 + Number(codeParts[4]);
+  const discoveredCodes = exactCandidates.some(Boolean) ? [] : (await Promise.all([1, 2, 3].map((offset) => buyerYearCodes(codeParts[1], currentYear - offset)))).flat();
+  const candidates = await Promise.all(discoveredCodes.filter((code) => !exactCodes.includes(code)).slice(0, 120).map(async (code) => {
     const result = await fetchOcds("tender", code).catch(() => null);
     if (!result) return null;
     const release = latestRelease(result.payload);
     const candidate = record(release.tender);
     const similarity = tokenSimilarity(tender.name, text(candidate.title));
-    return similarity >= 45 ? { code, similarity } : null;
+    return similarity >= 35 ? { code, similarity } : null;
   }));
-  const probable = candidates.filter((candidate): candidate is { code: string; similarity: number } => Boolean(candidate)).sort((a, b) => b.similarity - a.similarity).slice(0, 3);
+  const probable = [...exactCandidates, ...candidates].filter((candidate): candidate is { code: string; similarity: number } => Boolean(candidate)).sort((a, b) => b.similarity - a.similarity).slice(0, 5);
   const historicAwards = await Promise.all(probable.map(async (candidate) => {
     const result = await fetchOcds("award", candidate.code).catch(() => null);
     return result ? awardRows(candidate.code, "probable_predecessor", candidate.similarity, result.url, result.payload) : [];
@@ -447,6 +499,7 @@ export function buildExecutiveSummary(tender: NormalizedTender, critical: Tender
     subcontracting: critical.subcontracting || (tender.subcontracting ? "Permitida" : "No informada / no permitida"),
     documentsCount: documents.length,
     suppliersPublished: awarded.map((item) => ({ name: item.supplierName, taxId: item.supplierTaxId, amount: item.awardedAmount, currency: item.currencyCode, relationship: item.relationship, tenderCode: item.relatedTenderCode })),
+    historySearch: { exactCodes: priorYearCodes(tender.code), matchedCodes: [...new Set(awards.filter((item) => item.relationship === "probable_predecessor").map((item) => item.relatedTenderCode))], method: "mismo código por año; luego mismo organismo y similitud de objeto" },
     fit: match,
     generatedAt: new Date().toISOString(),
     caveat: "Resumen automático sobre fuentes oficiales. Debe contrastarse con bases y anexos antes de decidir o presentar oferta.",

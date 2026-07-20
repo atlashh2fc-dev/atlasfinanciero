@@ -31,7 +31,7 @@ for (const field of ["contractDuration", "paymentTerms", "guarantees", "fines", 
   includes(intelligence, field, `El resumen ejecutivo no cubre ${field}.`);
 }
 includes(component, "CONDICIONES CRÍTICAS", "La ficha no muestra condiciones críticas.");
-includes(component, "MULTAS Y SANCIONES DETECTADAS", "La ficha no muestra multas detectadas.");
+includes(component, "MULTAS Y TÉRMINO ANTICIPADO", "La ficha no muestra multas o término anticipado detectados.");
 
 includes(intelligence, "downloadFromAttachmentPage", "No existe descarga de anexos oficiales.");
 includes(intelligence, "/attachment/viewattachment.aspx", "No se conserva el acceso a anexos generales protegidos por ChileCompra.");
@@ -51,7 +51,9 @@ includes(intelligence, '.eq("category", manifest.category).eq("title", title)', 
 
 includes(intelligence, "probable_predecessor", "No existe búsqueda de procesos predecesores comparables.");
 includes(component, "Predecesor probable", "La inferencia histórica no está claramente rotulada.");
-includes(intelligence, "similarity >= 45", "La inferencia histórica no tiene un umbral explícito.");
+includes(intelligence, "similarity >= 35", "La inferencia histórica no tiene un umbral explícito.");
+includes(intelligence, "priorYearCodes", "El historial no prueba primero el mismo código bajando el año.");
+includes(intelligence, "buyerYearCodes", "El historial no amplía la búsqueda al mismo organismo cuando cambia el correlativo.");
 
 for (const table of ["public_market_radar_settings", "public_market_radar_runs", "public_market_tenders", "public_market_documents", "public_market_award_history"]) {
   includes(migration, `create table public.${table}`, `Falta la tabla ${table}.`);

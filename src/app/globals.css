@@ -2835,6 +2835,13 @@ td small {
   box-shadow: 0 30px 90px rgba(16, 27, 55, .34), inset 0 1px 0 #fff;
   backdrop-filter: blur(26px) saturate(1.2);
 }
+.crm-modal .modal-header h2 {
+  max-width: 920px;
+  font-size: clamp(18px, 1.7vw, 25px);
+  line-height: 1.18;
+  letter-spacing: -.35px;
+}
+.crm-modal .modal-header p { margin-top: 7px; font-size: 10px; line-height: 1.45; }
 .crm-opportunity-detail { display: grid; gap: 17px; }
 .crm-opportunity-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .crm-opportunity-summary article { min-width: 0; padding: 13px; border: 1px solid #e0e6f0; border-radius: 9px; background: rgba(255,255,255,.68); }
@@ -2867,6 +2874,31 @@ td small {
   gap: 16px;
 }
 .crm-dossier-heading h3 { margin: 6px 0 0; color: #2d3d58; font-size: 15px; }
+.crm-opportunity-tab-content .public-market-executive-grid > article { padding: 15px; }
+.crm-opportunity-tab-content .public-market-executive-grid h4 { margin-top: 13px; font-size: 9px; letter-spacing: .1px; }
+.crm-opportunity-tab-content .public-market-executive-grid li,
+.crm-opportunity-tab-content .public-market-executive-grid dd,
+.crm-opportunity-tab-content .public-market-risk-note p { font-size: 9px; line-height: 1.5; }
+.crm-dossier-objective {
+  margin: 12px 0 0;
+  color: #34445f !important;
+  font-size: 13px !important;
+  font-weight: 650;
+  line-height: 1.48 !important;
+}
+.crm-opportunity-tab-content .public-market-criteria { padding: 15px; }
+.crm-opportunity-tab-content .public-market-criteria h3 { margin-top: 6px; font-size: 13px; }
+.crm-opportunity-tab-content .public-market-criteria > div:last-child span { font-size: 8px; }
+.crm-opportunity-tab-content .public-market-criteria strong { font-size: 11px; }
+.crm-history-empty {
+  padding: 22px;
+  border: 1px dashed #cfd7e6;
+  border-radius: 10px;
+  color: #6d7a90;
+  background: rgba(255,255,255,.62);
+}
+.crm-history-empty strong { display: block; color: #35455f; font-size: 11px; }
+.crm-history-empty p { margin: 7px 0 0; font-size: 9px; line-height: 1.55; }
 .crm-dossier-loading { min-height: 180px; }
 .crm-dossier-empty {
   padding: 26px;
