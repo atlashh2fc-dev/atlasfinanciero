@@ -27,15 +27,16 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   if (!authorized(request)) return NextResponse.json({ error: "cron_authorization_required" }, { status: 401 });
   if (!hasSupabaseAdminKey()) return NextResponse.json({ error: "server_admin_key_required" }, { status: 503 });
-  const body = await request.json().catch(() => null) as { action?: string } | null;
+  const body = await request.json().catch(() => null) as { action?: string; codes?: unknown } | null;
   if (body?.action !== "backfill_pipeline") return NextResponse.json({ error: "unsupported_radar_action" }, { status: 400 });
   const admin = createAdminClient();
   const { data: opportunities, error } = await admin.from("commercial_opportunities").select("id, organization_id, source, title").ilike("source", "Mercado Público%");
   if (error) return NextResponse.json({ error: "unable_to_load_public_market_pipeline" }, { status: 500 });
+  const requestedCodes = new Set((Array.isArray(body.codes) ? body.codes : []).filter((code): code is string => typeof code === "string" && /^[A-Z0-9-]{3,40}$/i.test(code)).map((code) => code.toUpperCase()));
   const candidates = (opportunities ?? []).map((opportunity) => {
     const match = String(opportunity.source ?? "").match(/Mercado P[uú]blico\s*·\s*([A-Z0-9-]+)/i);
     return match ? { ...opportunity, code: match[1].toUpperCase() } : null;
-  }).filter((item): item is NonNullable<typeof item> => Boolean(item));
+  }).filter((item): item is NonNullable<typeof item> => Boolean(item)).filter((item) => !requestedCodes.size || requestedCodes.has(item.code));
   const results = [];
   for (const candidate of candidates) {
     try { results.push({ opportunityId: candidate.id, title: candidate.title, ok: true, ...(await captureTenderDossier(admin, candidate.organization_id, candidate.code, candidate.id)) }); }

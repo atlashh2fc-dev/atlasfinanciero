@@ -44,6 +44,9 @@ includes(component, "captureExistingOpportunity", "Las oportunidades antiguas no
 includes(intelligence, "captureTenderDossier", "La captura no está centralizada para altas nuevas y backfill.");
 includes(cron, 'body?.action !== "backfill_pipeline"', "No existe backfill protegido para oportunidades históricas del pipeline.");
 includes(cron, '.ilike("source", "Mercado Público%")', "El backfill no descubre oportunidades históricas de Mercado Público.");
+includes(cron, "requestedCodes", "El backfill no permite reintentar una licitación específica sin reprocesar todo el pipeline.");
+includes(intelligence, "response.status !== 429", "La conexión oficial no reintenta límites temporales de ChileCompra.");
+includes(intelligence, '.in("download_status", ["failed", "source_only"])', "La descarga no limpia marcadores fallidos antiguos al recuperarse.");
 
 includes(intelligence, "probable_predecessor", "No existe búsqueda de procesos predecesores comparables.");
 includes(component, "Predecesor probable", "La inferencia histórica no está claramente rotulada.");

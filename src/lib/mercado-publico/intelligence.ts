@@ -165,7 +165,15 @@ export async function fetchChileCompra(params: { code?: string; date?: string; s
     upstream.searchParams.set("estado", params.state || "activas");
     if (params.buyerCode) upstream.searchParams.set("CodigoOrganismo", params.buyerCode);
   }
-  const response = await fetch(upstream, { headers: { Accept: "application/json", "User-Agent": "Atlas-Financiero/2.0" }, cache: "no-store", signal: signal ?? AbortSignal.timeout(25_000) });
+  let response: Response | null = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    response = await fetch(upstream, { headers: { Accept: "application/json", "User-Agent": "Atlas-Financiero/2.0" }, cache: "no-store", signal: signal ?? AbortSignal.timeout(25_000) });
+    if (response.status !== 429 || attempt === 2) break;
+    const retryAfter = Number(response.headers.get("retry-after"));
+    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(15_000, retryAfter * 1000) : 1500 * (attempt + 1);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+  if (!response) throw new Error("ChileCompra no respondió.");
   if (!response.ok) throw new Error(`ChileCompra respondió ${response.status}.`);
   const payload = record(await response.json());
   const rawList = Array.isArray(payload.Listado) ? payload.Listado : [];
@@ -567,6 +575,7 @@ export async function persistTenderDocuments(admin: SupabaseClient, organization
       results.push({ title: manifest.title, status, storagePath: null, error: errorText });
       continue;
     }
+    await admin.from("public_market_documents").delete().eq("organization_id", organizationId).eq("tender_id", tenderId).eq("source_url", manifest.sourceUrl).in("download_status", ["failed", "source_only"]);
     for (const download of downloads) {
       const hash = createHash("sha256").update(`${manifest.sourceUrl}:${download.fileName}`).digest("hex").slice(0, 16);
       const fileName = safeFileName(download.fileName);
