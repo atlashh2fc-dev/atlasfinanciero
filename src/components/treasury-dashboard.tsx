@@ -65,6 +65,32 @@ type DirectPayable = {
   status: string;
 };
 
+type StatementImport = {
+  id: string;
+  bank_account_id: string;
+  file_name: string;
+  imported_rows: number;
+  skipped_rows: number;
+  status: "processing" | "completed" | "failed";
+  created_at: string;
+};
+
+type PaymentExecution = {
+  id: string;
+  direction: "inflow" | "outflow";
+  status: string;
+  amount: number | string;
+  executed_on: string;
+  source: string;
+};
+
+type StatementPreview = {
+  accountName: string;
+  validRows: number;
+  rejectedRows: number;
+  rows: Array<{ bookedOn: string; description: string; reference: string | null; amount: number; balanceAfter: number | null }>;
+};
+
 type TreasuryPayload = {
   accounts: BankAccount[];
   transactions: BankTransaction[];
@@ -72,6 +98,8 @@ type TreasuryPayload = {
   issuedDocuments: IssuedDocument[];
   receivedDocuments: ReceivedDocument[];
   directPayables: DirectPayable[];
+  statementImports: StatementImport[];
+  paymentExecutions: PaymentExecution[];
 };
 
 const money = new Intl.NumberFormat("es-CL", {
@@ -87,6 +115,17 @@ const date = new Intl.DateTimeFormat("es-CL", {
 
 function amount(value: number | string | null | undefined) {
   return Number(value ?? 0);
+}
+
+function formatAmount(value: number | string | null | undefined, currencyCode = "CLP") {
+  const numeric = amount(value);
+  if (currencyCode === "UF")
+    return `${new Intl.NumberFormat("es-CL", { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(numeric)} UF`;
+  try {
+    return new Intl.NumberFormat("es-CL", { style: "currency", currency: currencyCode, maximumFractionDigits: currencyCode === "CLP" ? 0 : 2 }).format(numeric);
+  } catch {
+    return `${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 2 }).format(numeric)} ${currencyCode}`;
+  }
 }
 
 function displayDate(value: string | null) {
@@ -125,6 +164,13 @@ export function TreasuryDashboard({
   const [matchAmount, setMatchAmount] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
+  const [accountEditorOpen, setAccountEditorOpen] = useState(false);
+  const [accountDraft, setAccountDraft] = useState({ name: "", bankName: "", accountNumberMasked: "", currencyCode: "CLP", openingBalance: "0", openingBalanceDate: "" });
+  const [selectedImportAccountId, setSelectedImportAccountId] = useState("");
+  const [statementFile, setStatementFile] = useState<File | null>(null);
+  const [statementPreview, setStatementPreview] = useState<StatementPreview | null>(null);
+  const [previewingStatement, setPreviewingStatement] = useState(false);
+  const [importingStatement, setImportingStatement] = useState(false);
 
   async function loadTreasury() {
     if (!organizationId) {
@@ -148,6 +194,10 @@ export function TreasuryDashboard({
   useEffect(() => {
     void loadTreasury();
   }, [organizationId]);
+
+  useEffect(() => {
+    if (!selectedImportAccountId && data?.accounts[0]) setSelectedImportAccountId(data.accounts[0].id);
+  }, [data?.accounts, selectedImportAccountId]);
 
   const matchedByTransaction = useMemo(() => {
     const values = new Map<string, number>();
@@ -244,6 +294,7 @@ export function TreasuryDashboard({
           (matchedByTransaction.get(selectedTransaction.id) ?? 0),
       )
     : 0;
+  const selectedTransactionCurrency = data?.accounts.find((account) => account.id === selectedTransaction?.bank_account_id)?.currency_code || "CLP";
 
   function openReconciliation(transaction: BankTransaction) {
     setSelectedTransaction(transaction);
@@ -291,10 +342,70 @@ export function TreasuryDashboard({
     await loadTreasury();
   }
 
-  const totalPosition = accountPositions.reduce(
-    (total, account) => total + account.position,
-    0,
-  );
+  async function saveAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!organizationId) return;
+    setSaving(true);
+    const response = await fetch("/api/treasury", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "save_account", organizationId, account: accountDraft }),
+    });
+    setSaving(false);
+    if (!response.ok) {
+      setMessage("No fue posible guardar la cuenta. Revisa los datos obligatorios.");
+      return;
+    }
+    setAccountEditorOpen(false);
+    setAccountDraft({ name: "", bankName: "", accountNumberMasked: "", currencyCode: "CLP", openingBalance: "0", openingBalanceDate: "" });
+    setMessage("Cuenta bancaria creada. Ya puedes cargar su primera cartola.");
+    await loadTreasury();
+  }
+
+  async function previewStatement() {
+    if (!organizationId || !selectedImportAccountId || !statementFile) return;
+    setPreviewingStatement(true);
+    const form = new FormData();
+    form.set("action", "preview_statement");
+    form.set("organizationId", organizationId);
+    form.set("bankAccountId", selectedImportAccountId);
+    form.set("file", statementFile);
+    const response = await fetch("/api/treasury", { method: "POST", body: form });
+    const payload = (await response.json().catch(() => null)) as StatementPreview | { detail?: string } | null;
+    setPreviewingStatement(false);
+    if (!response.ok || !payload || !("rows" in payload)) {
+      setStatementPreview(null);
+      setMessage(payload && "detail" in payload ? payload.detail ?? "No fue posible leer la cartola." : "No fue posible leer la cartola. Usa un CSV con Fecha, Descripción y Monto o Cargo/Abono.");
+      return;
+    }
+    setStatementPreview(payload);
+    setMessage(null);
+  }
+
+  async function importStatement() {
+    if (!organizationId || !selectedImportAccountId || !statementFile) return;
+    setImportingStatement(true);
+    const form = new FormData();
+    form.set("action", "import_statement");
+    form.set("organizationId", organizationId);
+    form.set("bankAccountId", selectedImportAccountId);
+    form.set("file", statementFile);
+    const response = await fetch("/api/treasury", { method: "POST", body: form });
+    const payload = (await response.json().catch(() => null)) as { importedRows?: number; skippedRows?: number; error?: string } | null;
+    setImportingStatement(false);
+    if (!response.ok) {
+      setMessage(payload?.error === "statement_already_imported" ? "Esta cartola ya fue cargada para esa cuenta; no se duplicó ningún movimiento." : "No fue posible importar la cartola. Intenta nuevamente.");
+      return;
+    }
+    setMessage(`Cartola incorporada: ${payload?.importedRows ?? 0} movimiento(s) registrados${payload?.skippedRows ? ` y ${payload.skippedRows} omitido(s) por estar repetido(s) o incompleto(s)` : ""}.`);
+    setStatementFile(null);
+    setStatementPreview(null);
+    await loadTreasury();
+  }
+
+  const clpPosition = accountPositions.filter((account) => account.currency_code === "CLP").reduce((total, account) => total + account.position, 0);
+  const nonClpAccounts = accountPositions.filter((account) => account.currency_code !== "CLP");
+  const executionsToVerify = (data?.paymentExecutions ?? []).filter((execution) => execution.status !== "reconciled");
 
   return (
     <main className="dashboard">
@@ -307,15 +418,21 @@ export function TreasuryDashboard({
             cada abono o cargo contra su documento de respaldo.
           </p>
         </div>
+        {canManage && (
+          <div className="headline-actions">
+            <button type="button" className="secondary-button" onClick={() => setAccountEditorOpen(true)}>Nueva cuenta</button>
+            <button type="button" className="primary-button" onClick={() => document.getElementById("cargar-cartola")?.scrollIntoView({ behavior: "smooth", block: "start" })} disabled={!data?.accounts.length}>Cargar cartola</button>
+          </div>
+        )}
       </section>
 
       {message && <p className="operation-message">{message}</p>}
 
-      <section className="kpis kpis-six">
+      <section className="kpis">
         <article className="kpi-card accent">
-          <span>Posición disponible</span>
-          <strong>{money.format(totalPosition)}</strong>
-          <small>{accountPositions.length} cuenta(s) bancaria(s)</small>
+          <span>Posición disponible CLP</span>
+          <strong>{money.format(clpPosition)}</strong>
+          <small>{nonClpAccounts.length ? `${accountPositions.length} cuentas; otras monedas se muestran por cuenta` : `${accountPositions.length} cuenta(s) bancaria(s)`}</small>
         </article>
         <article className="kpi-card">
           <span>Por conciliar</span>
@@ -333,7 +450,37 @@ export function TreasuryDashboard({
           </strong>
           <small>Movimientos con aplicación total</small>
         </article>
+        <article className="kpi-card" data-help="Son ejecuciones registradas en compras y pagos. Sirven para controlar qué debe aparecer en una cartola, pero no cambian el saldo bancario sin movimiento del banco.">
+          <span>Ejecuciones por respaldar</span>
+          <strong>{executionsToVerify.length}</strong>
+          <small>No se incluyen en posición hasta cargar cartola</small>
+        </article>
       </section>
+
+      {!loading && !accountPositions.length && (
+        <section className="panel treasury-onboarding">
+          <span className="panel-label">PUNTO DE PARTIDA</span>
+          <h2>Activa la posición bancaria real</h2>
+          <p>Primero registra la cuenta y su saldo inicial si corresponde. Después carga la cartola: sólo los movimientos informados por el banco forman la posición y quedan disponibles para conciliar.</p>
+          {canManage ? <button type="button" className="primary-button" onClick={() => setAccountEditorOpen(true)}>Registrar primera cuenta</button> : <p className="permission-note">Necesitas permiso de Finanzas para configurar cuentas y cargar cartolas.</p>}
+        </section>
+      )}
+
+      {canManage && data?.accounts.length ? (
+        <section id="cargar-cartola" className="panel treasury-import-panel">
+          <div>
+            <span className="panel-label">CARGA CONTROLADA</span>
+            <h2>Cargar cartola bancaria</h2>
+            <p>Importa un archivo CSV exportado por el banco. Primero revisamos las columnas y una muestra; al confirmar, guardamos el archivo, deduplicamos movimientos y los dejamos listos para conciliación.</p>
+          </div>
+          <div className="treasury-import-form">
+            <label>Cuenta bancaria<select value={selectedImportAccountId} onChange={(event) => { setSelectedImportAccountId(event.target.value); setStatementPreview(null); }}>{data.accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.currency_code}</option>)}</select></label>
+            <label>Archivo de cartola (.csv)<input type="file" accept=".csv,text/csv,text/plain" onChange={(event) => { setStatementFile(event.target.files?.[0] ?? null); setStatementPreview(null); }} /></label>
+            <button type="button" className="secondary-button" onClick={() => void previewStatement()} disabled={!statementFile || previewingStatement}>{previewingStatement ? "Revisando…" : "Previsualizar"}</button>
+          </div>
+          {statementPreview && <div className="treasury-preview"><strong>{statementPreview.accountName}: {statementPreview.validRows} movimiento(s) detectado(s)</strong><span>{statementPreview.rejectedRows ? `${statementPreview.rejectedRows} fila(s) incompleta(s) se omitirá(n).` : "Las filas detectadas están listas para importar."}</span><div className="table-scroll"><table><thead><tr><th>Fecha</th><th>Descripción</th><th>Referencia</th><th className="money-col">Monto</th></tr></thead><tbody>{statementPreview.rows.map((row, index) => <tr key={`${row.bookedOn}-${index}`}><td>{displayDate(row.bookedOn)}</td><td>{row.description}</td><td>{row.reference || "—"}</td><td className={`money-col ${row.amount < 0 ? "is-negative" : ""}`}>{row.amount < 0 ? "−" : "+"}{money.format(Math.abs(row.amount))}</td></tr>)}</tbody></table></div><div className="form-actions"><button type="button" className="primary-button" onClick={() => void importStatement()} disabled={importingStatement}>{importingStatement ? "Importando…" : "Confirmar e importar"}</button></div></div>}
+        </section>
+      ) : null}
 
       <section className="table-section">
         <div className="table-heading">
@@ -367,7 +514,7 @@ export function TreasuryDashboard({
                     <td>{account.bank_name || "—"}</td>
                     <td>{account.currency_code}</td>
                     <td className="money-col">{account.movements}</td>
-                    <td className={`money-col ${account.position < 0 ? "is-negative" : ""}`}>{money.format(account.position)}</td>
+                    <td className={`money-col ${account.position < 0 ? "is-negative" : ""}`}>{formatAmount(account.position, account.currency_code)}</td>
                   </tr>
                 ))
               ) : (
@@ -377,6 +524,11 @@ export function TreasuryDashboard({
           </table>
         </div>
       </section>
+
+      {!!data?.statementImports.length && <section className="table-section">
+        <div className="table-heading"><div><span className="panel-label">TRAZABILIDAD</span><h2>Últimas cartolas cargadas</h2><p>Cada importación conserva su archivo original, fecha y resultado.</p></div></div>
+        <div className="table-scroll"><table><thead><tr><th>Archivo</th><th>Cuenta</th><th>Fecha</th><th className="money-col">Movimientos</th><th>Estado</th></tr></thead><tbody>{data.statementImports.map((item) => <tr key={item.id}><td><strong>{item.file_name}</strong><small>{item.skipped_rows ? `${item.skipped_rows} fila(s) omitida(s)` : "Sin filas omitidas"}</small></td><td>{data.accounts.find((account) => account.id === item.bank_account_id)?.name || "Cuenta no disponible"}</td><td>{new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.created_at))}</td><td className="money-col">{item.imported_rows}</td><td><span className={item.status === "completed" ? "status paid" : item.status === "failed" ? "status overdue" : "status pending"}>{item.status === "completed" ? "Importada" : item.status === "failed" ? "Con error" : "Procesando"}</span></td></tr>)}</tbody></table></div>
+      </section>}
 
       <section className="table-section">
         <div className="table-heading">
@@ -405,12 +557,13 @@ export function TreasuryDashboard({
                 pendingTransactions.map((transaction) => {
                   const account = accountPositions.find((item) => item.id === transaction.bank_account_id);
                   const remaining = Math.max(0, Math.abs(amount(transaction.amount)) - (matchedByTransaction.get(transaction.id) ?? 0));
+                  const currencyCode = account?.currency_code || "CLP";
                   return (
                     <tr key={transaction.id}>
                       <td><strong>{displayDate(transaction.booked_on)}</strong><small>{account?.name || "Cuenta no disponible"}</small></td>
-                      <td><strong>{transaction.description}</strong><small>Disponible: {money.format(remaining)}</small></td>
+                      <td><strong>{transaction.description}</strong><small>Disponible: {formatAmount(remaining, currencyCode)}</small></td>
                       <td>{transaction.reference || "—"}</td>
-                      <td className={`money-col ${amount(transaction.amount) < 0 ? "is-negative" : ""}`}>{amount(transaction.amount) < 0 ? "−" : "+"}{money.format(Math.abs(amount(transaction.amount)))}</td>
+                      <td className={`money-col ${amount(transaction.amount) < 0 ? "is-negative" : ""}`}>{amount(transaction.amount) < 0 ? "−" : "+"}{formatAmount(Math.abs(amount(transaction.amount)), currencyCode)}</td>
                       <td><span className={reconciliationClass(transaction.reconciliation_status)}>{reconciliationLabel(transaction.reconciliation_status)}</span></td>
                       <td>{canManage ? <button type="button" className="secondary-button" onClick={() => openReconciliation(transaction)}>Conciliar</button> : "Sin permiso de edición"}</td>
                     </tr>
@@ -431,7 +584,7 @@ export function TreasuryDashboard({
               <div>
                 <span className="eyebrow">CONCILIAR MOVIMIENTO</span>
                 <h2 id="treasury-reconciliation-title">{selectedTransaction.description}</h2>
-                <p>{displayDate(selectedTransaction.booked_on)} · Disponible: {money.format(selectedTransactionRemaining)}</p>
+                <p>{displayDate(selectedTransaction.booked_on)} · Disponible: {formatAmount(selectedTransactionRemaining, selectedTransactionCurrency)}</p>
               </div>
               <button type="button" className="close-button" onClick={() => setSelectedTransaction(null)} aria-label="Cerrar">×</button>
             </div>
@@ -460,6 +613,10 @@ export function TreasuryDashboard({
             </form>
           </section>
         </div>
+      )}
+
+      {accountEditorOpen && (
+        <div className="modal-backdrop" role="presentation"><section className="entry-modal collection-modal" role="dialog" aria-modal="true" aria-labelledby="bank-account-title"><div className="modal-header"><div><span className="eyebrow">CONFIGURACIÓN BANCARIA</span><h2 id="bank-account-title">Nueva cuenta bancaria</h2><p>El saldo inicial sólo se usa hasta que la cartola informe un saldo posterior.</p></div><button type="button" className="close-button" onClick={() => setAccountEditorOpen(false)} aria-label="Cerrar">×</button></div><form onSubmit={saveAccount}><div className="form-grid"><label>Nombre de la cuenta *<input required maxLength={140} value={accountDraft.name} onChange={(event) => setAccountDraft({ ...accountDraft, name: event.target.value })} placeholder="Ej. Cuenta corriente operaciones" /></label><label>Banco<input maxLength={140} value={accountDraft.bankName} onChange={(event) => setAccountDraft({ ...accountDraft, bankName: event.target.value })} placeholder="Ej. Banco de Chile" /></label><label>Número enmascarado<input maxLength={80} value={accountDraft.accountNumberMasked} onChange={(event) => setAccountDraft({ ...accountDraft, accountNumberMasked: event.target.value })} placeholder="Ej. **** 4582" /></label><label>Moneda *<select value={accountDraft.currencyCode} onChange={(event) => setAccountDraft({ ...accountDraft, currencyCode: event.target.value })}><option value="CLP">CLP · Pesos chilenos</option><option value="USD">USD · Dólares</option><option value="UF">UF · Unidad de Fomento</option></select></label><label>Saldo inicial<input type="number" step="any" value={accountDraft.openingBalance} onChange={(event) => setAccountDraft({ ...accountDraft, openingBalance: event.target.value })} /></label><label>Fecha del saldo inicial<input type="date" value={accountDraft.openingBalanceDate} onChange={(event) => setAccountDraft({ ...accountDraft, openingBalanceDate: event.target.value })} /></label></div><div className="form-actions"><button type="button" className="secondary-button" onClick={() => setAccountEditorOpen(false)}>Cancelar</button><button type="submit" className="primary-button" disabled={saving}>{saving ? "Guardando…" : "Guardar cuenta"}</button></div></form></section></div>
       )}
     </main>
   );

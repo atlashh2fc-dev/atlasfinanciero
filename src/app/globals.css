@@ -2943,6 +2943,68 @@ td small {
 .kpis-six {
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
+.treasury-onboarding,
+.treasury-import-panel {
+  padding: 22px 28px;
+  margin-bottom: 18px;
+}
+.treasury-onboarding h2,
+.treasury-import-panel h2 {
+  margin: 7px 0 8px;
+  color: #21304a;
+  font-size: 19px;
+}
+.treasury-onboarding p,
+.treasury-import-panel p {
+  max-width: 760px;
+  color: #6f7d92;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.treasury-onboarding .primary-button {
+  margin-top: 8px;
+}
+.treasury-import-form {
+  display: grid;
+  grid-template-columns: minmax(210px, .9fr) minmax(260px, 1.2fr) auto;
+  gap: 11px;
+  align-items: end;
+  margin-top: 19px;
+}
+.treasury-import-form label {
+  display: grid;
+  gap: 6px;
+  color: #56647b;
+  font-size: 11px;
+  font-weight: 700;
+}
+.treasury-import-form select,
+.treasury-import-form input {
+  min-width: 0;
+  border: 1px solid #dfe5ed;
+  border-radius: 7px;
+  padding: 9px 10px;
+  color: #27364d;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+}
+.treasury-preview {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid #dce4f3;
+  background: #f8faff;
+  color: #607087;
+  font-size: 11px;
+}
+.treasury-preview > strong { color: #314363; font-size: 12px; }
+.treasury-preview .table-scroll { max-height: 275px; }
+@media (max-width: 760px) {
+  .treasury-import-form { grid-template-columns: 1fr; }
+}
 .report-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
