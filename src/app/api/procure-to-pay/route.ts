@@ -63,6 +63,39 @@ async function canWriteProcurement(
   const { data } = await supabase.from("organization_memberships").select("role").eq("organization_id", organizationId).eq("user_id", userId).maybeSingle();
   return ["administrator", "finance", "operations"].includes(data?.role ?? "");
 }
+function normalizedSupplierName(value: string) {
+  return value
+    .toLocaleLowerCase("es-CL")
+    .replace(/[^\p{L}\p{N}]+/gu, "")
+    .replace(/(spa|ltda|limitada|eirl|sa)$/u, "");
+}
+function supplierDisplayName(supplier: { legal_name: string; trade_name: string | null }) {
+  return supplier.trade_name?.trim() || supplier.legal_name;
+}
+async function resolveCanonicalSupplier(
+  supabase: NonNullable<Awaited<ReturnType<typeof requireOrganizationProcurementAccess>>["supabase"]>,
+  organizationId: string,
+  submittedSupplierId: unknown,
+  submittedSupplierName: string,
+) {
+  if (submittedSupplierId !== undefined && submittedSupplierId !== null && submittedSupplierId !== "" && !isUuid(submittedSupplierId)) return null;
+  const baseQuery = supabase
+    .from("counterparties")
+    .select("id, legal_name, trade_name, tax_id")
+    .eq("organization_id", organizationId)
+    .in("kind", ["supplier", "both"])
+    .eq("is_active", true)
+    .is("merged_into_counterparty_id", null);
+  const selectedId = typeof submittedSupplierId === "string" && submittedSupplierId ? submittedSupplierId : null;
+  const selectedResult = selectedId ? await baseQuery.eq("id", selectedId).maybeSingle() : null;
+  const listResult = selectedId ? null : await baseQuery.order("legal_name").limit(1_000);
+  if (selectedResult?.error || listResult?.error) return null;
+  const supplier = selectedId
+    ? selectedResult?.data ?? null
+    : (listResult?.data ?? []).find((candidate) => normalizedSupplierName(supplierDisplayName(candidate)) === normalizedSupplierName(submittedSupplierName));
+  if (!supplier) return selectedId ? null : { id: null, name: submittedSupplierName, taxId: null };
+  return { id: supplier.id, name: supplierDisplayName(supplier), taxId: supplier.tax_id };
+}
 function lines(value: unknown): { description: string; quantity: number; unitPrice: number; netAmount: number; costCenterId: string | null }[] | null {
   if (!Array.isArray(value) || !value.length || value.length > 100) return null;
   const parsed = value.map((item) => {
@@ -142,10 +175,10 @@ export async function POST(request: NextRequest) {
     const estimatedAmount = positive(body?.estimatedAmount);
     const requestedOn = date(body?.requestedOn) ?? new Date().toISOString().slice(0, 10);
     const neededBy = body?.neededBy ? date(body.neededBy) : null;
-    const supplierId = body?.supplierId ? (isUuid(body.supplierId) ? body.supplierId : null) : null;
     const costCenterId = await activeCostCenterId(context.supabase, organizationId, body?.costCenterId);
-    if (!requestNumber || !supplierName || !description || !estimatedAmount || !costCenterId || (body?.neededBy && !neededBy) || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_purchase_request" }, { status: 400 });
-    const { data, error } = await context.supabase.from("purchase_requests").insert({ organization_id: organizationId, request_number: requestNumber, supplier_counterparty_id: supplierId, supplier_name: supplierName, description, requested_on: requestedOn, needed_by: neededBy, cost_center_id: costCenterId, estimated_amount: estimatedAmount, currency_code: "CLP", notes: text(body?.notes, 2_000), requested_by: context.user.id }).select("id").single();
+    const supplier = supplierName ? await resolveCanonicalSupplier(context.supabase, organizationId, body?.supplierId, supplierName) : null;
+    if (!requestNumber || !supplierName || !supplier || !description || !estimatedAmount || !costCenterId || (body?.neededBy && !neededBy)) return NextResponse.json({ error: "invalid_purchase_request" }, { status: 400 });
+    const { data, error } = await context.supabase.from("purchase_requests").insert({ organization_id: organizationId, request_number: requestNumber, supplier_counterparty_id: supplier.id, supplier_name: supplier.name, description, requested_on: requestedOn, needed_by: neededBy, cost_center_id: costCenterId, estimated_amount: estimatedAmount, currency_code: "CLP", notes: text(body?.notes, 2_000), requested_by: context.user.id }).select("id").single();
     if (error || !data) return NextResponse.json({ error: "unable_to_create_purchase_request" }, { status: 409 });
     return NextResponse.json({ id: data.id }, { status: 201 });
   }
@@ -220,14 +253,14 @@ export async function POST(request: NextRequest) {
     const totalAmount = positive(body?.totalAmount);
     const issueDate = date(body?.issueDate) ?? new Date().toISOString().slice(0, 10);
     const dueDate = body?.dueDate ? date(body.dueDate) : null;
-    const supplierId = body?.supplierId ? (isUuid(body.supplierId) ? body.supplierId : null) : null;
     const costCenterId = await activeCostCenterId(context.supabase, organizationId, body?.costCenterId);
     const invoiceNumber = text(body?.invoiceNumber, 180);
     const category = typeof body?.category === "string" && ["utilities", "rent", "taxes", "insurance", "subscriptions", "other"].includes(body.category) ? body.category : "other";
     const categoryDetail = text(body?.categoryDetail, 120);
     const payableNumber = `CXP-${issueDate.replaceAll("-", "")}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-    if (!supplierName || !description || !totalAmount || !costCenterId || (category === "other" && !categoryDetail) || (body?.dueDate && !dueDate) || (dueDate && dueDate < issueDate) || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_direct_payable" }, { status: 400 });
-    const { data, error } = await context.supabase.from("direct_payables").insert({ organization_id: organizationId, payable_number: payableNumber, supplier_counterparty_id: supplierId, supplier_name: supplierName, invoice_number: invoiceNumber, category, category_detail: category === "other" ? categoryDetail : null, description, issue_date: issueDate, due_date: dueDate, total_amount: totalAmount, currency_code: "CLP", cost_center_id: costCenterId, notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
+    const supplier = supplierName ? await resolveCanonicalSupplier(context.supabase, organizationId, body?.supplierId, supplierName) : null;
+    if (!supplierName || !supplier || !description || !totalAmount || !costCenterId || (category === "other" && !categoryDetail) || (body?.dueDate && !dueDate) || (dueDate && dueDate < issueDate)) return NextResponse.json({ error: "invalid_direct_payable" }, { status: 400 });
+    const { data, error } = await context.supabase.from("direct_payables").insert({ organization_id: organizationId, payable_number: payableNumber, supplier_counterparty_id: supplier.id, supplier_name: supplier.name, invoice_number: invoiceNumber, category, category_detail: category === "other" ? categoryDetail : null, description, issue_date: issueDate, due_date: dueDate, total_amount: totalAmount, currency_code: "CLP", cost_center_id: costCenterId, notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
     if (error || !data) return NextResponse.json({ error: "unable_to_create_direct_payable" }, { status: 409 });
     const { error: submitError } = await context.supabase.from("direct_payables").update({ status: "review" }).eq("id", data.id).eq("organization_id", organizationId);
     if (submitError) {
@@ -253,11 +286,11 @@ export async function POST(request: NextRequest) {
     const disbursementDate = planKind === "credit" ? date(body?.disbursementDate) : null;
     const disbursementAmount = planKind === "credit" ? positive(body?.disbursementAmount) : null;
     const currencyCode = body?.currencyCode === "UF" ? "UF" : body?.currencyCode === "CLP" ? "CLP" : null;
-    const supplierId = body?.supplierId ? (isUuid(body.supplierId) ? body.supplierId : null) : null;
     const costCenterId = await activeCostCenterId(context.supabase, organizationId, body?.costCenterId);
     const invalidAsset = planKind === "asset_financing" && (!assetName || !assetCostClp || residualValueClp === null || residualValueClp >= assetCostClp || !Number.isInteger(usefulLifeMonths) || (usefulLifeMonths ?? 0) < 1 || (usefulLifeMonths ?? 0) > 600 || !amortizationStartMonth);
-    if (!planNumber || !supplierName || !planKind || !principalAmount || !financingTotalAmount || !costCenterId || financingTotalAmount < principalAmount || !Number.isInteger(installmentCount) || installmentCount < 1 || installmentCount > 240 || !firstDueDate || !currencyCode || invalidAsset || (planKind === "credit" && (!disbursementDate || !disbursementAmount)) || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_financing_plan" }, { status: 400 });
-    const { data: plan, error: planError } = await context.supabase.from("asset_financing_plans").insert({ organization_id: organizationId, plan_number: planNumber, plan_kind: planKind, supplier_counterparty_id: supplierId, supplier_name: supplierName, asset_name: assetName, contract_reference: text(body?.contractReference, 180), cost_center_id: costCenterId, currency_code: currencyCode, principal_amount: principalAmount, asset_acquisition_amount: planKind === "asset_financing" ? principalAmount : null, financing_total_amount: financingTotalAmount, asset_cost_clp: assetCostClp, residual_value_clp: planKind === "asset_financing" ? residualValueClp : 0, installment_count: installmentCount, first_due_date: firstDueDate, useful_life_months: usefulLifeMonths, amortization_start_month: amortizationStartMonth, disbursement_date: disbursementDate, disbursement_amount: disbursementAmount, notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
+    const supplier = supplierName ? await resolveCanonicalSupplier(context.supabase, organizationId, body?.supplierId, supplierName) : null;
+    if (!planNumber || !supplierName || !supplier || !planKind || !principalAmount || !financingTotalAmount || !costCenterId || financingTotalAmount < principalAmount || !Number.isInteger(installmentCount) || installmentCount < 1 || installmentCount > 240 || !firstDueDate || !currencyCode || invalidAsset || (planKind === "credit" && (!disbursementDate || !disbursementAmount))) return NextResponse.json({ error: "invalid_financing_plan" }, { status: 400 });
+    const { data: plan, error: planError } = await context.supabase.from("asset_financing_plans").insert({ organization_id: organizationId, plan_number: planNumber, plan_kind: planKind, supplier_counterparty_id: supplier.id, supplier_name: supplier.name, asset_name: assetName, contract_reference: text(body?.contractReference, 180), cost_center_id: costCenterId, currency_code: currencyCode, principal_amount: principalAmount, asset_acquisition_amount: planKind === "asset_financing" ? principalAmount : null, financing_total_amount: financingTotalAmount, asset_cost_clp: assetCostClp, residual_value_clp: planKind === "asset_financing" ? residualValueClp : 0, installment_count: installmentCount, first_due_date: firstDueDate, useful_life_months: usefulLifeMonths, amortization_start_month: amortizationStartMonth, disbursement_date: disbursementDate, disbursement_amount: disbursementAmount, notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
     if (planError || !plan) return NextResponse.json({ error: "unable_to_create_asset_financing_plan" }, { status: 409 });
     const installmentRows = Array.from({ length: installmentCount }, (_, index) => {
       const principal = index === installmentCount - 1 ? principalAmount - Math.floor(principalAmount / installmentCount * 10_000) / 10_000 * (installmentCount - 1) : Math.floor(principalAmount / installmentCount * 10_000) / 10_000;

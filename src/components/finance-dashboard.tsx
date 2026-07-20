@@ -92,7 +92,7 @@ const modulePreviews: Record<Module, string> = {
   "Cuentas por pagar":
     "Facturas recibidas, proveedores, vencimientos y registro individual de pagos.",
   Proveedores:
-    "Directorio único de proveedores y consolidación segura de fichas duplicadas.",
+    "Directorio único de proveedores para compras, gastos, cuentas por pagar y factoring.",
   "Compras y lotes de pago":
     "Solicitudes, órdenes a proveedor y lotes de pago con aprobación antes de ejecutar.",
   Tesorería:
@@ -2423,7 +2423,6 @@ export function FinanceDashboard() {
           canReadExpenses ? (
             <SupplierConsolidation
               organizationId={access?.membership.organizationId ?? null}
-              canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
             />
           ) : null
         ) : activeModule === "Tesorería" ? (
