@@ -66,19 +66,21 @@ export async function GET(request: NextRequest) {
   const context = await requireOrganizationProcurementAccess(organizationId);
   if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
 
-  const [requests, orders, orderLines, batches, batchItems, documents, suppliers, bankAccounts] = await Promise.all([
+  const [requests, orders, orderLines, batches, batchItems, documents, directPayables, suppliers, bankAccounts] = await Promise.all([
     context.supabase.from("purchase_requests").select("id, request_number, supplier_counterparty_id, supplier_name, description, requested_on, needed_by, cost_center_id, currency_code, estimated_amount, status, notes, approved_at, cancellation_reason").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(200),
     context.supabase.from("vendor_purchase_orders").select("id, purchase_order_number, purchase_request_id, supplier_counterparty_id, supplier_name, supplier_tax_id, ordered_on, expected_on, currency_code, net_amount, vat_amount, total_amount, status, notes, approved_at, sent_at, received_at, cancellation_reason").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(200),
     context.supabase.from("vendor_purchase_order_lines").select("id, purchase_order_id, line_number, description, quantity, unit_price, net_amount, received_quantity, cost_center_id").eq("organization_id", organizationId).order("line_number"),
     context.supabase.from("payment_batches").select("id, batch_number, bank_account_id, scheduled_for, currency_code, total_amount, status, notes, submitted_at, approved_at, processed_at, paid_at, payment_reference, cancellation_reason").eq("organization_id", organizationId).order("scheduled_for", { ascending: false }).limit(100),
-    context.supabase.from("payment_batch_items").select("id, payment_batch_id, received_document_id, supplier_name_snapshot, document_number_snapshot, due_date_snapshot, amount").eq("organization_id", organizationId),
+    context.supabase.from("payment_batch_items").select("id, payment_batch_id, received_document_id, direct_payable_id, supplier_name_snapshot, document_number_snapshot, due_date_snapshot, amount").eq("organization_id", organizationId),
     context.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, document_number, issue_date, due_date, net_amount, total_amount, payment_status, vendor_purchase_order_id, purchase_match_status, purchase_match_approved_at, purchase_match_approved_by").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
+    context.supabase.from("direct_payables").select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, description, issue_date, due_date, total_amount, currency_code, status, notes, payment_reference").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
     context.supabase.from("counterparties").select("id, legal_name, trade_name, tax_id").eq("organization_id", organizationId).in("kind", ["supplier", "both"]).eq("is_active", true).order("legal_name"),
     context.supabase.from("bank_accounts").select("id, name, bank_name, account_number_masked").eq("organization_id", organizationId).eq("is_active", true).order("name"),
   ]);
-  if ([requests, orders, orderLines, batches, batchItems, documents, suppliers, bankAccounts].some((result) => result.error)) return NextResponse.json({ error: "unable_to_load_procure_to_pay" }, { status: 500 });
+  if ([requests, orders, orderLines, batches, batchItems, documents, directPayables, suppliers, bankAccounts].some((result) => result.error)) return NextResponse.json({ error: "unable_to_load_procure_to_pay" }, { status: 500 });
   const activeBatchIds = new Set((batches.data ?? []).filter((batch) => !["cancelled", "paid"].includes(batch.status)).map((batch) => batch.id));
   const reservedDocumentIds = new Set((batchItems.data ?? []).filter((item) => activeBatchIds.has(item.payment_batch_id)).map((item) => item.received_document_id));
+  const reservedDirectPayableIds = new Set((batchItems.data ?? []).filter((item) => activeBatchIds.has(item.payment_batch_id)).map((item) => item.direct_payable_id));
   const ordersById = new Map((orders.data ?? []).map((order) => [order.id, order]));
   const availableDocuments = (documents.data ?? []).filter((document) => !isPaid(document.payment_status)).map((document) => {
     const order = document.vendor_purchase_order_id ? ordersById.get(document.vendor_purchase_order_id) : null;
@@ -97,6 +99,7 @@ export async function GET(request: NextRequest) {
     purchaseRequests: requests.data ?? [], purchaseOrders: orders.data ?? [], purchaseOrderLines: orderLines.data ?? [],
     paymentBatches: batches.data ?? [], paymentBatchItems: batchItems.data ?? [],
     receivedDocuments: availableDocuments,
+    directPayables: (directPayables.data ?? []).map((payable) => ({ ...payable, payment_eligible: payable.status === "approved" && !reservedDirectPayableIds.has(payable.id), payment_block_reason: payable.status === "review" ? "awaiting_approval" : payable.status === "draft" ? "not_submitted" : payable.status === "approved" ? "already_in_payment_batch" : payable.status === "paid" ? "already_paid" : "not_approved" })),
     suppliers: suppliers.data ?? [], bankAccounts: bankAccounts.data ?? [],
   });
 }
@@ -106,7 +109,7 @@ export async function POST(request: NextRequest) {
   const organizationId = body?.organizationId;
   if (!isUuid(organizationId)) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   const action = body?.action;
-  const financeOnly = action === "create_payment_batch" || action === "link_received_document_to_purchase_order";
+  const financeOnly = action === "create_payment_batch" || action === "create_direct_payable" || action === "link_received_document_to_purchase_order";
   const context = financeOnly ? await requireOrganizationFinanceAccess(organizationId) : await requireOrganizationProcurementAccess(organizationId);
   if (context.error || !context.supabase || !context.user) return NextResponse.json({ error: context.error }, { status: context.status });
   if (!financeOnly && !(await canWriteProcurement(context.supabase, organizationId, context.user.id))) return NextResponse.json({ error: "procure_write_access_required" }, { status: 403 });
@@ -190,22 +193,42 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ document: data });
   }
 
+  if (action === "create_direct_payable") {
+    const payableNumber = text(body?.payableNumber, 100, true);
+    const supplierName = text(body?.supplierName, 300, true);
+    const description = text(body?.description, 2_000, true);
+    const totalAmount = positive(body?.totalAmount);
+    const issueDate = date(body?.issueDate) ?? new Date().toISOString().slice(0, 10);
+    const dueDate = body?.dueDate ? date(body.dueDate) : null;
+    const supplierId = body?.supplierId ? (isUuid(body.supplierId) ? body.supplierId : null) : null;
+    const invoiceNumber = text(body?.invoiceNumber, 180);
+    const category = typeof body?.category === "string" && ["utilities", "rent", "taxes", "insurance", "subscriptions", "other"].includes(body.category) ? body.category : "other";
+    if (!payableNumber || !supplierName || !description || !totalAmount || (body?.dueDate && !dueDate) || (dueDate && dueDate < issueDate) || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_direct_payable" }, { status: 400 });
+    const { data, error } = await context.supabase.from("direct_payables").insert({ organization_id: organizationId, payable_number: payableNumber, supplier_counterparty_id: supplierId, supplier_name: supplierName, invoice_number: invoiceNumber, category, description, issue_date: issueDate, due_date: dueDate, total_amount: totalAmount, currency_code: "CLP", notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
+    if (error || !data) return NextResponse.json({ error: "unable_to_create_direct_payable" }, { status: 409 });
+    return NextResponse.json({ id: data.id }, { status: 201 });
+  }
+
   if (action === "create_payment_batch") {
     const batchNumber = text(body?.batchNumber, 100, true);
     const scheduledFor = date(body?.scheduledFor);
     const bankAccountId = body?.bankAccountId ? (isUuid(body.bankAccountId) ? body.bankAccountId : null) : null;
-    const documentIds = Array.isArray(body?.documentIds) && body.documentIds.length > 0 && body.documentIds.length <= 250 && body.documentIds.every(isUuid) ? body.documentIds as string[] : null;
-    if (!batchNumber || !scheduledFor || !documentIds || (body?.bankAccountId && !bankAccountId)) return NextResponse.json({ error: "invalid_payment_batch" }, { status: 400 });
-    if (new Set(documentIds).size !== documentIds.length) return NextResponse.json({ error: "duplicated_payment_documents" }, { status: 400 });
+    const documentIds = Array.isArray(body?.documentIds) && body.documentIds.length <= 250 && body.documentIds.every(isUuid) ? body.documentIds as string[] : null;
+    const directPayableIds = Array.isArray(body?.directPayableIds) && body.directPayableIds.length <= 250 && body.directPayableIds.every(isUuid) ? body.directPayableIds as string[] : null;
+    if (!batchNumber || !scheduledFor || !documentIds || !directPayableIds || !documentIds.length && !directPayableIds.length || documentIds.length + directPayableIds.length > 250 || (body?.bankAccountId && !bankAccountId)) return NextResponse.json({ error: "invalid_payment_batch" }, { status: 400 });
+    if (new Set(documentIds).size !== documentIds.length || new Set(directPayableIds).size !== directPayableIds.length) return NextResponse.json({ error: "duplicated_payment_documents" }, { status: 400 });
     const { data: documents, error: documentsError } = await context.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, document_number, due_date, total_amount, payment_status, vendor_purchase_order_id, purchase_match_status, purchase_match_approved_at, purchase_match_approved_by").eq("organization_id", organizationId).in("id", documentIds);
     if (documentsError || !documents || documents.length !== documentIds.length || documents.some((document) => isPaid(document.payment_status) || Number(document.total_amount) <= 0)) return NextResponse.json({ error: "payment_documents_not_available" }, { status: 409 });
     const purchaseOrderIds = [...new Set(documents.map((document) => document.vendor_purchase_order_id).filter((id): id is string => Boolean(id)))];
-    const [{ data: purchaseOrders, error: purchaseOrdersError }, { data: linkedDocuments, error: linkedDocumentsError }, { data: existingItems, error: existingItemsError }] = await Promise.all([
+    const [{ data: purchaseOrders, error: purchaseOrdersError }, { data: linkedDocuments, error: linkedDocumentsError }, { data: existingItems, error: existingItemsError }, { data: directPayables, error: directPayablesError }, { data: existingDirectItems, error: existingDirectItemsError }] = await Promise.all([
       context.supabase.from("vendor_purchase_orders").select("id, supplier_counterparty_id, supplier_name, total_amount, status").eq("organization_id", organizationId).in("id", purchaseOrderIds),
       context.supabase.from("received_documents").select("vendor_purchase_order_id, total_amount").eq("organization_id", organizationId).in("vendor_purchase_order_id", purchaseOrderIds),
       context.supabase.from("payment_batch_items").select("payment_batch_id, received_document_id").eq("organization_id", organizationId).in("received_document_id", documentIds),
+      context.supabase.from("direct_payables").select("id, payable_number, supplier_name, invoice_number, due_date, total_amount, status").eq("organization_id", organizationId).in("id", directPayableIds),
+      context.supabase.from("payment_batch_items").select("payment_batch_id, direct_payable_id").eq("organization_id", organizationId).in("direct_payable_id", directPayableIds),
     ]);
-    if (purchaseOrdersError || linkedDocumentsError || existingItemsError || !purchaseOrders) return NextResponse.json({ error: "unable_to_validate_payment_documents" }, { status: 500 });
+    if (purchaseOrdersError || linkedDocumentsError || existingItemsError || directPayablesError || existingDirectItemsError || !purchaseOrders || !directPayables) return NextResponse.json({ error: "unable_to_validate_payment_documents" }, { status: 500 });
+    if (directPayables.length !== directPayableIds.length || directPayables.some((payable) => payable.status !== "approved" || Number(payable.total_amount) <= 0)) return NextResponse.json({ error: "direct_payables_not_available" }, { status: 409 });
     const ordersById = new Map(purchaseOrders.map((order) => [order.id, order]));
     const totalsByOrder = new Map<string, number>();
     for (const item of linkedDocuments ?? []) if (item.vendor_purchase_order_id) totalsByOrder.set(item.vendor_purchase_order_id, (totalsByOrder.get(item.vendor_purchase_order_id) ?? 0) + Number(item.total_amount ?? 0));
@@ -215,7 +238,7 @@ export async function POST(request: NextRequest) {
       const order = document.vendor_purchase_order_id ? ordersById.get(document.vendor_purchase_order_id) : null;
       return document.purchase_match_status !== "matched" || !order || !isReceivedOrder(order.status) || !sameSupplier(document, order) || !amountMatchesOrder(document.total_amount, order.total_amount) || (totalsByOrder.get(order.id) ?? 0) > Number(order.total_amount ?? 0) + 0.01;
     })) return NextResponse.json({ error: "payment_documents_not_validated_against_purchase_order" }, { status: 409 });
-    const existingBatchIds = [...new Set((existingItems ?? []).map((item) => item.payment_batch_id))];
+    const existingBatchIds = [...new Set([...(existingItems ?? []).map((item) => item.payment_batch_id), ...(existingDirectItems ?? []).map((item) => item.payment_batch_id)])];
     if (existingBatchIds.length) {
       const { data: existingBatches, error: existingBatchesError } = await context.supabase.from("payment_batches").select("id, status").eq("organization_id", organizationId).in("id", existingBatchIds);
       if (existingBatchesError) return NextResponse.json({ error: "unable_to_validate_payment_documents" }, { status: 500 });
@@ -223,7 +246,10 @@ export async function POST(request: NextRequest) {
     }
     const { data: batch, error: batchError } = await context.supabase.from("payment_batches").insert({ organization_id: organizationId, batch_number: batchNumber, bank_account_id: bankAccountId, scheduled_for: scheduledFor, currency_code: "CLP", notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
     if (batchError || !batch) return NextResponse.json({ error: "unable_to_create_payment_batch" }, { status: 409 });
-    const { error: itemsError } = await context.supabase.from("payment_batch_items").insert(documents.map((document) => ({ organization_id: organizationId, payment_batch_id: batch.id, received_document_id: document.id, supplier_name_snapshot: document.supplier_name, document_number_snapshot: document.document_number, due_date_snapshot: document.due_date, amount: document.total_amount })));
+    const { error: itemsError } = await context.supabase.from("payment_batch_items").insert([
+      ...documents.map((document) => ({ organization_id: organizationId, payment_batch_id: batch.id, received_document_id: document.id, supplier_name_snapshot: document.supplier_name, document_number_snapshot: document.document_number, due_date_snapshot: document.due_date, amount: document.total_amount })),
+      ...directPayables.map((payable) => ({ organization_id: organizationId, payment_batch_id: batch.id, direct_payable_id: payable.id, supplier_name_snapshot: payable.supplier_name, document_number_snapshot: payable.invoice_number ?? payable.payable_number, due_date_snapshot: payable.due_date, amount: payable.total_amount })),
+    ]);
     if (itemsError) {
       await context.supabase.from("payment_batches").delete().eq("id", batch.id).eq("organization_id", organizationId);
       return NextResponse.json({ error: "unable_to_create_payment_batch_items" }, { status: 409 });
@@ -239,7 +265,7 @@ export async function PATCH(request: NextRequest) {
   const id = body?.id;
   const action = body?.action;
   if (!isUuid(organizationId) || !isUuid(id) || typeof action !== "string") return NextResponse.json({ error: "invalid_request" }, { status: 400 });
-  const financeOnly = ["submit_payment_batch", "start_payment_batch", "mark_payment_batch_paid"].includes(action);
+  const financeOnly = ["submit_payment_batch", "start_payment_batch", "mark_payment_batch_paid", "submit_direct_payable"].includes(action);
   const context = financeOnly ? await requireOrganizationFinanceAccess(organizationId) : await requireOrganizationProcurementAccess(organizationId);
   if (context.error || !context.supabase || !context.user) return NextResponse.json({ error: context.error }, { status: context.status });
   if (!financeOnly && !(await canWriteProcurement(context.supabase, organizationId, context.user.id))) return NextResponse.json({ error: "procure_write_access_required" }, { status: 403 });
@@ -251,6 +277,7 @@ export async function PATCH(request: NextRequest) {
     submit_payment_batch: { table: "payment_batches", values: { status: "review", submitted_at: new Date().toISOString() } },
     start_payment_batch: { table: "payment_batches", values: { status: "processing", processed_at: new Date().toISOString() } },
     mark_payment_batch_paid: { table: "payment_batches", values: { status: "paid", paid_at: new Date().toISOString(), payment_reference: text(body?.paymentReference, 180) } },
+    submit_direct_payable: { table: "direct_payables", values: { status: "review" } },
   };
   const transition = transitions[action];
   if (!transition) return NextResponse.json({ error: "unsupported_procure_to_pay_transition" }, { status: 400 });
