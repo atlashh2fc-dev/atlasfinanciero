@@ -72,6 +72,34 @@ export async function GET(request: NextRequest) {
 
   if (requests.error || policies.error) return NextResponse.json({ error: "unable_to_load_approvals" }, { status: 500 });
   const approvalRequests = requests.data ?? [];
+  const directPayableIds = approvalRequests
+    .filter((approval) => approval.target_type === "payment" && approval.metadata?.kind === "direct_payable")
+    .map((approval) => approval.target_id);
+  const directPayablesResult = directPayableIds.length
+    ? await context.supabase
+      .from("direct_payables")
+      .select("id, supplier_name, invoice_number, category, category_detail, description, issue_date, due_date, notes, cost_center_id")
+      .eq("organization_id", organizationId)
+      .in("id", directPayableIds)
+    : { data: [], error: null };
+  if (directPayablesResult.error) return NextResponse.json({ error: "unable_to_load_approvals" }, { status: 500 });
+  const centerIds = [...new Set((directPayablesResult.data ?? []).map((payable) => payable.cost_center_id).filter((id): id is string => Boolean(id)))];
+  const centersResult = centerIds.length
+    ? await context.supabase.from("cost_centers").select("id, code, name").eq("organization_id", organizationId).in("id", centerIds)
+    : { data: [], error: null };
+  if (centersResult.error) return NextResponse.json({ error: "unable_to_load_approvals" }, { status: 500 });
+  const centersById = new Map((centersResult.data ?? []).map((center) => [center.id, { code: center.code, name: center.name }]));
+  const directPayablesById = new Map((directPayablesResult.data ?? []).map((payable) => [payable.id, {
+    supplier_name: payable.supplier_name,
+    invoice_number: payable.invoice_number,
+    category: payable.category,
+    category_detail: payable.category_detail,
+    description: payable.description,
+    issue_date: payable.issue_date,
+    due_date: payable.due_date,
+    notes: payable.notes,
+    cost_center: payable.cost_center_id ? centersById.get(payable.cost_center_id) ?? null : null,
+  }]));
   const requesterIds = [...new Set(approvalRequests.map((approval) => approval.requested_by).filter((id): id is string => Boolean(id)))];
   const requesterNames = new Map<string, string>();
 
@@ -86,12 +114,17 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const enrichedRequests = approvalRequests.map((approval) => ({
-    ...approval,
-    requested_by_name: approval.requested_by
-      ? requesterNames.get(approval.requested_by) ?? metadataRequesterName(approval.metadata) ?? "Nombre no registrado"
-      : "Sistema",
-  }));
+  const enrichedRequests = approvalRequests.map((approval) => {
+    const directPayable = approval.metadata?.kind === "direct_payable" ? directPayablesById.get(approval.target_id) ?? null : null;
+    return {
+      ...approval,
+      description: approval.description || directPayable?.description || null,
+      metadata: directPayable ? { ...approval.metadata, direct_payable: directPayable } : approval.metadata,
+      requested_by_name: approval.requested_by
+        ? requesterNames.get(approval.requested_by) ?? metadataRequesterName(approval.metadata) ?? "Nombre no registrado"
+        : "Sistema",
+    };
+  });
 
   return NextResponse.json({ requests: enrichedRequests, policies: policies.data ?? [], membership: context.membership });
 }

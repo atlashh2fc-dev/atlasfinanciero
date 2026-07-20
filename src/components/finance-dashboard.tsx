@@ -30,6 +30,7 @@ import { CustomerPurchaseOrders } from "@/components/customer-purchase-orders";
 import { CustomerProfiles } from "@/components/customer-profiles";
 import { ReportsDashboard } from "@/components/reports-dashboard";
 import { CostCenterManagement } from "@/components/cost-center-management";
+import { CostCenterImputationInbox } from "@/components/cost-center-imputation-inbox";
 import { ExpensesDashboard } from "@/components/expenses-dashboard";
 import { PreinvoiceWorkbench } from "@/components/preinvoice-workbench";
 import { TreasuryDashboard } from "@/components/treasury-dashboard";
@@ -96,6 +97,8 @@ const modulePreviews: Record<Module, string> = {
   Remuneraciones: "Costo laboral y dotación sincronizados desde PeopleWork.",
   "Centros de costo":
     "Estructura de imputación, personas y clientes que financian cada unidad o proyecto.",
+  "Imputaciones pendientes":
+    "Bandeja única para asignar centro de costo a ingresos, gastos, presupuesto y compromisos.",
   Aprobaciones:
     "Bandeja de decisiones para prefacturas, pagos y órdenes de compra con trazabilidad.",
   "Cierre financiero":
@@ -121,6 +124,7 @@ type Module =
   | "Tesorería"
   | "Remuneraciones"
   | "Centros de costo"
+  | "Imputaciones pendientes"
   | "Aprobaciones"
   | "Cierre financiero"
   | "Reportes"
@@ -145,7 +149,7 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
   },
   {
     label: "PLANIFICACIÓN Y ANÁLISIS",
-    items: ["Proyecciones", "Planificación financiera", "Centros de costo", "Reportes"],
+    items: ["Proyecciones", "Planificación financiera", "Centros de costo", "Imputaciones pendientes", "Reportes"],
   },
   {
     label: "PERSONAS Y CONTROL",
@@ -305,6 +309,7 @@ function EmptyModule({
     | "Tesorería"
     | "Remuneraciones"
     | "Centros de costo"
+    | "Imputaciones pendientes"
     | "Reportes"
     | "Aprobaciones"
     | "Cierre financiero"
@@ -2068,6 +2073,7 @@ export function FinanceDashboard() {
           (item !== "Administración" && item !== "Bitácora de actividad" ||
             access?.membership.role === "administrator") &&
           (item !== "Centros de costo" || canManageCostCenters) &&
+          (item !== "Imputaciones pendientes" || canManageCostCenters) &&
           (item !== "Cuentas por pagar" || canReadExpenses) &&
           (item !== "Compras y lotes de pago" || canReadProcurement) &&
           (item !== "Tesorería" || canReadExpenses) &&
@@ -2179,6 +2185,8 @@ export function FinanceDashboard() {
                                       ? "◫"
                                       : item === "Centros de costo"
                                         ? "⊞"
+                                        : item === "Imputaciones pendientes"
+                                          ? "◌"
                                         : item === "Aprobaciones"
                                           ? "✓"
                                           : item === "Cierre financiero"
@@ -2314,6 +2322,12 @@ export function FinanceDashboard() {
         ) : activeModule === "Centros de costo" ? (
           canManageCostCenters ? (
             <CostCenterManagement
+              organizationId={access?.membership.organizationId ?? null}
+            />
+          ) : null
+        ) : activeModule === "Imputaciones pendientes" ? (
+          canManageCostCenters ? (
+            <CostCenterImputationInbox
               organizationId={access?.membership.organizationId ?? null}
             />
           ) : null

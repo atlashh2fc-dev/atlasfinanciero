@@ -27,14 +27,15 @@ export async function GET(request: NextRequest) {
   const yearParam = Number(request.nextUrl.searchParams.get("year"));
   const year = Number.isInteger(yearParam) && yearParam >= 2000 && yearParam <= new Date().getFullYear() ? yearParam : new Date().getFullYear();
   const month = `${year}-01-01`;
-  const [integrationResult, peopleResult, contractsResult, metricsResult, payrollResult, documentsResult, receivedExpensesResult, receivablesResult, centersResult, customerLinksResult, purchaseOrdersResult, purchaseOrderBillingsResult, recurrenceRulesResult, activePlanResult] = await Promise.all([
+  const [integrationResult, peopleResult, contractsResult, metricsResult, payrollResult, documentsResult, receivedExpensesResult, directPayablesResult, receivablesResult, centersResult, customerLinksResult, purchaseOrdersResult, purchaseOrderBillingsResult, recurrenceRulesResult, activePlanResult] = await Promise.all([
     supabase.from("payroll_integrations").select("is_active, last_sync_at, last_sync_status, last_period_month").eq("organization_id", organizationId).eq("provider", "peoplework").maybeSingle(),
     supabase.from("payroll_people").select("id, full_name, national_identification, is_active, management_name, job_title").eq("organization_id", organizationId).eq("provider", "peoplework").order("full_name"),
     supabase.from("payroll_contracts").select("person_id, contract_status, contract_type, start_date, end_date, monthly_gross_salary, currency_code, weekly_hours, payment_schedule, management_name, job_title, cost_centers").eq("organization_id", organizationId).eq("provider", "peoplework"),
     supabase.from("payroll_person_period_metrics").select("person_id, absence_days, vacation_days").eq("organization_id", organizationId).eq("period_month", month),
     supabase.from("payroll_cost_lines").select("period_month, amount, cost_center_code").eq("organization_id", organizationId).gte("period_month", `${year}-01-01`).lte("period_month", `${year}-12-01`),
-    supabase.from("issued_documents").select("issue_date, document_type, net_amount, counterparty_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
-    supabase.from("received_documents").select("issue_date, document_type, net_amount").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
+    supabase.from("issued_documents").select("issue_date, document_type, net_amount, counterparty_id, cost_center_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
+    supabase.from("received_documents").select("issue_date, document_type, net_amount, cost_center_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
+    supabase.from("direct_payables").select("issue_date, total_amount, cost_center_id, currency_code").eq("organization_id", organizationId).in("status", ["approved", "paid"]).is("asset_financing_installment_id", null).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
     supabase.from("issued_documents").select("issue_date, document_type, net_amount, payment_status, due_date, payment_date").eq("organization_id", organizationId),
     supabase.from("cost_centers").select("id, code, name").eq("organization_id", organizationId).eq("is_active", true),
     supabase.from("cost_center_customer_links").select("cost_center_id, counterparty_id, allocation_percentage, effective_from, effective_to").eq("organization_id", organizationId),
@@ -43,7 +44,7 @@ export async function GET(request: NextRequest) {
     supabase.from("billing_recurrence_rules").select("expected_net_amount").eq("organization_id", organizationId).eq("status", "active"),
     supabase.from("financial_plan_versions").select("id, name").eq("organization_id", organizationId).eq("fiscal_year", year).eq("status", "active").maybeSingle(),
   ]);
-  if (integrationResult.error || peopleResult.error || contractsResult.error || metricsResult.error || payrollResult.error || documentsResult.error || receivedExpensesResult.error || receivablesResult.error || centersResult.error || customerLinksResult.error || purchaseOrdersResult.error || purchaseOrderBillingsResult.error || recurrenceRulesResult.error || activePlanResult.error) return NextResponse.json({ error: "unable_to_load_peoplework_summary" }, { status: 500 });
+  if (integrationResult.error || peopleResult.error || contractsResult.error || metricsResult.error || payrollResult.error || documentsResult.error || receivedExpensesResult.error || directPayablesResult.error || receivablesResult.error || centersResult.error || customerLinksResult.error || purchaseOrdersResult.error || purchaseOrderBillingsResult.error || recurrenceRulesResult.error || activePlanResult.error) return NextResponse.json({ error: "unable_to_load_peoplework_summary" }, { status: 500 });
   const activePlan = activePlanResult.data;
   const budgetLinesResult = activePlan
     ? await supabase.from("financial_budget_lines").select("period_month, kind, amount").eq("organization_id", organizationId).eq("plan_version_id", activePlan.id)
@@ -119,6 +120,11 @@ export async function GET(request: NextRequest) {
     const key = document.issue_date.slice(0, 7);
     expenseByMonth.set(key, (expenseByMonth.get(key) ?? 0) + amount);
   }
+  for (const payable of directPayablesResult.data ?? []) {
+    if (!payable.issue_date || payable.currency_code !== "CLP") continue;
+    const key = payable.issue_date.slice(0, 7);
+    expenseByMonth.set(key, (expenseByMonth.get(key) ?? 0) + asNumber(payable.total_amount));
+  }
   const planByPeriod = new Map<string, { revenue: number; expense: number }>();
   for (const line of budgetLinesResult.data ?? []) {
     const period = line.period_month.slice(0, 7);
@@ -142,8 +148,8 @@ export async function GET(request: NextRequest) {
     return { period, revenue, expenses, payroll, operatingResultBeforeOtherExpenses: revenue - payroll - expenses, payrollAvailable: payrollByMonth.has(period), budgetRevenue, budgetExpense, budgetResult: budgetRevenue === null || budgetExpense === null ? null : budgetRevenue - budgetExpense, forecastRevenue, forecastExpense, forecastResult, isClosedPeriod };
   });
   const centerById = new Map((centersResult.data ?? []).map((center) => [center.id, center]));
-  const centerPerformance = new Map<string, { code: string; name: string; revenue: number; payroll: number }>();
-  for (const center of centersResult.data ?? []) centerPerformance.set(center.id, { code: center.code, name: center.name, revenue: 0, payroll: 0 });
+  const centerPerformance = new Map<string, { code: string; name: string; revenue: number; payroll: number; expenses: number }>();
+  for (const center of centersResult.data ?? []) centerPerformance.set(center.id, { code: center.code, name: center.name, revenue: 0, payroll: 0, expenses: 0 });
   const centerByCode = new Map((centersResult.data ?? []).map((center) => [center.code, center.id]));
   for (const line of payrollResult.data ?? []) {
     if (!line.cost_center_code) continue;
@@ -152,15 +158,34 @@ export async function GET(request: NextRequest) {
     if (target) target.payroll += asNumber(line.amount);
   }
   for (const document of documentsResult.data ?? []) {
-    if (!document.issue_date || !document.counterparty_id) continue;
+    if (!document.issue_date) continue;
     const type = normalizedType(document.document_type);
     if (type.includes("orden de compra")) continue;
     const net = type.includes("nota de credito") ? -Math.abs(asNumber(document.net_amount)) : asNumber(document.net_amount);
+    if (document.cost_center_id) {
+      const target = centerPerformance.get(document.cost_center_id);
+      if (target) target.revenue += net;
+      continue;
+    }
+    if (!document.counterparty_id) continue;
     for (const link of customerLinksResult.data ?? []) {
       if (link.counterparty_id !== document.counterparty_id || link.effective_from > document.issue_date || (link.effective_to && link.effective_to < document.issue_date)) continue;
       const target = centerPerformance.get(link.cost_center_id);
       if (target) target.revenue += net * asNumber(link.allocation_percentage) / 100;
     }
+  }
+  for (const document of receivedExpensesResult.data ?? []) {
+    if (!document.issue_date || !document.cost_center_id) continue;
+    const type = normalizedType(document.document_type);
+    if (type.includes("orden de compra")) continue;
+    const net = type.includes("nota de credito") ? -Math.abs(asNumber(document.net_amount)) : asNumber(document.net_amount);
+    const target = centerPerformance.get(document.cost_center_id);
+    if (target) target.expenses += net;
+  }
+  for (const payable of directPayablesResult.data ?? []) {
+    if (!payable.cost_center_id || payable.currency_code !== "CLP") continue;
+    const target = centerPerformance.get(payable.cost_center_id);
+    if (target) target.expenses += asNumber(payable.total_amount);
   }
   const today = new Date().toISOString().slice(0, 10);
   const inSevenDays = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
@@ -186,7 +211,7 @@ export async function GET(request: NextRequest) {
     persons,
     incomeStatement,
     activePlan: activePlan ? { id: activePlan.id, name: activePlan.name } : null,
-    centerPerformance: [...centerPerformance.values()].map((item) => ({ ...item, result: item.revenue - item.payroll })).sort((a, b) => b.revenue - a.revenue),
+    centerPerformance: [...centerPerformance.values()].map((item) => ({ ...item, result: item.revenue - item.payroll - item.expenses })).sort((a, b) => b.revenue - a.revenue),
     commercial: { totalReceivable, overdueReceivable, dueNextSevenDays, pendingDocuments: receivables.length, averageCollectionDays, openPurchaseOrderBalance, recurringMonthlyCommitment },
   });
 }
