@@ -215,6 +215,16 @@ contract("Continuidad Mercado Público -> oportunidad", () => {
     /body\?\.action\s*===\s*["']save_opportunity["'][\s\S]{0,4000}(?:commercial_opportunities|opportunities)/,
     "La API no persiste la acción save_opportunity en el pipeline comercial.",
   );
+  matches(
+    components,
+    /selectedTenderCode[\s\S]{0,4500}\/api\/mercado-publico\/intelligence/,
+    "El modal del pipeline no consulta el expediente canónico de Mercado Público.",
+  );
+  for (const label of ["Análisis", "Archivos", "Historial"]) {
+    has(components, label, `El modal de oportunidad no expone la pestaña \`${label}\`.`);
+  }
+  has(components, "document.signedUrl || document.source_url", "Los archivos del expediente no conservan la apertura de copia privada o fuente oficial.");
+  has(components, "No hay un adjudicatario publicado ni un proceso histórico suficientemente similar", "El historial vacío debe explicarse sin inventar antecedentes.");
 });
 
 // 5. Accesibilidad mínima para teclado/lectores de pantalla.

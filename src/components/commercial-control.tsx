@@ -9,6 +9,9 @@ type Contract = { id: string; counterparty_id: string; opportunity_id: string | 
 type Project = { id: string; counterparty_id: string; contract_id: string | null; opportunity_id: string | null; cost_center_id: string | null; project_code: string; name: string; status: ProjectStatus; revenue_budget: number | string; expense_budget: number | string; currency_code: Currency; starts_on: string | null; ends_on: string | null; notes: string | null };
 type Activity = { id: string; opportunity_id: string; activity_type: ActivityType; subject: string; notes: string | null; due_on: string | null; completed_on: string | null; created_at: string };
 type Payload = { customers: Customer[]; centers: CostCenter[]; opportunities: Opportunity[]; contracts: Contract[]; projects: Project[]; activities: Activity[] };
+type DossierDocument = { id: string; category: string; title: string; source_url: string; signedUrl: string | null; mime_type: string | null; size_bytes: number | null; download_status: string; error_text: string | null };
+type DossierAward = { id: string; related_tender_code: string; relationship: "current_process" | "probable_predecessor"; similarity_score: number | null; supplier_name: string | null; supplier_tax_id: string | null; awarded_amount: number | null; awarded_quantity: number | null; currency_code: string | null; award_date: string | null; award_document_url: string | null; source_url: string };
+type PublicMarketDossier = { tender: { external_code: string; executive_summary: Record<string, unknown>; enrichment_status: string; fit_score: number; fit_tier: "green" | "yellow" | "red"; capability_matches: string[]; fit_reasons: string[]; fit_gaps: string[]; source_url: string } | null; documents: DossierDocument[]; awards: DossierAward[] };
 type Stage = "lead" | "qualified" | "proposal" | "negotiation" | "won" | "lost";
 type ContractStatus = "draft" | "active" | "expiring" | "closed" | "cancelled";
 type ProjectStatus = "planning" | "active" | "on_hold" | "completed" | "cancelled";
@@ -16,6 +19,7 @@ type ActivityType = "call" | "meeting" | "email" | "task" | "note";
 type Currency = "CLP" | "UF" | "USD";
 type Frequency = "monthly" | "quarterly" | "annual" | "one_time";
 type CommercialView = "pipeline" | "contracts" | "projects";
+type OpportunityDetailTab = "management" | "analysis" | "documents" | "history";
 
 const stages: Array<{ key: Stage; label: string }> = [{ key: "lead", label: "Prospecto" }, { key: "qualified", label: "Calificada" }, { key: "proposal", label: "Propuesta" }, { key: "negotiation", label: "Negociación" }, { key: "won", label: "Ganada" }, { key: "lost", label: "Perdida" }];
 const stageTone: Record<Stage, string> = { lead: "neutral", qualified: "info", proposal: "violet", negotiation: "warning", won: "success", lost: "danger" };
@@ -34,6 +38,35 @@ function displayAmount(amount: number | string, currency: Currency) {
   return currency === "CLP" ? money.format(numeric) : `${currency} ${new Intl.NumberFormat("es-CL", { maximumFractionDigits: currency === "UF" ? 2 : 0 }).format(numeric)}`;
 }
 
+function publicMarketCode(opportunity: Opportunity | null) {
+  if (!opportunity?.source?.toLocaleLowerCase("es").includes("mercado público")) return null;
+  return opportunity.source.match(/Mercado P[uú]blico\s*·\s*([A-Z0-9-]{3,40})/i)?.[1]?.toUpperCase() ?? opportunity.title.match(/^([A-Z0-9-]{3,40})\s*·/i)?.[1]?.toUpperCase() ?? null;
+}
+
+function summaryText(summary: Record<string, unknown>, key: string, fallback = "No informado") {
+  const value = summary[key];
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function summaryList(summary: Record<string, unknown>, key: string) {
+  const value = summary[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())) : [];
+}
+
+function evaluationCriteria(summary: Record<string, unknown>) {
+  const value = summary.evaluationCriteria;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    return typeof record.name === "string" ? [{ name: record.name, weight: typeof record.weight === "string" ? record.weight : null }] : [];
+  });
+}
+
+function categoryLabel(value: string) { return value === "administrative" ? "Administrativo" : value === "technical" ? "Técnico" : value === "economic" ? "Económico" : value === "award" ? "Adjudicación" : "Otro"; }
+function humanBytes(value: number | null) { if (!value) return "—"; if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KB`; return `${(value / 1024 / 1024).toFixed(1)} MB`; }
+function dossierMoney(value: number | null, currencyCode: string | null) { if (value === null) return "Monto no informado"; return currencyCode === "CLP" || !currencyCode ? money.format(value) : `${currencyCode} ${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 2 }).format(value)}`; }
+
 export function CommercialControl({ organizationId, canManage, initialView = "pipeline", lockedView = false, allowedViews }: { organizationId: string | null; canManage: boolean; initialView?: CommercialView; lockedView?: boolean; allowedViews?: CommercialView[] }) {
   const [data, setData] = useState<Payload | null>(null);
   const [message, setMessage] = useState("");
@@ -46,6 +79,9 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
   const [projectDraft, setProjectDraft] = useState<(Omit<Project, "id"> & { id?: string }) | null>(null);
   const [activityDraft, setActivityDraft] = useState<(Omit<Activity, "id" | "created_at"> & { id?: string }) | null>(null);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState("");
+  const [opportunityDetailTab, setOpportunityDetailTab] = useState<OpportunityDetailTab>("management");
+  const [opportunityDossier, setOpportunityDossier] = useState<PublicMarketDossier | null>(null);
+  const [dossierLoading, setDossierLoading] = useState(false);
   const [pipelineSearch, setPipelineSearch] = useState("");
   const [draggedOpportunityId, setDraggedOpportunityId] = useState("");
   const [dragOverStage, setDragOverStage] = useState<Stage | null>(null);
@@ -65,7 +101,11 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
 
   const customers = useMemo(() => new Map((data?.customers ?? []).map((customer) => [customer.id, customer])), [data]);
   const selectedOpportunity = data?.opportunities.find((item) => item.id === selectedOpportunityId) ?? null;
+  const selectedTenderCode = publicMarketCode(selectedOpportunity);
   const selectedActivities = useMemo(() => (data?.activities ?? []).filter((item) => item.opportunity_id === selectedOpportunityId), [data, selectedOpportunityId]);
+  const opportunityExecutive = opportunityDossier?.tender?.executive_summary ?? {};
+  const opportunityCriteria = evaluationCriteria(opportunityExecutive);
+  const opportunityFines = summaryList(opportunityExecutive, "fines");
   const dueActivities = useMemo(() => (data?.activities ?? []).filter((item) => !item.completed_on && item.due_on && item.due_on <= new Date().toISOString().slice(0, 10)), [data]);
   const weightedPipeline = useMemo(() => (data?.opportunities ?? []).filter((item) => !["won", "lost"].includes(item.stage) && item.currency_code === "CLP").reduce<number>((total, item) => total + Number(item.expected_amount) * Number(item.probability) / 100, 0), [data]);
   const activeContracts = (data?.contracts ?? []).filter((item) => ["active", "expiring"].includes(item.status));
@@ -76,6 +116,21 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
       .filter((item) => !needle || [item.title, item.source, item.description, customerName(customers.get(item.counterparty_id))].some((value) => value?.toLocaleLowerCase("es").includes(needle)))
       .sort((a, b) => (a.next_action_on || a.expected_close_on || "9999").localeCompare(b.next_action_on || b.expected_close_on || "9999"));
   }, [customers, data, pipelineSearch]);
+
+  useEffect(() => {
+    setOpportunityDetailTab("management");
+    setOpportunityDossier(null);
+    if (!organizationId || !selectedTenderCode) { setDossierLoading(false); return; }
+    const controller = new AbortController();
+    setDossierLoading(true);
+    const params = new URLSearchParams({ organizationId, code: selectedTenderCode });
+    void fetch(`/api/mercado-publico/intelligence?${params.toString()}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => response.ok ? response.json() as Promise<PublicMarketDossier> : null)
+      .then((payload) => { if (payload) setOpportunityDossier(payload); })
+      .catch((error: unknown) => { if (!(error instanceof DOMException && error.name === "AbortError")) setOpportunityDossier(null); })
+      .finally(() => { if (!controller.signal.aborted) setDossierLoading(false); });
+    return () => controller.abort();
+  }, [organizationId, selectedOpportunityId, selectedTenderCode]);
 
   async function save(action: string, record: Record<string, unknown>, onSuccess: () => void, successMessage: string) {
     if (!organizationId) return;
@@ -228,8 +283,23 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
           <article><span>Cierre estimado</span><strong>{date(selectedOpportunity.expected_close_on)}</strong></article>
           <article><span>Próxima acción</span><strong>{date(selectedOpportunity.next_action_on)}</strong></article>
         </div>
-        <div className="crm-opportunity-detail-head"><div><span className={`crm-stage-badge is-${stageTone[selectedOpportunity.stage]}`}>{stages.find((stage) => stage.key === selectedOpportunity.stage)?.label}</span><p>{selectedOpportunity.description || "Sin descripción comercial adicional."}</p>{selectedOpportunity.source && <small>Origen: {selectedOpportunity.source}</small>}</div>{canManage && <div className="table-actions"><button type="button" className="secondary-button" onClick={() => setOpportunityDraft({ ...selectedOpportunity })}>Editar</button><button type="button" className="primary-button" onClick={() => setActivityDraft(blankActivity(selectedOpportunity.id))}>Nueva actividad</button></div>}</div>
-        <section className="crm-activity-section"><div className="section-title"><h3>Actividad y próximos pasos</h3><span>{selectedActivities.length}</span></div><div className="control-list">{selectedActivities.length ? selectedActivities.map((activity) => <div key={activity.id}><div><strong>{activity.subject}</strong><small>{activity.activity_type} · vencimiento {date(activity.due_on)} · {activity.completed_on ? `completada ${date(activity.completed_on)}` : "pendiente"}</small>{activity.notes && <small>{activity.notes}</small>}</div>{canManage && !activity.completed_on && <button type="button" className="text-button" onClick={() => setActivityDraft({ ...activity, completed_on: new Date().toISOString().slice(0, 10) })}>Completar</button>}</div>) : <p className="control-empty">Sin actividades. Registra una próxima acción para que la oportunidad no quede sin gestión.</p>}</div></section>
+        {selectedTenderCode && <nav className="public-market-detail-tabs crm-opportunity-detail-tabs" aria-label="Expediente de la oportunidad">
+          {(["management", "analysis", "documents", "history"] as OpportunityDetailTab[]).map((tab) => <button key={tab} type="button" className={opportunityDetailTab === tab ? "is-active" : ""} onClick={() => setOpportunityDetailTab(tab)}>{tab === "management" ? "Gestión" : tab === "analysis" ? "Análisis" : tab === "documents" ? `Archivos (${opportunityDossier?.documents.length ?? 0})` : `Historial (${opportunityDossier?.awards.length ?? 0})`}</button>)}
+        </nav>}
+        {opportunityDetailTab === "management" && <div className="crm-opportunity-tab-content">
+          <div className="crm-opportunity-detail-head"><div><span className={`crm-stage-badge is-${stageTone[selectedOpportunity.stage]}`}>{stages.find((stage) => stage.key === selectedOpportunity.stage)?.label}</span><p>{selectedOpportunity.description || "Sin descripción comercial adicional."}</p>{selectedOpportunity.source && <small>Origen: {selectedOpportunity.source}</small>}</div>{canManage && <div className="table-actions"><button type="button" className="secondary-button" onClick={() => setOpportunityDraft({ ...selectedOpportunity })}>Editar</button><button type="button" className="primary-button" onClick={() => setActivityDraft(blankActivity(selectedOpportunity.id))}>Nueva actividad</button></div>}</div>
+          <section className="crm-activity-section"><div className="section-title"><h3>Actividad y próximos pasos</h3><span>{selectedActivities.length}</span></div><div className="control-list">{selectedActivities.length ? selectedActivities.map((activity) => <div key={activity.id}><div><strong>{activity.subject}</strong><small>{activity.activity_type} · vencimiento {date(activity.due_on)} · {activity.completed_on ? `completada ${date(activity.completed_on)}` : "pendiente"}</small>{activity.notes && <small>{activity.notes}</small>}</div>{canManage && !activity.completed_on && <button type="button" className="text-button" onClick={() => setActivityDraft({ ...activity, completed_on: new Date().toISOString().slice(0, 10) })}>Completar</button>}</div>) : <p className="control-empty">Sin actividades. Registra una próxima acción para que la oportunidad no quede sin gestión.</p>}</div></section>
+        </div>}
+        {selectedTenderCode && opportunityDetailTab !== "management" && dossierLoading && <p className="billing-empty crm-dossier-loading">Cargando análisis y expediente oficial…</p>}
+        {selectedTenderCode && opportunityDetailTab !== "management" && !dossierLoading && !opportunityDossier?.tender && <section className="crm-dossier-empty"><strong>Expediente aún no disponible</strong><p>La oportunidad está vinculada a Mercado Público, pero no se encontró su captura documental. Actualízala desde Mercado Público para preparar el análisis y los anexos.</p></section>}
+        {opportunityDetailTab === "analysis" && opportunityDossier?.tender && <div className="public-market-tab-content crm-opportunity-tab-content">
+          <div className="crm-dossier-heading"><div><span className="panel-label">EVALUACIÓN GEIMSER</span><h3>Resumen ejecutivo y condiciones críticas</h3></div><span className={`public-market-fit is-${opportunityDossier.tender.fit_tier}`}><i />{opportunityDossier.tender.fit_score}/100 · {opportunityDossier.tender.fit_tier === "green" ? "Alta afinidad" : opportunityDossier.tender.fit_tier === "yellow" ? "Revisar" : "Baja afinidad"}</span></div>
+          <section className="public-market-executive-grid"><article><span className="panel-label">DECISIÓN COMERCIAL</span><h3>{summaryText(opportunityExecutive, "objective", selectedOpportunity.description || selectedOpportunity.title)}</h3><h4>Por qué encaja</h4><ul>{opportunityDossier.tender.fit_reasons.length ? opportunityDossier.tender.fit_reasons.map((reason) => <li key={reason}>{reason}</li>) : <li>Revisión comercial requerida.</li>}</ul><h4>Brechas y riesgos</h4><ul>{opportunityDossier.tender.fit_gaps.length ? opportunityDossier.tender.fit_gaps.map((gap) => <li key={gap}>{gap}</li>) : <li>Sin brechas automáticas detectadas.</li>}</ul></article><article><span className="panel-label">CONDICIONES CRÍTICAS</span><dl><div><dt>Presupuesto</dt><dd>{summaryText(opportunityExecutive, "budget", displayAmount(selectedOpportunity.expected_amount, selectedOpportunity.currency_code))}</dd></div><div><dt>Duración</dt><dd>{summaryText(opportunityExecutive, "contractDuration")}</dd></div><div><dt>Pago</dt><dd>{[summaryText(opportunityExecutive, "paymentTerms", ""), summaryText(opportunityExecutive, "paymentMethod", "")].filter(Boolean).join(" · ") || "No informado"}</dd></div><div><dt>Garantías</dt><dd>{summaryText(opportunityExecutive, "guarantees", "No informadas en la ficha")}</dd></div><div><dt>Renovación</dt><dd>{summaryText(opportunityExecutive, "renewable")}</dd></div><div><dt>Subcontratación</dt><dd>{summaryText(opportunityExecutive, "subcontracting")}</dd></div></dl></article></section>
+          {opportunityCriteria.length > 0 && <section className="public-market-criteria"><div><span className="panel-label">CRITERIOS DE EVALUACIÓN</span><h3>Cómo se define la adjudicación</h3></div><div>{opportunityCriteria.map((criterion, index) => <span key={`${criterion.name}-${index}`}><strong>{criterion.weight || "—"}</strong>{criterion.name}</span>)}</div></section>}
+          {opportunityFines.length > 0 && <section className="public-market-risk-note"><span className="panel-label">MULTAS Y SANCIONES DETECTADAS</span>{opportunityFines.map((fine, index) => <p key={index}>{fine}</p>)}</section>}
+        </div>}
+        {opportunityDetailTab === "documents" && opportunityDossier?.tender && <div className="public-market-tab-content crm-opportunity-tab-content"><section className="public-market-file-header"><div><span className="panel-label">EXPEDIENTE DOCUMENTAL</span><h3>Archivos vinculados a esta oportunidad</h3><p>Estado: {opportunityDossier.tender.enrichment_status}. Las copias privadas se abren mediante un enlace temporal.</p></div></section><div className="public-market-files">{opportunityDossier.documents.map((document) => <article key={document.id}><span className={`public-market-file-icon is-${document.category}`}>DOC</span><div><strong>{document.title}</strong><small>{categoryLabel(document.category)} · {humanBytes(document.size_bytes)} · {document.download_status === "downloaded" ? "Copia segura en Atlas" : document.download_status === "failed" ? "Descarga pendiente" : "Fuente oficial"}</small>{document.error_text && <small>{document.error_text}</small>}</div><a className="text-button" href={document.signedUrl || document.source_url} target="_blank" rel="noreferrer">{document.signedUrl ? "Abrir copia" : "Abrir fuente"}</a></article>)}{!opportunityDossier.documents.length && <p className="control-empty">La ficha oficial no publicó anexos descargables. Se conserva su fuente oficial.</p>}</div></div>}
+        {opportunityDetailTab === "history" && opportunityDossier?.tender && <div className="public-market-tab-content crm-opportunity-tab-content"><section className="public-market-file-header"><div><span className="panel-label">INTELIGENCIA DE ADJUDICACIÓN</span><h3>Adjudicatarios y procesos comparables</h3><p>Un “predecesor probable” es una coincidencia por organismo y objeto; debe validarse antes de usarla comercialmente.</p></div></section><div className="public-market-history">{opportunityDossier.awards.map((award) => <article key={award.id}><div><span className={`status ${award.relationship === "current_process" ? "paid" : "pending"}`}>{award.relationship === "current_process" ? "Proceso actual" : `Predecesor probable · ${award.similarity_score ?? 0}%`}</span><h3>{award.supplier_name || "Proveedor no publicado"}</h3><p>{award.supplier_tax_id || "RUT no informado"} · licitación {award.related_tender_code}</p></div><div><strong>{dossierMoney(award.awarded_amount, award.currency_code)}</strong><small>{award.awarded_quantity !== null ? `Cantidad ${new Intl.NumberFormat("es-CL").format(award.awarded_quantity)}` : "Cantidad no informada"} · {date(award.award_date)}</small><a className="text-button" href={award.award_document_url || award.source_url} target="_blank" rel="noreferrer">Ver fuente oficial</a></div></article>)}{!opportunityDossier.awards.length && <p className="control-empty">No hay un adjudicatario publicado ni un proceso histórico suficientemente similar en la fuente oficial.</p>}</div></div>}
       </div>
     </CommercialModal>}
     {opportunityDraft && <CommercialModal title={opportunityDraft.id ? "Editar oportunidad" : "Nueva oportunidad"} onClose={() => setOpportunityDraft(null)}><form onSubmit={submitOpportunity}><div className="form-grid"><label>Cliente *<select value={opportunityDraft.counterparty_id} onChange={(event) => setOpportunityDraft((current) => current ? { ...current, counterparty_id: event.target.value } : current)} required><option value="">Selecciona cliente</option>{data?.customers.map((customer) => <option key={customer.id} value={customer.id}>{customerName(customer)}</option>)}</select></label><label>Oportunidad *<input value={opportunityDraft.title} onChange={(event) => setOpportunityDraft((current) => current ? { ...current, title: event.target.value } : current)} required /></label><label>Etapa<select value={opportunityDraft.stage} onChange={(event) => setOpportunityDraft((current) => current ? { ...current, stage: event.target.value as Stage } : current)}>{stages.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></label><label>Monto estimado<input min="0" step="any" type="number" value={asText(opportunityDraft.expected_amount)} onChange={(event) => setOpportunityDraft((current) => current ? { ...current, expected_amount: event.target.value } : current)} /></label><label>Moneda<select value={opportunityDraft.currency_code} onChange={(event) => setOpportunityDraft((current) => current ? { ...current, currency_code: event.target.value as Currency } : current)}><option value="CLP">CLP</option><option value="UF">UF</option><option value="USD">USD</option></select></label><label>Probabilidad (%)<input min="0" max="100" type="number" value={asText(opportunityDraft.probability)} onChange={(event) => setOpportunityDraft((current) => current ? { ...current, probability: event.target.value } : current)} /></label><label>Cierre estimado<input type="date" value={opportunityDraft.expected_close_on || ""} onChange={(event) => setOpportunityDraft((current) => current ? { ...current, expected_close_on: event.target.value } : current)} /></label><label>Próxima acción<input type="date" value={opportunityDraft.next_action_on || ""} onChange={(event) => setOpportunityDraft((current) => current ? { ...current, next_action_on: event.target.value } : current)} /></label><label>Origen<input value={opportunityDraft.source || ""} onChange={(event) => setOpportunityDraft((current) => current ? { ...current, source: event.target.value } : current)} /></label>{opportunityDraft.stage === "lost" && <label>Motivo pérdida *<input value={opportunityDraft.lost_reason || ""} onChange={(event) => setOpportunityDraft((current) => current ? { ...current, lost_reason: event.target.value } : current)} required /></label>}</div><label>Detalle<textarea value={opportunityDraft.description || ""} onChange={(event) => setOpportunityDraft((current) => current ? { ...current, description: event.target.value } : current)} /></label><ModalActions saving={saving} /></form></CommercialModal>}

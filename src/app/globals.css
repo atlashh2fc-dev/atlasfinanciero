@@ -2851,6 +2851,33 @@ td small {
 .crm-stage-badge.is-danger { color: #a94f59; background: #ffebed; }
 .crm-activity-section { padding: 15px; border: 1px solid #e2e7f0; border-radius: 10px; background: rgba(255,255,255,.65); }
 .crm-activity-section .control-list { max-height: 250px; overflow-y: auto; }
+.crm-opportunity-detail-tabs { padding-top: 0; }
+.crm-opportunity-tab-content {
+  display: grid;
+  gap: 17px;
+  max-height: min(455px, 52vh);
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.crm-dossier-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.crm-dossier-heading h3 { margin: 6px 0 0; color: #2d3d58; font-size: 15px; }
+.crm-dossier-loading { min-height: 180px; }
+.crm-dossier-empty {
+  padding: 26px;
+  border: 1px dashed #cfd7e6;
+  border-radius: 11px;
+  color: #65738a;
+  background: rgba(250, 251, 255, .72);
+  text-align: center;
+}
+.crm-dossier-empty strong { display: block; color: #34445f; font-size: 13px; }
+.crm-dossier-empty p { max-width: 620px; margin: 8px auto 0; font-size: 10px; line-height: 1.55; }
 @media (max-width: 1100px) {
   .crm-modal-backdrop { left: 0; }
   .customer-workspace-overview-grid { grid-template-columns: 1fr; }
@@ -2865,7 +2892,8 @@ td small {
   .crm-kpis,
   .crm-opportunity-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .crm-pipeline-toolbar,
-  .crm-opportunity-detail-head { align-items: stretch; flex-direction: column; }
+  .crm-opportunity-detail-head,
+  .crm-dossier-heading { align-items: stretch; flex-direction: column; }
   .crm-pipeline-toolbar label { min-width: 0; width: 100%; }
   .crm-kanban { height: min(570px, 65vh); grid-auto-columns: minmax(235px, 82vw); }
   .crm-kanban-column { min-width: 235px; }
