@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { type DragEvent, type FormEvent, useEffect, useMemo, useState } from "react";
 
 type Customer = { id: string; legal_name: string; trade_name: string | null; tax_id: string | null };
 type CostCenter = { id: string; code: string; name: string };
@@ -47,6 +47,8 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
   const [activityDraft, setActivityDraft] = useState<(Omit<Activity, "id" | "created_at"> & { id?: string }) | null>(null);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState("");
   const [pipelineSearch, setPipelineSearch] = useState("");
+  const [draggedOpportunityId, setDraggedOpportunityId] = useState("");
+  const [dragOverStage, setDragOverStage] = useState<Stage | null>(null);
 
   async function load() {
     if (!organizationId) { setLoading(false); return; }
@@ -111,6 +113,38 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
     }, () => undefined, `Oportunidad movida a ${stages.find((candidate) => candidate.key === stage)?.label}.`);
   }
 
+  function startOpportunityDrag(event: DragEvent<HTMLElement>, item: Opportunity) {
+    if (!canManage || saving) {
+      event.preventDefault();
+      return;
+    }
+    setDraggedOpportunityId(item.id);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", item.id);
+  }
+
+  function allowOpportunityDrop(event: DragEvent<HTMLElement>, stage: Stage) {
+    if (!canManage || saving) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setDragOverStage(stage);
+  }
+
+  function dropOpportunity(event: DragEvent<HTMLElement>, stage: Stage) {
+    if (!canManage || saving) return;
+    event.preventDefault();
+    const opportunityId = draggedOpportunityId || event.dataTransfer.getData("text/plain");
+    const item = data?.opportunities.find((candidate) => candidate.id === opportunityId);
+    setDraggedOpportunityId("");
+    setDragOverStage(null);
+    if (item && item.stage !== stage) changeOpportunityStage(item, stage);
+  }
+
+  function finishOpportunityDrag() {
+    setDraggedOpportunityId("");
+    setDragOverStage(null);
+  }
+
   return <section className="panel customer-profile-panel crm-workspace">
     <div className="panel-heading crm-workspace-header">
       <div>
@@ -125,7 +159,7 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
         {canManage && view === "projects" && <button type="button" className="primary-button" onClick={() => setProjectDraft(blankProject())}>Nuevo proyecto</button>}
       </div>
     </div>
-    {message && <p className="operation-message">{message}</p>}
+    {message && <p className="operation-message" role="status" aria-live="polite">{message}</p>}
     <section className="kpis crm-kpis">
       {view === "pipeline" ? <>
         <article className="kpi-card"><span>Pipeline ponderado</span><strong>{money.format(weightedPipeline)}</strong><small>Oportunidades CLP abiertas × probabilidad</small></article>
@@ -147,16 +181,30 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
     {loading ? <p className="billing-empty">Cargando gestión comercial…</p> : view === "pipeline" ? <>
       <div className="crm-pipeline-toolbar">
         <label>Buscar en el pipeline<input type="search" value={pipelineSearch} onChange={(event) => setPipelineSearch(event.target.value)} placeholder="Cliente, oportunidad, origen o detalle" /></label>
-        <p><strong>{filteredOpportunities.length}</strong> oportunidad(es) visibles</p>
+        <p>{canManage && <span>Arrastra las tarjetas entre etapas · </span>}<strong>{filteredOpportunities.length}</strong> oportunidad(es) visibles</p>
       </div>
       <div className="crm-kanban" aria-label="Pipeline comercial por etapas">
         {stages.map((stage) => {
           const items = filteredOpportunities.filter((item) => item.stage === stage.key);
           const stageAmount = items.filter((item) => item.currency_code === "CLP").reduce((total, item) => total + Number(item.expected_amount), 0);
-          return <section className={`crm-kanban-column is-${stageTone[stage.key]}`} key={stage.key}>
+          return <section
+            className={`crm-kanban-column is-${stageTone[stage.key]}${dragOverStage === stage.key ? " is-drag-over" : ""}`}
+            key={stage.key}
+            aria-label={`Etapa ${stage.label}: ${items.length} oportunidad(es)`}
+            onDragEnter={(event) => allowOpportunityDrop(event, stage.key)}
+            onDragOver={(event) => allowOpportunityDrop(event, stage.key)}
+            onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOverStage(null); }}
+            onDrop={(event) => dropOpportunity(event, stage.key)}
+          >
             <header><div><span>{stage.label}</span><strong>{items.length}</strong></div><small>{money.format(stageAmount)} CLP</small></header>
             <div className="crm-kanban-cards">
-              {items.map((item) => <article className="crm-opportunity-card" key={item.id}>
+              {items.map((item) => <article
+                className={`crm-opportunity-card${draggedOpportunityId === item.id ? " is-dragging" : ""}`}
+                key={item.id}
+                draggable={canManage && !saving}
+                onDragStart={(event) => startOpportunityDrag(event, item)}
+                onDragEnd={finishOpportunityDrag}
+              >
                 <button type="button" className="crm-opportunity-open" onClick={() => setSelectedOpportunityId(item.id)}>
                   <span className="crm-opportunity-source">{item.source || "Ingreso directo"}</span>
                   <strong>{item.title}</strong>

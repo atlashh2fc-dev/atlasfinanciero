@@ -1546,9 +1546,13 @@ td small {
 .evolution-matrix tfoot td,
 .customer-summary tfoot td {
   background: #1e2c44;
-  color: #dfe8f4;
+  color: #f7faff;
   border-color: #33445e;
   font-weight: 700;
+}
+.evolution-matrix tfoot td > *,
+.customer-summary tfoot td > * {
+  color: #f7faff;
 }
 .evolution-matrix tfoot td:first-child,
 .customer-summary tfoot td:first-child {
@@ -1558,7 +1562,7 @@ td small {
   background: #2a3b58;
 }
 .evolution-matrix tfoot .matrix-value {
-  color: #dfe8f4;
+  color: #f7faff;
 }
 .customer-matrix {
   min-width: 1780px;
@@ -2741,6 +2745,14 @@ td small {
 .crm-kanban-column.is-warning { --stage-color: #d99a37; }
 .crm-kanban-column.is-success { --stage-color: #35a57c; }
 .crm-kanban-column.is-danger { --stage-color: #d36872; }
+.crm-kanban-column.is-drag-over {
+  border-color: var(--stage-color);
+  background: color-mix(in srgb, var(--stage-color) 8%, #f7f9fc);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--stage-color) 24%, transparent), 0 8px 24px rgba(35, 49, 78, .1);
+}
+.crm-kanban-column.is-drag-over .crm-kanban-cards {
+  background: color-mix(in srgb, var(--stage-color) 5%, transparent);
+}
 .crm-kanban-column > header {
   display: grid;
   gap: 5px;
@@ -2766,7 +2778,11 @@ td small {
   border-radius: 10px;
   background: #fff;
   box-shadow: 0 4px 13px rgba(35, 49, 78, .055);
+  transition: border-color .16s ease, box-shadow .16s ease, opacity .16s ease, transform .16s ease;
 }
+.crm-opportunity-card[draggable="true"] { cursor: grab; user-select: none; }
+.crm-opportunity-card[draggable="true"]:active { cursor: grabbing; }
+.crm-opportunity-card.is-dragging { opacity: .4; transform: scale(.985); }
 .crm-opportunity-card:hover { border-color: #c8d1e4; box-shadow: 0 8px 20px rgba(35, 49, 78, .1); }
 .crm-opportunity-open {
   width: 100%;

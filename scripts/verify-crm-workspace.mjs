@@ -131,6 +131,29 @@ contract("Pipeline de seis etapas", () => {
   );
 });
 
+contract("Pipeline arrastrable con persistencia y alternativa accesible", () => {
+  matches(
+    components,
+    /draggable=\{canManage[\s\S]{0,700}onDragStart=/,
+    "Las tarjetas administrables deben ser arrastrables.",
+  );
+  matches(
+    components,
+    /onDragOver=[\s\S]{0,800}onDrop=/,
+    "Las columnas del Kanban deben aceptar soltar oportunidades.",
+  );
+  matches(
+    components,
+    /dropOpportunity[\s\S]{0,1200}changeOpportunityStage/,
+    "Soltar una tarjeta debe usar el cambio de etapa persistente existente.",
+  );
+  matches(
+    components,
+    /crm-stage-control[\s\S]{0,500}<select[^>]*aria-label=/,
+    "El drag and drop debe conservar un selector accesible como alternativa de teclado.",
+  );
+});
+
 contract("Detalle de oportunidad en modal", () => {
   matches(
     components,
