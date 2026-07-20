@@ -191,6 +191,7 @@ type FactoringProvider = { id: string; name: string; taxId: string | null };
 type DocumentContact = { id: string; counterparty_id: string; full_name: string; contact_area: string | null; email: string | null; is_primary: boolean };
 
 type DocumentUpdateDraft = {
+  documentType: string;
   status: string;
   paymentDate: string;
   paymentMethod: string;
@@ -1686,6 +1687,7 @@ export function FinanceDashboard() {
     null,
   );
   const [editDraft, setEditDraft] = useState<DocumentUpdateDraft>({
+    documentType: "Factura afecta",
     status: "",
     paymentDate: "",
     paymentMethod: "",
@@ -1702,6 +1704,7 @@ export function FinanceDashboard() {
   const [documentContacts, setDocumentContacts] = useState<DocumentContact[]>([]);
   const [factoringProviders, setFactoringProviders] = useState<FactoringProvider[]>([]);
   const [documentFile, setDocumentFile] = useState<File | null>(null);
+  const [editDocumentFile, setEditDocumentFile] = useState<File | null>(null);
   const [loadingDocumentSources, setLoadingDocumentSources] = useState(false);
   const [attachmentByDocument, setAttachmentByDocument] = useState<Record<string, boolean>>({});
   const [formError, setFormError] = useState("");
@@ -1966,6 +1969,7 @@ export function FinanceDashboard() {
   function startDocumentEdit(record: InvoiceRecord) {
     setEditingRecord(record);
     setEditDraft({
+      documentType: record.documentType ?? "Factura afecta",
       status: record.status ?? "",
       paymentDate: record.paymentDate ?? "",
       paymentMethod: record.paymentMethod ?? "",
@@ -1977,6 +1981,7 @@ export function FinanceDashboard() {
       factoringSettledAt: record.factoringSettledAt ?? "",
       factoringRecourseAt: record.factoringRecourseAt ?? "",
     });
+    setEditDocumentFile(null);
     setFormError("");
   }
 
@@ -1986,14 +1991,24 @@ export function FinanceDashboard() {
       setFormError("Indica el estado actual del documento.");
       return;
     }
+    const formData = new FormData();
+    formData.set("id", editingRecord.id);
+    Object.entries(editDraft).forEach(([field, value]) =>
+      formData.set(field, value),
+    );
+    if (editDocumentFile) formData.set("file", editDocumentFile);
     const response = await fetch("/api/issued-documents", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: editingRecord.id, ...editDraft }),
+      body: formData,
     });
     if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+      } | null;
       setFormError(
-        "No fue posible actualizar el documento. Revisa tu sesión y permisos.",
+        payload?.error === "invalid_document_attachment"
+          ? "El adjunto debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
+          : "No fue posible actualizar el documento. Revisa tu sesión, permisos y datos.",
       );
       return;
     }
@@ -2004,6 +2019,11 @@ export function FinanceDashboard() {
         ? current.map((record) => (record.id === updated.id ? updated : record))
         : current,
     );
+    setAttachmentByDocument((current) => ({
+      ...current,
+      [updated.id]: Boolean(payload.document.attachment_path),
+    }));
+    setEditDocumentFile(null);
     setEditingRecord(null);
     setFormError("");
   }
@@ -3040,8 +3060,8 @@ export function FinanceDashboard() {
                   Documento N° {editingRecord.invoiceNumber ?? "—"}
                 </h2>
                 <p>
-                  Actualiza el estado real, pago directo o ciclo de factoring
-                  sin alterar el monto neto/exento original.
+                  Completa el respaldo tributario, corrige el tipo documental y
+                  actualiza el estado real, pago directo o ciclo de factoring.
                 </p>
               </div>
               <button
@@ -3058,6 +3078,26 @@ export function FinanceDashboard() {
             </div>
             <form onSubmit={submitDocumentEdit}>
               <div className="form-grid">
+                <label>
+                  Tipo de documento *
+                  <select
+                    value={editDraft.documentType}
+                    onChange={(event) =>
+                      setEditDraft((current) => ({
+                        ...current,
+                        documentType: event.target.value,
+                      }))
+                    }
+                  >
+                    <option value="Factura afecta">Factura afecta</option>
+                    <option value="Factura exenta">Factura exenta</option>
+                    <option value="Nota de crédito">Nota de crédito</option>
+                    <option value="Nota de débito">Nota de débito</option>
+                  </select>
+                  <small>
+                    Al cambiarlo se recalcula IVA y total desde el monto neto.
+                  </small>
+                </label>
                 <label>
                   Estado *
                   <select
@@ -3079,7 +3119,7 @@ export function FinanceDashboard() {
                       Recomprada al factoring
                     </option>
                     <option value="Anulada">Anulada</option>
-                    <option value="Nota de credito">Nota de crédito</option>
+                    <option value="Nota de crédito">Nota de crédito</option>
                   </select>
                 </label>
                 <label>
@@ -3194,6 +3234,21 @@ export function FinanceDashboard() {
                       }))
                     }
                   />
+                </label>
+                <label>
+                  Respaldo de factura
+                  <input
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                    onChange={(event) =>
+                      setEditDocumentFile(event.target.files?.[0] ?? null)
+                    }
+                  />
+                  <small>
+                    {attachmentByDocument[editingRecord.id]
+                      ? "Al cargar otro archivo, reemplaza el respaldo vigente."
+                      : "PDF, JPG o PNG · máximo 50 MB"}
+                  </small>
                 </label>
               </div>
               {formError && <p className="form-error">{formError}</p>}

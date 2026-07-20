@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 
 type DocumentRequest = {
   id?: unknown;
+  documentType?: unknown;
   status?: unknown;
   paymentDate?: unknown;
   paymentMethod?: unknown;
@@ -193,10 +194,32 @@ export async function PATCH(request: NextRequest) {
       { status: 401 },
     );
 
-  const body = (await request
-    .json()
-    .catch(() => null)) as DocumentRequest | null;
+  const contentType = request.headers.get("content-type") ?? "";
+  const form = contentType.includes("multipart/form-data")
+    ? await request.formData()
+    : null;
+  const body = form
+    ? ({
+        id: form.get("id"),
+        documentType: form.get("documentType"),
+        status: form.get("status"),
+        paymentDate: form.get("paymentDate"),
+        paymentMethod: form.get("paymentMethod"),
+        paymentCondition: form.get("paymentCondition"),
+        notes: form.get("notes"),
+        factoringEntity: form.get("factoringEntity"),
+        factoringCounterpartyId: form.get("factoringCounterpartyId"),
+        factoredAt: form.get("factoredAt"),
+        factoringSettledAt: form.get("factoringSettledAt"),
+        factoringRecourseAt: form.get("factoringRecourseAt"),
+      } satisfies DocumentRequest)
+    : ((await request.json().catch(() => null)) as DocumentRequest | null);
+  const upload = form?.get("file");
   const documentId = body?.id;
+  const documentType =
+    body?.documentType === undefined
+      ? undefined
+      : readText(body.documentType, 100, true);
   const status = readText(body?.status, 80, true);
   const paymentDateValue = body?.paymentDate;
   const paymentDate =
@@ -217,6 +240,8 @@ export async function PATCH(request: NextRequest) {
     !isUuid(documentId) ||
     !status ||
     !paymentStatuses.has(status) ||
+    (documentType !== undefined &&
+      (!documentType || !documentTypes.has(documentType))) ||
     (paymentDateValue && !paymentDate) ||
     (body?.factoredAt && !factoredAt) ||
     (body?.factoringSettledAt && !factoringSettledAt) ||
@@ -224,6 +249,20 @@ export async function PATCH(request: NextRequest) {
   )
     return NextResponse.json(
       { error: "invalid_document_update" },
+      { status: 400 },
+    );
+  if (
+    upload !== null &&
+    upload !== undefined &&
+    (!(upload instanceof File) ||
+      upload.size === 0 ||
+      upload.size > 52_428_800 ||
+      !new Set(["application/pdf", "image/jpeg", "image/png"]).has(
+        upload.type,
+      ))
+  )
+    return NextResponse.json(
+      { error: "invalid_document_attachment" },
       { status: 400 },
     );
   if (
@@ -256,6 +295,18 @@ export async function PATCH(request: NextRequest) {
       { status: 403 },
     );
 
+  const { data: existingDocument, error: existingDocumentError } = await supabase
+    .from("issued_documents")
+    .select("organization_id, attachment_path, document_type, net_amount")
+    .eq("id", documentId)
+    .in("organization_id", eligibleOrganizationIds)
+    .maybeSingle();
+  if (existingDocumentError || !existingDocument)
+    return NextResponse.json(
+      { error: "document_not_found_or_not_authorized" },
+      { status: 403 },
+    );
+
   const isFactoring = ["Factorizada", "Pagada al factoring", "Recomprada al factoring"].includes(status);
   const { data: factor } = isFactoring
     ? await supabase.from("counterparties").select("id, legal_name, trade_name").eq("id", factoringCounterpartyId!).in("organization_id", eligibleOrganizationIds).in("kind", ["supplier", "both"]).eq("is_active", true).maybeSingle()
@@ -263,31 +314,76 @@ export async function PATCH(request: NextRequest) {
   if (isFactoring && !factor) return NextResponse.json({ error: "factoring_counterparty_required" }, { status: 400 });
   const factoringEntity = factor ? (factor.trade_name?.trim() || factor.legal_name) : null;
 
+  const safeName =
+    upload instanceof File
+      ? upload.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) ||
+        "factura"
+      : null;
+  const attachmentPath =
+    upload instanceof File && safeName
+      ? `${existingDocument.organization_id}/issued/${crypto.randomUUID()}-${safeName}`
+      : null;
+  if (upload instanceof File && attachmentPath) {
+    const { error } = await supabase.storage
+      .from("issued-document-files")
+      .upload(attachmentPath, upload, { contentType: upload.type, upsert: false });
+    if (error)
+      return NextResponse.json(
+        { error: "unable_to_upload_document_attachment" },
+        { status: 409 },
+      );
+  }
+
+  const updatePayload: Record<string, unknown> = {
+    payment_status: status,
+    payment_date: paymentDate,
+    payment_method: readText(body?.paymentMethod, 80),
+    payment_condition: readPaymentCondition(body?.paymentCondition),
+    notes: readText(body?.notes, 2_000),
+    factoring_entity: factoringEntity,
+    factoring_counterparty_id: factor?.id ?? null,
+    factored_at: factoredAt,
+    factoring_settled_at: factoringSettledAt,
+    factoring_recourse_at: factoringRecourseAt,
+  };
+  if (documentType) {
+    const netAmount = Number(existingDocument.net_amount ?? 0);
+    const vatAmount =
+      documentType === "Factura afecta"
+        ? Math.round(netAmount * 0.19 * 100) / 100
+        : 0;
+    updatePayload.document_type = documentType;
+    updatePayload.vat_amount = vatAmount;
+    updatePayload.total_amount = Math.round((netAmount + vatAmount) * 100) / 100;
+  }
+  if (upload instanceof File && attachmentPath) {
+    updatePayload.attachment_path = attachmentPath;
+    updatePayload.attachment_name = upload.name.slice(0, 300);
+    updatePayload.attachment_mime_type = upload.type;
+    updatePayload.attachment_size = upload.size;
+  }
+
   const { data, error } = await supabase
     .from("issued_documents")
-    .update({
-      payment_status: status,
-      payment_date: paymentDate,
-      payment_method: readText(body?.paymentMethod, 80),
-      payment_condition: readPaymentCondition(body?.paymentCondition),
-      notes: readText(body?.notes, 2_000),
-      factoring_entity: factoringEntity,
-      factoring_counterparty_id: factor?.id ?? null,
-      factored_at: factoredAt,
-      factoring_settled_at: factoringSettledAt,
-      factoring_recourse_at: factoringRecourseAt,
-    })
+    .update(updatePayload)
     .eq("id", documentId)
-    .in("organization_id", eligibleOrganizationIds)
+    .eq("organization_id", existingDocument.organization_id)
     .select(
-      "id, organization_id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_date, payment_method, payment_condition, factoring_entity, factoring_counterparty_id, factored_at, factoring_settled_at, factoring_recourse_at, origin_account_or_tax_id, destination_bank, destination_account, source_file_name, source_sheet_name, source_row",
+      "id, organization_id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_date, payment_method, payment_condition, factoring_entity, factoring_counterparty_id, factored_at, factoring_settled_at, factoring_recourse_at, origin_account_or_tax_id, destination_bank, destination_account, attachment_path, attachment_name, attachment_mime_type, attachment_size, source_file_name, source_sheet_name, source_row",
     )
     .maybeSingle();
-  if (error || !data)
+  if (error || !data) {
+    if (attachmentPath)
+      await supabase.storage.from("issued-document-files").remove([attachmentPath]);
     return NextResponse.json(
       { error: "unable_to_update_document" },
       { status: 403 },
     );
+  }
+  if (attachmentPath && existingDocument.attachment_path)
+    await supabase.storage
+      .from("issued-document-files")
+      .remove([existingDocument.attachment_path]);
   if (isFactoring && factor) {
     const { data: existing } = await supabase.from("direct_payables").select("id").eq("factoring_issued_document_id", data.id).maybeSingle();
     if (!existing) {
