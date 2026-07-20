@@ -203,6 +203,20 @@ type DocumentUpdateDraft = {
   factoringRecourseAt: string;
 };
 
+type DocumentSortColumn =
+  | "invoiceNumber"
+  | "issueDate"
+  | "client"
+  | "documentType"
+  | "netAmount"
+  | "status"
+  | "origin";
+
+type DocumentSort = {
+  column: DocumentSortColumn;
+  direction: "asc" | "desc";
+};
+
 const blankDraft: InvoiceDraft = {
   invoiceNumber: "",
   issueDate: "",
@@ -295,6 +309,19 @@ function statusClass(status: string | null) {
   if (normalized.includes("anulada") || normalized.includes("credito"))
     return "status cancelled";
   return "status neutral";
+}
+
+function compareText(first: string | null | undefined, second: string | null | undefined) {
+  if (!first && !second) return 0;
+  if (!first) return 1;
+  if (!second) return -1;
+  return first.localeCompare(second, "es", { numeric: true, sensitivity: "base" });
+}
+
+function compareInvoiceNumber(first: InvoiceRecord, second: InvoiceRecord) {
+  const byNumber = compareText(first.invoiceNumber, second.invoiceNumber);
+  if (byNumber !== 0) return byNumber;
+  return compareText(first.issueDate, second.issueDate);
 }
 
 function EmptyModule({
@@ -1650,7 +1677,10 @@ export function FinanceDashboard() {
   const [year, setYear] = useState("Todos");
   const [month, setMonth] = useState("Todos");
   const [status, setStatus] = useState("Todos");
-  const [documentOrder, setDocumentOrder] = useState("Fecha más reciente");
+  const [documentSort, setDocumentSort] = useState<DocumentSort>({
+    column: "invoiceNumber",
+    direction: "asc",
+  });
   const [showEntry, setShowEntry] = useState(false);
   const [editingRecord, setEditingRecord] = useState<InvoiceRecord | null>(
     null,
@@ -1807,22 +1837,61 @@ export function FinanceDashboard() {
   const orderedDocuments = useMemo(
     () =>
       [...filtered].sort((first, second) => {
-        if (documentOrder === "Tipo: A-Z") {
-          return (first.documentType ?? "").localeCompare(
-            second.documentType ?? "",
-            "es",
-          );
+        let result = 0;
+        switch (documentSort.column) {
+          case "invoiceNumber":
+            result = compareInvoiceNumber(first, second);
+            break;
+          case "issueDate":
+            result = compareText(first.issueDate, second.issueDate);
+            break;
+          case "client":
+            result = compareText(first.client, second.client);
+            break;
+          case "documentType":
+            result = compareText(first.documentType, second.documentType);
+            break;
+          case "netAmount":
+            result = recognizedNetAmount(first) - recognizedNetAmount(second);
+            break;
+          case "status":
+            result = compareText(first.status, second.status);
+            break;
+          case "origin":
+            result = compareText(
+              `${first.source.file} ${first.source.sheet} ${first.source.row}`,
+              `${second.source.file} ${second.source.sheet} ${second.source.row}`,
+            );
+            break;
         }
-        if (documentOrder === "Tipo: Z-A") {
-          return (second.documentType ?? "").localeCompare(
-            first.documentType ?? "",
-            "es",
-          );
+
+        if (result === 0 && documentSort.column !== "invoiceNumber") {
+          result = compareInvoiceNumber(first, second);
         }
-        return (second.issueDate ?? "").localeCompare(first.issueDate ?? "");
+        return documentSort.direction === "asc" ? result : -result;
       }),
-    [filtered, documentOrder],
+    [filtered, documentSort],
   );
+
+  const toggleDocumentSort = (column: DocumentSortColumn) => {
+    setDocumentSort((current) => ({
+      column,
+      direction:
+        current.column === column && current.direction === "asc" ? "desc" : "asc",
+    }));
+  };
+  const documentSortIndicator = (column: DocumentSortColumn) =>
+    documentSort.column === column
+      ? documentSort.direction === "asc"
+        ? " ↑"
+        : " ↓"
+      : " ↕";
+  const documentAriaSort = (column: DocumentSortColumn) =>
+    documentSort.column !== column
+      ? "none"
+      : documentSort.direction === "asc"
+        ? "ascending"
+        : "descending";
 
   const monthly = useMemo(
     () =>
@@ -2691,30 +2760,47 @@ export function FinanceDashboard() {
                       ))}
                     </select>
                   </label>
-                  <label>
-                    Ordenar
-                    <select
-                      value={documentOrder}
-                      onChange={(event) => setDocumentOrder(event.target.value)}
-                    >
-                      <option>Fecha más reciente</option>
-                      <option>Tipo: A-Z</option>
-                      <option>Tipo: Z-A</option>
-                    </select>
-                  </label>
                 </div>
               </div>
               <div className="table-scroll">
                 <table>
                   <thead>
                     <tr>
-                      <th>Documento</th>
-                      <th>Emisión</th>
-                      <th>Cliente</th>
-                      <th>Tipo</th>
-                      <th className="money-col">Neto/exento</th>
-                      <th>Estado</th>
-                      <th>Origen</th>
+                      <th aria-sort={documentAriaSort("invoiceNumber")}>
+                        <button type="button" className="table-sort-button" onClick={() => toggleDocumentSort("invoiceNumber")}>
+                          Documento{documentSortIndicator("invoiceNumber")}
+                        </button>
+                      </th>
+                      <th aria-sort={documentAriaSort("issueDate")}>
+                        <button type="button" className="table-sort-button" onClick={() => toggleDocumentSort("issueDate")}>
+                          Emisión{documentSortIndicator("issueDate")}
+                        </button>
+                      </th>
+                      <th aria-sort={documentAriaSort("client")}>
+                        <button type="button" className="table-sort-button" onClick={() => toggleDocumentSort("client")}>
+                          Cliente{documentSortIndicator("client")}
+                        </button>
+                      </th>
+                      <th aria-sort={documentAriaSort("documentType")}>
+                        <button type="button" className="table-sort-button" onClick={() => toggleDocumentSort("documentType")}>
+                          Tipo{documentSortIndicator("documentType")}
+                        </button>
+                      </th>
+                      <th className="money-col" aria-sort={documentAriaSort("netAmount")}>
+                        <button type="button" className="table-sort-button" onClick={() => toggleDocumentSort("netAmount")}>
+                          Neto/exento{documentSortIndicator("netAmount")}
+                        </button>
+                      </th>
+                      <th aria-sort={documentAriaSort("status")}>
+                        <button type="button" className="table-sort-button" onClick={() => toggleDocumentSort("status")}>
+                          Estado{documentSortIndicator("status")}
+                        </button>
+                      </th>
+                      <th aria-sort={documentAriaSort("origin")}>
+                        <button type="button" className="table-sort-button" onClick={() => toggleDocumentSort("origin")}>
+                          Origen{documentSortIndicator("origin")}
+                        </button>
+                      </th>
                       <th>Acción</th>
                     </tr>
                   </thead>
