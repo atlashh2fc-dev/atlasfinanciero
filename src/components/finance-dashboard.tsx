@@ -187,6 +187,7 @@ type InvoiceDraft = {
 };
 
 type DocumentCustomer = { id: string; legal_name: string; trade_name: string | null; tax_id: string | null };
+type FactoringProvider = { id: string; name: string; taxId: string | null };
 type DocumentContact = { id: string; counterparty_id: string; full_name: string; contact_area: string | null; email: string | null; is_primary: boolean };
 
 type DocumentUpdateDraft = {
@@ -196,6 +197,7 @@ type DocumentUpdateDraft = {
   paymentCondition: string;
   notes: string;
   factoringEntity: string;
+  factoringCounterpartyId: string;
   factoredAt: string;
   factoringSettledAt: string;
   factoringRecourseAt: string;
@@ -1578,6 +1580,7 @@ type StoredDocument = {
   payment_method: string | null;
   payment_condition: "advance" | "post_service" | null;
   factoring_entity: string | null;
+  factoring_counterparty_id: string | null;
   factored_at: string | null;
   factoring_settled_at: string | null;
   factoring_recourse_at: string | null;
@@ -1624,6 +1627,7 @@ function mapStoredDocument(document: StoredDocument): InvoiceRecord {
     paymentMethod: document.payment_method,
     paymentCondition: document.payment_condition,
     factoringEntity: document.factoring_entity,
+    factoringCounterpartyId: document.factoring_counterparty_id,
     factoredAt: document.factored_at,
     factoringSettledAt: document.factoring_settled_at,
     factoringRecourseAt: document.factoring_recourse_at,
@@ -1658,6 +1662,7 @@ export function FinanceDashboard() {
     paymentCondition: "",
     notes: "",
     factoringEntity: "",
+    factoringCounterpartyId: "",
     factoredAt: "",
     factoringSettledAt: "",
     factoringRecourseAt: "",
@@ -1665,6 +1670,7 @@ export function FinanceDashboard() {
   const [draft, setDraft] = useState<InvoiceDraft>(blankDraft);
   const [documentCustomers, setDocumentCustomers] = useState<DocumentCustomer[]>([]);
   const [documentContacts, setDocumentContacts] = useState<DocumentContact[]>([]);
+  const [factoringProviders, setFactoringProviders] = useState<FactoringProvider[]>([]);
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [loadingDocumentSources, setLoadingDocumentSources] = useState(false);
   const [attachmentByDocument, setAttachmentByDocument] = useState<Record<string, boolean>>({});
@@ -1720,6 +1726,15 @@ export function FinanceDashboard() {
       issuerTaxId: current.issuerTaxId || access.membership.organizationTaxId || "",
     }));
   }, [showEntry, access]);
+
+  useEffect(() => {
+    const organizationId = access?.membership.organizationId;
+    if (!editingRecord || !organizationId) return;
+    fetch(`/api/supplier-consolidation?organizationId=${encodeURIComponent(organizationId)}`, { cache: "no-store" })
+      .then((response) => response.ok ? response.json() as Promise<{ suppliers: FactoringProvider[] }> : null)
+      .then((payload) => setFactoringProviders(payload?.suppliers ?? []))
+      .catch(() => setFactoringProviders([]));
+  }, [editingRecord, access?.membership.organizationId]);
 
   useEffect(() => {
     let active = true;
@@ -1888,6 +1903,7 @@ export function FinanceDashboard() {
       paymentCondition: record.paymentCondition ?? "",
       notes: record.notes ?? "",
       factoringEntity: record.factoringEntity ?? "",
+      factoringCounterpartyId: record.factoringCounterpartyId ?? "",
       factoredAt: record.factoredAt ?? "",
       factoringSettledAt: record.factoringSettledAt ?? "",
       factoringRecourseAt: record.factoringRecourseAt ?? "",
@@ -2012,6 +2028,7 @@ export function FinanceDashboard() {
           ? draft.paymentCondition
           : null,
       factoring_entity: null,
+      factoring_counterparty_id: null,
       factored_at: null,
       factoring_settled_at: null,
       factoring_recourse_at: null,
@@ -3013,16 +3030,13 @@ export function FinanceDashboard() {
                   <>
                     <label>
                       Entidad de factoring *
-                      <input
-                        value={editDraft.factoringEntity}
+                      <select
+                        required
+                        value={editDraft.factoringCounterpartyId}
                         onChange={(event) =>
-                          setEditDraft((current) => ({
-                            ...current,
-                            factoringEntity: event.target.value,
-                          }))
+                          { const provider = factoringProviders.find((item) => item.id === event.target.value); setEditDraft((current) => ({ ...current, factoringCounterpartyId: event.target.value, factoringEntity: provider?.name ?? "" })); }
                         }
-                        placeholder="Nombre de la entidad"
-                      />
+                      ><option value="">Selecciona una empresa existente</option>{factoringProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}{provider.taxId ? ` · ${provider.taxId}` : ""}</option>)}</select>
                     </label>
                     <label>
                       Fecha cesión / factoraje

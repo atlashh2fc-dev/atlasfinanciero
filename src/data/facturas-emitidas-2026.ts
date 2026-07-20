@@ -23,6 +23,7 @@ export type InvoiceRecord = {
   paymentMethod: string | null;
   paymentCondition?: "advance" | "post_service" | null;
   factoringEntity?: string | null;
+  factoringCounterpartyId?: string | null;
   factoredAt?: string | null;
   factoringSettledAt?: string | null;
   factoringRecourseAt?: string | null;

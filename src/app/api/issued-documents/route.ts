@@ -9,6 +9,7 @@ type DocumentRequest = {
   paymentCondition?: unknown;
   notes?: unknown;
   factoringEntity?: unknown;
+  factoringCounterpartyId?: unknown;
   factoredAt?: unknown;
   factoringSettledAt?: unknown;
   factoringRecourseAt?: unknown;
@@ -205,6 +206,7 @@ export async function PATCH(request: NextRequest) {
       ? null
       : readDate(paymentDateValue);
   const factoredAt = body?.factoredAt ? readDate(body.factoredAt) : null;
+  const factoringCounterpartyId = body?.factoringCounterpartyId ? (isUuid(body.factoringCounterpartyId) ? body.factoringCounterpartyId : null) : null;
   const factoringSettledAt = body?.factoringSettledAt
     ? readDate(body.factoringSettledAt)
     : null;
@@ -228,7 +230,7 @@ export async function PATCH(request: NextRequest) {
     (status === "Factorizada" ||
       status === "Pagada al factoring" ||
       status === "Recomprada al factoring") &&
-    !readText(body?.factoringEntity, 180, true)
+    !factoringCounterpartyId
   )
     return NextResponse.json(
       { error: "factoring_entity_required" },
@@ -254,6 +256,13 @@ export async function PATCH(request: NextRequest) {
       { status: 403 },
     );
 
+  const isFactoring = ["Factorizada", "Pagada al factoring", "Recomprada al factoring"].includes(status);
+  const { data: factor } = isFactoring
+    ? await supabase.from("counterparties").select("id, legal_name, trade_name").eq("id", factoringCounterpartyId!).in("organization_id", eligibleOrganizationIds).in("kind", ["supplier", "both"]).eq("is_active", true).maybeSingle()
+    : { data: null };
+  if (isFactoring && !factor) return NextResponse.json({ error: "factoring_counterparty_required" }, { status: 400 });
+  const factoringEntity = factor ? (factor.trade_name?.trim() || factor.legal_name) : null;
+
   const { data, error } = await supabase
     .from("issued_documents")
     .update({
@@ -262,7 +271,8 @@ export async function PATCH(request: NextRequest) {
       payment_method: readText(body?.paymentMethod, 80),
       payment_condition: readPaymentCondition(body?.paymentCondition),
       notes: readText(body?.notes, 2_000),
-      factoring_entity: readText(body?.factoringEntity, 180),
+      factoring_entity: factoringEntity,
+      factoring_counterparty_id: factor?.id ?? null,
       factored_at: factoredAt,
       factoring_settled_at: factoringSettledAt,
       factoring_recourse_at: factoringRecourseAt,
@@ -270,7 +280,7 @@ export async function PATCH(request: NextRequest) {
     .eq("id", documentId)
     .in("organization_id", eligibleOrganizationIds)
     .select(
-      "id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_date, payment_method, payment_condition, factoring_entity, factored_at, factoring_settled_at, factoring_recourse_at, origin_account_or_tax_id, destination_bank, destination_account, source_file_name, source_sheet_name, source_row",
+      "id, organization_id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_date, payment_method, payment_condition, factoring_entity, factoring_counterparty_id, factored_at, factoring_settled_at, factoring_recourse_at, origin_account_or_tax_id, destination_bank, destination_account, source_file_name, source_sheet_name, source_row",
     )
     .maybeSingle();
   if (error || !data)
@@ -278,6 +288,21 @@ export async function PATCH(request: NextRequest) {
       { error: "unable_to_update_document" },
       { status: 403 },
     );
+  if (isFactoring && factor) {
+    const { data: existing } = await supabase.from("direct_payables").select("id").eq("factoring_issued_document_id", data.id).maybeSingle();
+    if (!existing) {
+      const dueDate = factoringSettledAt ?? factoringRecourseAt ?? data.due_date ?? data.issue_date;
+      const { error: payableError } = await supabase.from("direct_payables").insert({
+        organization_id: data.organization_id, payable_number: `FAC-${data.id.slice(0, 8).toUpperCase()}`,
+        supplier_counterparty_id: factor.id, supplier_name: factoringEntity, category: "other", category_detail: "Factoring",
+        description: `Obligación de factoring · documento ${data.document_number ?? "sin folio"}`,
+        issue_date: data.issue_date ?? dueDate, due_date: dueDate, currency_code: "CLP", total_amount: data.total_amount ?? 0,
+        status: "approved", approved_at: new Date().toISOString(), approved_by: user.id, created_by: user.id,
+        notes: `Generada desde documento factorizado ${data.document_number ?? data.id}.`, factoring_issued_document_id: data.id,
+      });
+      if (payableError) return NextResponse.json({ error: "unable_to_create_factoring_payable" }, { status: 409 });
+    }
+  }
   return NextResponse.json({ document: data });
 }
 
@@ -345,7 +370,7 @@ export async function GET(request: NextRequest) {
   const { data, error } = await supabase
     .from("issued_documents")
     .select(
-      "id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_date, payment_method, payment_condition, factoring_entity, factored_at, factoring_settled_at, factoring_recourse_at, origin_account_or_tax_id, destination_bank, destination_account, attachment_path, attachment_name, attachment_mime_type, attachment_size, source_file_name, source_sheet_name, source_row",
+      "id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_date, payment_method, payment_condition, factoring_entity, factoring_counterparty_id, factored_at, factoring_settled_at, factoring_recourse_at, origin_account_or_tax_id, destination_bank, destination_account, attachment_path, attachment_name, attachment_mime_type, attachment_size, source_file_name, source_sheet_name, source_row",
     )
     .eq("organization_id", organizationId)
     .order("issue_date", { ascending: false });

@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
     .order("source_row", { ascending: false });
   let directPayablesQuery = context.supabase
     .from("direct_payables")
-    .select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, status, notes, payment_reference, paid_at")
+    .select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, status, notes, payment_reference, paid_at, factoring_issued_document_id")
     .eq("organization_id", organizationId)
     .neq("status", "cancelled")
     .order("issue_date", { ascending: false });
