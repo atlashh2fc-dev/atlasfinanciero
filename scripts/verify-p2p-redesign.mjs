@@ -15,6 +15,7 @@ const root = process.cwd();
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const ui = read("src/components/procure-to-pay-workbench.tsx");
 const api = read("src/app/api/procure-to-pay/route.ts");
+const styles = read("src/app/globals.css");
 const financialEvents = read(
   "supabase/migrations/20260715212017_unify_financial_events_and_end_to_end_controls.sql",
 );
@@ -61,6 +62,12 @@ requireContract(
 requireContract(
   (ui.match(/tab\s*===/g) ?? []).length >= Object.keys(expectedViews).length,
   "Las seis vistas no están aisladas por condición de render.",
+);
+requireContract(
+  contains(styles, ".p2p-dense-panel > .table-scroll") &&
+    contains(styles, "max-height:62vh") &&
+    contains(styles, "position:sticky"),
+  "Las bandejas densas no tienen altura controlada y encabezado fijo; existe riesgo de scroll vertical interminable.",
 );
 
 // 2. Acciones que no se pueden perder al rediseñar la interfaz.

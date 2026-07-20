@@ -2104,8 +2104,10 @@ td small {
 .p2p-global-filters label { display:grid; gap:3px; color:#7a879a; font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }
 .p2p-global-filters input,.p2p-global-filters select { min-width:110px; padding:7px 8px; border:1px solid #dce4ef; border-radius:7px; background:#fff; color:#334563; font:600 11px inherit; }
 .p2p-dense-panel { margin-top:18px; }
+.p2p-dense-panel > .table-scroll,.p2p-dense-panel > div > .table-scroll { max-height:62vh; overflow:auto; overscroll-behavior:contain; border:1px solid #e5eaf2; border-radius:10px; }
 .p2p-dense-table { min-width:860px; border-collapse:separate; border-spacing:0; }
 .p2p-dense-table th { padding:10px 12px; color:#8190a6; background:#f7f9fc; font-size:10px; text-transform:uppercase; letter-spacing:.04em; text-align:left; }
+.p2p-dense-panel .p2p-dense-table thead th { position:sticky; top:0; z-index:3; box-shadow:0 1px 0 #e5eaf2; }
 .p2p-dense-table td { padding:11px 12px; border-top:1px solid #edf1f5; color:#526178; font-size:12px; vertical-align:middle; }
 .p2p-dense-table tbody tr { cursor:pointer; transition:background .16s ease; }
 .p2p-dense-table tbody tr:hover,.p2p-dense-table tbody tr:focus { outline:0; background:#f4f7ff; }
