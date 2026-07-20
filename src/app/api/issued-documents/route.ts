@@ -394,7 +394,7 @@ export async function PATCH(request: NextRequest) {
         description: `Obligación de factoring · documento ${data.document_number ?? "sin folio"}`,
         issue_date: data.issue_date ?? dueDate, due_date: dueDate, currency_code: "CLP", total_amount: data.total_amount ?? 0,
         status: "approved", approved_at: new Date().toISOString(), approved_by: user.id, created_by: user.id,
-        notes: `Generada desde documento factorizado ${data.document_number ?? data.id}.`, factoring_issued_document_id: data.id,
+        notes: `Referencia generada desde documento factorizado ${data.document_number ?? data.id}.`, factoring_issued_document_id: data.id, is_reference: true,
       });
       if (payableError) return NextResponse.json({ error: "unable_to_create_factoring_payable" }, { status: 409 });
     }

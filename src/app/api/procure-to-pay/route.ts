@@ -91,7 +91,7 @@ export async function GET(request: NextRequest) {
     context.supabase.from("payment_batches").select("id, batch_number, bank_account_id, scheduled_for, currency_code, total_amount, status, notes, submitted_at, approved_at, processed_at, paid_at, payment_reference, cancellation_reason").eq("organization_id", organizationId).order("scheduled_for", { ascending: false }).limit(100),
     context.supabase.from("payment_batch_items").select("id, payment_batch_id, received_document_id, direct_payable_id, supplier_name_snapshot, document_number_snapshot, due_date_snapshot, amount").eq("organization_id", organizationId),
     context.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, document_number, issue_date, due_date, net_amount, total_amount, payment_status, vendor_purchase_order_id, purchase_match_status, purchase_match_approved_at, purchase_match_approved_by").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
-    context.supabase.from("direct_payables").select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, cost_center_id, status, notes, payment_reference").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
+    context.supabase.from("direct_payables").select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, cost_center_id, status, notes, payment_reference, is_reference, reference_settled_at").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
     context.supabase.from("asset_financing_plans").select("id, plan_number, plan_kind, supplier_name, asset_name, currency_code, cost_center_id, principal_amount, financing_total_amount, asset_cost_clp, installment_count, first_due_date, useful_life_months, disbursement_date, disbursement_amount, status").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(100),
     context.supabase.from("counterparties").select("id, legal_name, trade_name, tax_id").eq("organization_id", organizationId).in("kind", ["supplier", "both"]).eq("is_active", true).order("legal_name"),
     context.supabase.from("bank_accounts").select("id, name, bank_name, account_number_masked").eq("organization_id", organizationId).eq("is_active", true).order("name"),
@@ -119,7 +119,7 @@ export async function GET(request: NextRequest) {
     purchaseRequests: requests.data ?? [], purchaseOrders: orders.data ?? [], purchaseOrderLines: orderLines.data ?? [],
     paymentBatches: batches.data ?? [], paymentBatchItems: batchItems.data ?? [],
     receivedDocuments: availableDocuments,
-    directPayables: (directPayables.data ?? []).map((payable) => ({ ...payable, payment_eligible: payable.status === "approved" && !reservedDirectPayableIds.has(payable.id), payment_block_reason: payable.status === "review" ? "awaiting_approval" : payable.status === "draft" ? "not_submitted" : payable.status === "approved" ? "already_in_payment_batch" : payable.status === "paid" ? "already_paid" : "not_approved" })),
+    directPayables: (directPayables.data ?? []).map((payable) => ({ ...payable, payment_eligible: !payable.is_reference && payable.status === "approved" && !reservedDirectPayableIds.has(payable.id), payment_block_reason: payable.is_reference ? "reference_only" : payable.status === "review" ? "awaiting_approval" : payable.status === "draft" ? "not_submitted" : payable.status === "approved" ? "already_in_payment_batch" : payable.status === "paid" ? "already_paid" : "not_approved" })),
     financingPlans: financingPlans.data ?? [],
     suppliers: suppliers.data ?? [], bankAccounts: bankAccounts.data ?? [], costCenters: costCenters.data ?? [],
   });
@@ -294,11 +294,11 @@ export async function POST(request: NextRequest) {
       context.supabase.from("vendor_purchase_orders").select("id, supplier_counterparty_id, supplier_name, total_amount, status").eq("organization_id", organizationId).in("id", purchaseOrderIds),
       context.supabase.from("received_documents").select("vendor_purchase_order_id, total_amount").eq("organization_id", organizationId).in("vendor_purchase_order_id", purchaseOrderIds),
       context.supabase.from("payment_batch_items").select("payment_batch_id, received_document_id").eq("organization_id", organizationId).in("received_document_id", documentIds),
-      context.supabase.from("direct_payables").select("id, payable_number, supplier_name, invoice_number, due_date, total_amount, status").eq("organization_id", organizationId).in("id", directPayableIds),
+      context.supabase.from("direct_payables").select("id, payable_number, supplier_name, invoice_number, due_date, total_amount, status, is_reference").eq("organization_id", organizationId).in("id", directPayableIds),
       context.supabase.from("payment_batch_items").select("payment_batch_id, direct_payable_id").eq("organization_id", organizationId).in("direct_payable_id", directPayableIds),
     ]);
     if (purchaseOrdersError || linkedDocumentsError || existingItemsError || directPayablesError || existingDirectItemsError || !purchaseOrders || !directPayables) return NextResponse.json({ error: "unable_to_validate_payment_documents" }, { status: 500 });
-    if (directPayables.length !== directPayableIds.length || directPayables.some((payable) => payable.status !== "approved" || Number(payable.total_amount) <= 0)) return NextResponse.json({ error: "direct_payables_not_available" }, { status: 409 });
+    if (directPayables.length !== directPayableIds.length || directPayables.some((payable) => payable.is_reference || payable.status !== "approved" || Number(payable.total_amount) <= 0)) return NextResponse.json({ error: "direct_payables_not_available" }, { status: 409 });
     const ordersById = new Map(purchaseOrders.map((order) => [order.id, order]));
     const totalsByOrder = new Map<string, number>();
     for (const item of linkedDocuments ?? []) if (item.vendor_purchase_order_id) totalsByOrder.set(item.vendor_purchase_order_id, (totalsByOrder.get(item.vendor_purchase_order_id) ?? 0) + Number(item.total_amount ?? 0));
