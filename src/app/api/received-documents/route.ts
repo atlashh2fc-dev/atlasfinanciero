@@ -81,11 +81,11 @@ export async function PATCH(request: NextRequest) {
   if (!isUuid(body?.documentId)) {
     return NextResponse.json({ error: "invalid_payment_registration" }, { status: 400 });
   }
-  // Un documento recibido no se liquida desde esta vista. Sólo un lote P2P
+  // Un documento recibido no se liquida desde esta vista. Sólo una orden de pago
   // aprobado y ejecutado crea la ejecución de pago; Tesorería luego la
   // confirma contra el movimiento bancario. Así no existen pagos huérfanos.
   return NextResponse.json({
     error: "payment_batch_required",
-    message: "Registra esta factura en Compras y lotes de pago. El pago se ejecuta desde un lote aprobado y se confirma en Tesorería.",
+    message: "Registra esta factura en Compras, obligaciones y pagos. El pago se ejecuta desde una orden autorizada y se confirma en Tesorería.",
   }, { status: 409 });
 }

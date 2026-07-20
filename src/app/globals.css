@@ -2096,6 +2096,35 @@ td small {
 .p2p-case-action .primary-button,
 .p2p-link-control .secondary-button { padding: 7px 9px; font-size: 10px; }
 .p2p-case-action small { color: #8a96a9; font-size: 10px; }
+.p2p-navigation { display:flex; align-items:end; justify-content:space-between; gap:16px; margin: -10px 0 20px; padding:12px 14px; border:1px solid #e1e7f0; border-radius:12px; background:#ffffffcc; }
+.p2p-tabs { display:flex; flex-wrap:wrap; gap:4px; }
+.p2p-tabs button { border:0; border-radius:8px; padding:8px 10px; color:#66758e; background:transparent; font:700 12px/1 inherit; cursor:pointer; }
+.p2p-tabs button.active { color:#fff; background:#5265d8; box-shadow:0 4px 12px #5265d833; }
+.p2p-global-filters { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+.p2p-global-filters label { display:grid; gap:3px; color:#7a879a; font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }
+.p2p-global-filters input,.p2p-global-filters select { min-width:110px; padding:7px 8px; border:1px solid #dce4ef; border-radius:7px; background:#fff; color:#334563; font:600 11px inherit; }
+.p2p-dense-panel { margin-top:18px; }
+.p2p-dense-table { min-width:860px; border-collapse:separate; border-spacing:0; }
+.p2p-dense-table th { padding:10px 12px; color:#8190a6; background:#f7f9fc; font-size:10px; text-transform:uppercase; letter-spacing:.04em; text-align:left; }
+.p2p-dense-table td { padding:11px 12px; border-top:1px solid #edf1f5; color:#526178; font-size:12px; vertical-align:middle; }
+.p2p-dense-table tbody tr { cursor:pointer; transition:background .16s ease; }
+.p2p-dense-table tbody tr:hover,.p2p-dense-table tbody tr:focus { outline:0; background:#f4f7ff; }
+.p2p-dense-table td strong,.p2p-dense-table td small { display:block; }
+.p2p-dense-table td small { margin-top:3px; color:#8794a7; font-size:10px; }
+.p2p-selection-bar { position:sticky; bottom:14px; z-index:8; display:flex; align-items:center; justify-content:space-between; gap:16px; margin:12px 0 0; padding:12px 14px; border:1px solid #d7e0fb; border-radius:10px; background:#f7f9ffed; box-shadow:0 10px 24px #28365c1a; color:#43516a; font-size:12px; font-weight:700; backdrop-filter:blur(12px); }
+.p2p-workbench .p2p-board { display:none; }
+.p2p-workbench .p2p-create-panel { position:fixed; z-index:55; top:50%; left:50%; width:min(760px,calc(100vw - 36px)); max-height:88vh; overflow:auto; transform:translate(-50%,-50%); padding:24px; border:1px solid #ffffffc9; border-radius:16px; background:linear-gradient(135deg,#fffffff5,#f3f6ffed); box-shadow:0 0 0 100vmax #1722378a,0 30px 90px #101b3760; backdrop-filter:blur(22px) saturate(1.2); }
+.p2p-detail-modal { width:min(880px,100%); border:1px solid #ffffffcf; background:linear-gradient(135deg,#fffffff4,#f1f5ffec); box-shadow:0 32px 100px #101b3760; backdrop-filter:blur(24px) saturate(1.25); }
+.p2p-detail-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:18px 0; }
+.p2p-detail-grid article,.p2p-detail-section { padding:13px; border:1px solid #dce5f2; border-radius:10px; background:#ffffffa8; }
+.p2p-detail-grid span { display:block; color:#8390a5; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }
+.p2p-detail-grid strong { display:block; margin-top:6px; color:#34425b; font-size:13px; }
+.p2p-detail-section h3 { margin:0 0 6px; color:#34425b; font-size:13px; }
+.p2p-detail-section p { margin:0; color:#6f7d91; font-size:12px; line-height:1.5; }
+.p2p-inline-action { display:flex; align-items:center; gap:8px; margin-top:12px; }
+.p2p-inline-action select { min-width:0; min-height:38px; flex:1; border:1px solid #d8e0ec; border-radius:8px; padding:0 10px; color:#40506b; background:#fff; }
+.p2p-detail-items { min-width:620px; margin-top:12px; }
+@media (max-width: 900px) { .p2p-navigation { align-items:stretch; flex-direction:column; } .p2p-global-filters { justify-content:flex-start; } .p2p-detail-grid { grid-template-columns:1fr; } .p2p-selection-bar { align-items:stretch; flex-direction:column; } }
 .p2p-link-state { color: #4a9b73 !important; font-weight: 700; }
 .p2p-link-control {
   display: grid;

@@ -97,8 +97,8 @@ const modulePreviews: Record<Module, string> = {
     "Facturas recibidas, proveedores, vencimientos y registro individual de pagos.",
   Proveedores:
     "Directorio único de proveedores para compras, gastos, cuentas por pagar y factoring.",
-  "Compras y lotes de pago":
-    "Solicitudes, órdenes a proveedor y lotes de pago con aprobación antes de ejecutar.",
+  "Compras, obligaciones y pagos":
+    "Solicitudes, órdenes de compra, obligaciones y propuestas de pago con trazabilidad integral.",
   Tesorería:
     "Posición por cuenta, movimientos bancarios y conciliación de cobros y pagos.",
   Remuneraciones: "Costo laboral y dotación sincronizados desde PeopleWork.",
@@ -130,7 +130,7 @@ type Module =
   | "Prefacturación"
   | "Cuentas por pagar"
   | "Proveedores"
-  | "Compras y lotes de pago"
+  | "Compras, obligaciones y pagos"
   | "Tesorería"
   | "Remuneraciones"
   | "Centros de costo"
@@ -155,7 +155,7 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
   },
   {
     label: "COMPRAS Y CAJA",
-    items: ["Compras y lotes de pago", "Cuentas por pagar", "Proveedores", "Tesorería"],
+    items: ["Compras, obligaciones y pagos", "Cuentas por pagar", "Proveedores", "Tesorería"],
   },
   {
     label: "PLANIFICACIÓN Y ANÁLISIS",
@@ -348,7 +348,7 @@ function EmptyModule({
     | "Recurrentes"
     | "Prefacturación"
     | "Proveedores"
-    | "Compras y lotes de pago"
+    | "Compras, obligaciones y pagos"
     | "Tesorería"
     | "Remuneraciones"
     | "Centros de costo"
@@ -2195,7 +2195,7 @@ export function FinanceDashboard() {
           (item !== "Imputaciones pendientes" || canManageCostCenters) &&
           (item !== "Cuentas por pagar" || canReadExpenses) &&
           (item !== "Proveedores" || canReadExpenses) &&
-          (item !== "Compras y lotes de pago" || canReadProcurement) &&
+          (item !== "Compras, obligaciones y pagos" || canReadProcurement) &&
           (item !== "Tesorería" || canReadExpenses) &&
           (item !== "Planificación financiera" || canReadExpenses) &&
           (item !== "Cierre financiero" || canReadExpenses),
@@ -2299,7 +2299,7 @@ export function FinanceDashboard() {
                                   ? "◷"
                                   : item === "Cuentas por pagar"
                                   ? "▣"
-                                  : item === "Compras y lotes de pago"
+                                  : item === "Compras, obligaciones y pagos"
                                     ? "▤"
                                   : item === "Tesorería"
                                     ? "◒"
@@ -2432,7 +2432,7 @@ export function FinanceDashboard() {
               canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
             />
           ) : null
-        ) : activeModule === "Compras y lotes de pago" ? (
+        ) : activeModule === "Compras, obligaciones y pagos" ? (
           <ProcureToPayWorkbench
             organizationId={access?.membership.organizationId ?? null}
             canManage={hasEditPermission}

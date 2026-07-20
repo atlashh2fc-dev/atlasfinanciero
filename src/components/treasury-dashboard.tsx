@@ -153,7 +153,7 @@ function reconciliationClass(status: BankTransaction["reconciliation_status"]) {
 
 function executionSourceLabel(source: string) {
   return {
-    payment_batch: "Lote de pago",
+    payment_batch: "Orden de pago",
     bank_reconciliation: "Conciliación bancaria",
     legacy_import: "Registro histórico",
   }[source] || source;
@@ -565,7 +565,7 @@ export function TreasuryDashboard({
           <div>
             <span className="panel-label">CONCILIACIÓN</span>
             <h2>Movimientos pendientes</h2>
-            <p>Un abono se aplica a una factura emitida y un cargo a una factura recibida o cuenta directa ya ejecutada por lote. Las aplicaciones parciales se conservan con trazabilidad.</p>
+            <p>Un abono se aplica a una factura emitida y un cargo a una factura recibida o cuenta directa ejecutada mediante una orden de pago. Las aplicaciones parciales se conservan con trazabilidad.</p>
           </div>
         </div>
         <div className="table-scroll">
