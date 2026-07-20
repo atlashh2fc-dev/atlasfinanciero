@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
 const requestRoles = new Set(["administrator", "finance", "operations"]);
@@ -19,6 +20,18 @@ function cleanText(value: unknown, maxLength: number, required = false) {
 function validAmount(value: unknown) {
   const result = typeof value === "number" ? value : Number(value);
   return Number.isFinite(result) && result >= 0 ? result : null;
+}
+
+function isEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function metadataRequesterName(metadata: unknown) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const value = (metadata as Record<string, unknown>).requester_name;
+  if (typeof value !== "string") return null;
+  const name = value.trim();
+  return name && !isEmail(name) ? name : null;
 }
 
 async function organizationContext(organizationId: unknown) {
@@ -58,7 +71,29 @@ export async function GET(request: NextRequest) {
   ]);
 
   if (requests.error || policies.error) return NextResponse.json({ error: "unable_to_load_approvals" }, { status: 500 });
-  return NextResponse.json({ requests: requests.data ?? [], policies: policies.data ?? [], membership: context.membership });
+  const approvalRequests = requests.data ?? [];
+  const requesterIds = [...new Set(approvalRequests.map((approval) => approval.requested_by).filter((id): id is string => Boolean(id)))];
+  const requesterNames = new Map<string, string>();
+
+  if (requesterIds.length && hasSupabaseAdminKey()) {
+    const { data: profiles } = await createAdminClient()
+      .from("profiles")
+      .select("id, full_name")
+      .in("id", requesterIds);
+    for (const profile of profiles ?? []) {
+      const name = profile.full_name?.trim();
+      if (name) requesterNames.set(profile.id, name);
+    }
+  }
+
+  const enrichedRequests = approvalRequests.map((approval) => ({
+    ...approval,
+    requested_by_name: approval.requested_by
+      ? requesterNames.get(approval.requested_by) ?? metadataRequesterName(approval.metadata) ?? "Nombre no registrado"
+      : "Sistema",
+  }));
+
+  return NextResponse.json({ requests: enrichedRequests, policies: policies.data ?? [], membership: context.membership });
 }
 
 export async function POST(request: NextRequest) {

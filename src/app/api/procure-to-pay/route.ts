@@ -43,6 +43,15 @@ function sameSupplier(
 function isReceivedOrder(status: string) {
   return status === "received" || status === "partially_received";
 }
+async function activeCostCenterId(
+  supabase: NonNullable<Awaited<ReturnType<typeof requireOrganizationProcurementAccess>>["supabase"]>,
+  organizationId: string,
+  value: unknown,
+) {
+  if (!isUuid(value)) return null;
+  const { data } = await supabase.from("cost_centers").select("id").eq("id", value).eq("organization_id", organizationId).eq("is_active", true).maybeSingle();
+  return data?.id ?? null;
+}
 function amountMatchesOrder(documentTotal: number | string | null, orderTotal: number | string | null) {
   return Number(documentTotal ?? 0) > 0 && Number(documentTotal ?? 0) <= Number(orderTotal ?? 0) + 0.01;
 }
@@ -75,19 +84,20 @@ export async function GET(request: NextRequest) {
   const context = await requireOrganizationProcurementAccess(organizationId);
   if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
 
-  const [requests, orders, orderLines, batches, batchItems, documents, directPayables, financingPlans, suppliers, bankAccounts] = await Promise.all([
+  const [requests, orders, orderLines, batches, batchItems, documents, directPayables, financingPlans, suppliers, bankAccounts, costCenters] = await Promise.all([
     context.supabase.from("purchase_requests").select("id, request_number, supplier_counterparty_id, supplier_name, description, requested_on, needed_by, cost_center_id, currency_code, estimated_amount, status, notes, approved_at, cancellation_reason").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(200),
     context.supabase.from("vendor_purchase_orders").select("id, purchase_order_number, purchase_request_id, supplier_counterparty_id, supplier_name, supplier_tax_id, ordered_on, expected_on, currency_code, net_amount, vat_amount, total_amount, status, notes, approved_at, sent_at, received_at, cancellation_reason").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(200),
     context.supabase.from("vendor_purchase_order_lines").select("id, purchase_order_id, line_number, description, quantity, unit_price, net_amount, received_quantity, cost_center_id").eq("organization_id", organizationId).order("line_number"),
     context.supabase.from("payment_batches").select("id, batch_number, bank_account_id, scheduled_for, currency_code, total_amount, status, notes, submitted_at, approved_at, processed_at, paid_at, payment_reference, cancellation_reason").eq("organization_id", organizationId).order("scheduled_for", { ascending: false }).limit(100),
     context.supabase.from("payment_batch_items").select("id, payment_batch_id, received_document_id, direct_payable_id, supplier_name_snapshot, document_number_snapshot, due_date_snapshot, amount").eq("organization_id", organizationId),
     context.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, document_number, issue_date, due_date, net_amount, total_amount, payment_status, vendor_purchase_order_id, purchase_match_status, purchase_match_approved_at, purchase_match_approved_by").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
-    context.supabase.from("direct_payables").select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, description, issue_date, due_date, total_amount, currency_code, status, notes, payment_reference").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
-    context.supabase.from("asset_financing_plans").select("id, plan_number, plan_kind, supplier_name, asset_name, currency_code, principal_amount, financing_total_amount, asset_cost_clp, installment_count, first_due_date, useful_life_months, disbursement_date, disbursement_amount, status").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(100),
+    context.supabase.from("direct_payables").select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, description, issue_date, due_date, total_amount, currency_code, cost_center_id, status, notes, payment_reference").eq("organization_id", organizationId).order("due_date", { ascending: true }).limit(500),
+    context.supabase.from("asset_financing_plans").select("id, plan_number, plan_kind, supplier_name, asset_name, currency_code, cost_center_id, principal_amount, financing_total_amount, asset_cost_clp, installment_count, first_due_date, useful_life_months, disbursement_date, disbursement_amount, status").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(100),
     context.supabase.from("counterparties").select("id, legal_name, trade_name, tax_id").eq("organization_id", organizationId).in("kind", ["supplier", "both"]).eq("is_active", true).order("legal_name"),
     context.supabase.from("bank_accounts").select("id, name, bank_name, account_number_masked").eq("organization_id", organizationId).eq("is_active", true).order("name"),
+    context.supabase.from("cost_centers").select("id, code, name").eq("organization_id", organizationId).eq("is_active", true).order("code"),
   ]);
-  if ([requests, orders, orderLines, batches, batchItems, documents, directPayables, financingPlans, suppliers, bankAccounts].some((result) => result.error)) return NextResponse.json({ error: "unable_to_load_procure_to_pay" }, { status: 500 });
+  if ([requests, orders, orderLines, batches, batchItems, documents, directPayables, financingPlans, suppliers, bankAccounts, costCenters].some((result) => result.error)) return NextResponse.json({ error: "unable_to_load_procure_to_pay" }, { status: 500 });
   const activeBatchIds = new Set((batches.data ?? []).filter((batch) => !["cancelled", "paid"].includes(batch.status)).map((batch) => batch.id));
   const reservedDocumentIds = new Set((batchItems.data ?? []).filter((item) => activeBatchIds.has(item.payment_batch_id)).map((item) => item.received_document_id));
   const reservedDirectPayableIds = new Set((batchItems.data ?? []).filter((item) => activeBatchIds.has(item.payment_batch_id)).map((item) => item.direct_payable_id));
@@ -111,7 +121,7 @@ export async function GET(request: NextRequest) {
     receivedDocuments: availableDocuments,
     directPayables: (directPayables.data ?? []).map((payable) => ({ ...payable, payment_eligible: payable.status === "approved" && !reservedDirectPayableIds.has(payable.id), payment_block_reason: payable.status === "review" ? "awaiting_approval" : payable.status === "draft" ? "not_submitted" : payable.status === "approved" ? "already_in_payment_batch" : payable.status === "paid" ? "already_paid" : "not_approved" })),
     financingPlans: financingPlans.data ?? [],
-    suppliers: suppliers.data ?? [], bankAccounts: bankAccounts.data ?? [],
+    suppliers: suppliers.data ?? [], bankAccounts: bankAccounts.data ?? [], costCenters: costCenters.data ?? [],
   });
 }
 
@@ -133,8 +143,8 @@ export async function POST(request: NextRequest) {
     const requestedOn = date(body?.requestedOn) ?? new Date().toISOString().slice(0, 10);
     const neededBy = body?.neededBy ? date(body.neededBy) : null;
     const supplierId = body?.supplierId ? (isUuid(body.supplierId) ? body.supplierId : null) : null;
-    const costCenterId = body?.costCenterId ? (isUuid(body.costCenterId) ? body.costCenterId : null) : null;
-    if (!requestNumber || !supplierName || !description || !estimatedAmount || (body?.neededBy && !neededBy) || (body?.supplierId && !supplierId) || (body?.costCenterId && !costCenterId)) return NextResponse.json({ error: "invalid_purchase_request" }, { status: 400 });
+    const costCenterId = await activeCostCenterId(context.supabase, organizationId, body?.costCenterId);
+    if (!requestNumber || !supplierName || !description || !estimatedAmount || !costCenterId || (body?.neededBy && !neededBy) || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_purchase_request" }, { status: 400 });
     const { data, error } = await context.supabase.from("purchase_requests").insert({ organization_id: organizationId, request_number: requestNumber, supplier_counterparty_id: supplierId, supplier_name: supplierName, description, requested_on: requestedOn, needed_by: neededBy, cost_center_id: costCenterId, estimated_amount: estimatedAmount, currency_code: "CLP", notes: text(body?.notes, 2_000), requested_by: context.user.id }).select("id").single();
     if (error || !data) return NextResponse.json({ error: "unable_to_create_purchase_request" }, { status: 409 });
     return NextResponse.json({ id: data.id }, { status: 201 });
@@ -205,17 +215,18 @@ export async function POST(request: NextRequest) {
   }
 
   if (action === "create_direct_payable") {
-    const payableNumber = text(body?.payableNumber, 100, true);
     const supplierName = text(body?.supplierName, 300, true);
     const description = text(body?.description, 2_000, true);
     const totalAmount = positive(body?.totalAmount);
     const issueDate = date(body?.issueDate) ?? new Date().toISOString().slice(0, 10);
     const dueDate = body?.dueDate ? date(body.dueDate) : null;
     const supplierId = body?.supplierId ? (isUuid(body.supplierId) ? body.supplierId : null) : null;
+    const costCenterId = await activeCostCenterId(context.supabase, organizationId, body?.costCenterId);
     const invoiceNumber = text(body?.invoiceNumber, 180);
     const category = typeof body?.category === "string" && ["utilities", "rent", "taxes", "insurance", "subscriptions", "other"].includes(body.category) ? body.category : "other";
-    if (!payableNumber || !supplierName || !description || !totalAmount || (body?.dueDate && !dueDate) || (dueDate && dueDate < issueDate) || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_direct_payable" }, { status: 400 });
-    const { data, error } = await context.supabase.from("direct_payables").insert({ organization_id: organizationId, payable_number: payableNumber, supplier_counterparty_id: supplierId, supplier_name: supplierName, invoice_number: invoiceNumber, category, description, issue_date: issueDate, due_date: dueDate, total_amount: totalAmount, currency_code: "CLP", notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
+    const payableNumber = `CXP-${issueDate.replaceAll("-", "")}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    if (!supplierName || !description || !totalAmount || !costCenterId || (body?.dueDate && !dueDate) || (dueDate && dueDate < issueDate) || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_direct_payable" }, { status: 400 });
+    const { data, error } = await context.supabase.from("direct_payables").insert({ organization_id: organizationId, payable_number: payableNumber, supplier_counterparty_id: supplierId, supplier_name: supplierName, invoice_number: invoiceNumber, category, description, issue_date: issueDate, due_date: dueDate, total_amount: totalAmount, currency_code: "CLP", cost_center_id: costCenterId, notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
     if (error || !data) return NextResponse.json({ error: "unable_to_create_direct_payable" }, { status: 409 });
     const { error: submitError } = await context.supabase.from("direct_payables").update({ status: "review" }).eq("id", data.id).eq("organization_id", organizationId);
     if (submitError) {
@@ -242,9 +253,10 @@ export async function POST(request: NextRequest) {
     const disbursementAmount = planKind === "credit" ? positive(body?.disbursementAmount) : null;
     const currencyCode = body?.currencyCode === "UF" ? "UF" : body?.currencyCode === "CLP" ? "CLP" : null;
     const supplierId = body?.supplierId ? (isUuid(body.supplierId) ? body.supplierId : null) : null;
+    const costCenterId = await activeCostCenterId(context.supabase, organizationId, body?.costCenterId);
     const invalidAsset = planKind === "asset_financing" && (!assetName || !assetCostClp || residualValueClp === null || residualValueClp >= assetCostClp || !Number.isInteger(usefulLifeMonths) || (usefulLifeMonths ?? 0) < 1 || (usefulLifeMonths ?? 0) > 600 || !amortizationStartMonth);
-    if (!planNumber || !supplierName || !planKind || !principalAmount || !financingTotalAmount || financingTotalAmount < principalAmount || !Number.isInteger(installmentCount) || installmentCount < 1 || installmentCount > 240 || !firstDueDate || !currencyCode || invalidAsset || (planKind === "credit" && (!disbursementDate || !disbursementAmount)) || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_financing_plan" }, { status: 400 });
-    const { data: plan, error: planError } = await context.supabase.from("asset_financing_plans").insert({ organization_id: organizationId, plan_number: planNumber, plan_kind: planKind, supplier_counterparty_id: supplierId, supplier_name: supplierName, asset_name: assetName, contract_reference: text(body?.contractReference, 180), currency_code: currencyCode, principal_amount: principalAmount, asset_acquisition_amount: planKind === "asset_financing" ? principalAmount : null, financing_total_amount: financingTotalAmount, asset_cost_clp: assetCostClp, residual_value_clp: planKind === "asset_financing" ? residualValueClp : 0, installment_count: installmentCount, first_due_date: firstDueDate, useful_life_months: usefulLifeMonths, amortization_start_month: amortizationStartMonth, disbursement_date: disbursementDate, disbursement_amount: disbursementAmount, notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
+    if (!planNumber || !supplierName || !planKind || !principalAmount || !financingTotalAmount || !costCenterId || financingTotalAmount < principalAmount || !Number.isInteger(installmentCount) || installmentCount < 1 || installmentCount > 240 || !firstDueDate || !currencyCode || invalidAsset || (planKind === "credit" && (!disbursementDate || !disbursementAmount)) || (body?.supplierId && !supplierId)) return NextResponse.json({ error: "invalid_financing_plan" }, { status: 400 });
+    const { data: plan, error: planError } = await context.supabase.from("asset_financing_plans").insert({ organization_id: organizationId, plan_number: planNumber, plan_kind: planKind, supplier_counterparty_id: supplierId, supplier_name: supplierName, asset_name: assetName, contract_reference: text(body?.contractReference, 180), cost_center_id: costCenterId, currency_code: currencyCode, principal_amount: principalAmount, asset_acquisition_amount: planKind === "asset_financing" ? principalAmount : null, financing_total_amount: financingTotalAmount, asset_cost_clp: assetCostClp, residual_value_clp: planKind === "asset_financing" ? residualValueClp : 0, installment_count: installmentCount, first_due_date: firstDueDate, useful_life_months: usefulLifeMonths, amortization_start_month: amortizationStartMonth, disbursement_date: disbursementDate, disbursement_amount: disbursementAmount, notes: text(body?.notes, 2_000), created_by: context.user.id }).select("id").single();
     if (planError || !plan) return NextResponse.json({ error: "unable_to_create_asset_financing_plan" }, { status: 409 });
     const installmentRows = Array.from({ length: installmentCount }, (_, index) => {
       const principal = index === installmentCount - 1 ? principalAmount - Math.floor(principalAmount / installmentCount * 10_000) / 10_000 * (installmentCount - 1) : Math.floor(principalAmount / installmentCount * 10_000) / 10_000;
