@@ -1600,6 +1600,93 @@ td small {
   padding: 24px;
   box-shadow: 0 25px 75px #17223755;
 }
+.supplier-profile-modal,
+.supplier-editor-modal {
+  width: min(1180px, 100%);
+  background: linear-gradient(135deg, #ffffffef, #f4f7ffdf);
+  border: 1px solid #ffffffcc;
+  box-shadow: 0 28px 90px #101b374f, inset 0 1px 0 #ffffff;
+  backdrop-filter: blur(24px) saturate(1.2);
+}
+.supplier-directory-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+}
+.supplier-directory-toolbar h2 { margin: 6px 0; }
+.supplier-directory-toolbar p { margin: 0; color: #73819a; }
+.supplier-directory-actions { display: flex; align-items: end; gap: 10px; }
+.supplier-directory-actions label { min-width: 300px; }
+.supplier-directory-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #263b63;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+}
+.supplier-directory-link:hover { color: #5265da; text-decoration: underline; }
+.supplier-result-note { margin: 12px 18px; color: #77859a; font-size: 12px; }
+.supplier-profile-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 20px 0; }
+.supplier-profile-summary > div,
+.supplier-company-data span {
+  border: 1px solid #dce4f1;
+  border-radius: 12px;
+  background: #ffffff9c;
+  padding: 13px;
+}
+.supplier-profile-summary span,
+.supplier-company-data span { display: grid; gap: 5px; color: #748198; font-size: 11px; }
+.supplier-profile-summary strong { color: #233457; font-size: 18px; }
+.supplier-profile-summary .is-alert { border-color: #f1c3b9; background: #fff3efb8; }
+.supplier-profile-summary .is-alert strong { color: #bb4e3d; }
+.supplier-profile-section { border-top: 1px solid #dfe6f1; padding: 18px 0; }
+.supplier-alert-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px; margin-top: 10px; }
+.supplier-alert { margin: 0; padding: 10px 12px; border-radius: 9px; font-size: 12px; }
+.supplier-alert.critical { background: #fff0ed; color: #af4030; }
+.supplier-alert.warning { background: #fff6df; color: #9b6a16; }
+.supplier-alert.info { background: #edf3ff; color: #4561a5; }
+.supplier-profile-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.supplier-contact-list,
+.supplier-evidence-list,
+.supplier-history-grid { display: grid; gap: 8px; margin-top: 10px; }
+.supplier-contact-list article,
+.supplier-evidence-list article,
+.supplier-history-grid article {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid #dfe7f3;
+  border-radius: 10px;
+  background: #ffffff8c;
+}
+.supplier-evidence-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.supplier-upload-button { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+.supplier-upload-button input { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; }
+.supplier-contact-list span { color: #66799a; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.supplier-contact-list strong,
+.supplier-evidence-list strong,
+.supplier-history-grid strong { color: #293b5d; font-size: 13px; }
+.supplier-contact-list small,
+.supplier-evidence-list small,
+.supplier-history-grid small,
+.supplier-representative small { color: #748198; font-size: 11px; }
+.supplier-company-data { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.supplier-company-data strong { color: #354563; font-size: 12px; overflow-wrap: anywhere; }
+.supplier-representative-label { display: block; margin-top: 16px; }
+.supplier-representative { display: grid; gap: 4px; color: #30405f; font-size: 13px; }
+.supplier-history-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.supplier-history-grid > div { display: grid; align-content: start; gap: 8px; }
+.supplier-history-grid h3 { margin: 0 0 2px; color: #3c4e6d; font-size: 13px; }
+.supplier-history-grid p { margin: 0; color: #7a8799; font-size: 12px; }
+@media (max-width: 800px) {
+  .supplier-directory-toolbar, .supplier-directory-actions { align-items: stretch; flex-direction: column; }
+  .supplier-directory-actions label { min-width: 0; }
+  .supplier-profile-summary, .supplier-profile-columns, .supplier-history-grid, .supplier-company-data { grid-template-columns: 1fr; }
+}
 .modal-header {
   display: flex;
   justify-content: space-between;

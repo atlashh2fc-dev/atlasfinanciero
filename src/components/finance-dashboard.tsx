@@ -2423,6 +2423,7 @@ export function FinanceDashboard() {
           canReadExpenses ? (
             <SupplierConsolidation
               organizationId={access?.membership.organizationId ?? null}
+              canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
             />
           ) : null
         ) : activeModule === "Tesorería" ? (
