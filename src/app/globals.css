@@ -2272,6 +2272,53 @@ td small {
   align-items: end;
   margin-top: 18px;
 }
+.password-field {
+  position: relative;
+}
+.password-field input {
+  padding-right: 42px !important;
+}
+.password-visibility-button {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: #60708a;
+  background: transparent;
+  cursor: pointer;
+}
+.password-visibility-button:hover,
+.password-visibility-button:focus-visible {
+  color: #4e60d5;
+  background: #eef1ff;
+  outline: none;
+}
+.password-visibility-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.password-assignment-modal {
+  width: min(500px, 100%);
+}
+.password-assignment-modal .form-grid {
+  grid-template-columns: 1fr;
+}
+.password-assignment-modal small {
+  color: #7a879a;
+  font-size: 10px;
+  font-weight: 500;
+}
 .admin-members-table select {
   min-width: 145px;
 }

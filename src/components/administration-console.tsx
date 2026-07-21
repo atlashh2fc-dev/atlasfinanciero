@@ -21,6 +21,12 @@ function readError(payload: unknown) {
   return typeof payload.error === "string" ? payload.error : null;
 }
 
+function PasswordVisibilityButton({ visible, onClick }: { visible: boolean; onClick: () => void }) {
+  return <button type="button" className="password-visibility-button" onClick={onClick} aria-label={visible ? "Ocultar contraseña" : "Mostrar contraseña"} aria-pressed={visible} title={visible ? "Ocultar contraseña" : "Mostrar contraseña"}>
+    {visible ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18M10.6 10.7a2 2 0 0 0 2.7 2.7M9.9 5.1A10.9 10.9 0 0 1 12 4.9c5.2 0 8.8 4.2 9.8 6.1a1.9 1.9 0 0 1 0 1.8 15.4 15.4 0 0 1-3.1 3.9M6.2 6.2A15.5 15.5 0 0 0 2.2 11a1.9 1.9 0 0 0 0 1.8c1 1.9 4.6 6.1 9.8 6.1 1.3 0 2.5-.3 3.6-.8" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.2 12a1.9 1.9 0 0 1 0-1.8c1-1.9 4.6-6.1 9.8-6.1s8.8 4.2 9.8 6.1a1.9 1.9 0 0 1 0 1.8c-1 1.9-4.6 6.1-9.8 6.1S3.2 13.9 2.2 12Z" /><circle cx="12" cy="11" r="3" /></svg>}
+  </button>;
+}
+
 export function AdministrationConsole({ activeOrganizationId }: { activeOrganizationId: string }) {
   const [organizations, setOrganizations] = useState<AdminOrganization[]>([]);
   const [organizationId, setOrganizationId] = useState(activeOrganizationId);
@@ -36,9 +42,13 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
+  const [showNewUserPassword, setShowNewUserPassword] = useState(false);
   const [newUserRole, setNewUserRole] = useState<OrganizationRole>("auditor");
   const [message, setMessage] = useState<string | null>(null);
   const [recoveryLink, setRecoveryLink] = useState<{ email: string; url: string } | null>(null);
+  const [passwordMember, setPasswordMember] = useState<Member | null>(null);
+  const [memberPassword, setMemberPassword] = useState("");
+  const [showMemberPassword, setShowMemberPassword] = useState(false);
   const recoveryLinkInputRef = useRef<HTMLInputElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -185,6 +195,33 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
     setMessage("Enlace de recuperación generado. Compártelo sólo con la persona indicada: permite definir una contraseña nueva.");
   }
 
+  function openPasswordAssignment(member: Member) {
+    setPasswordMember(member);
+    setMemberPassword("");
+    setShowMemberPassword(false);
+  }
+
+  function closePasswordAssignment() {
+    setPasswordMember(null);
+    setMemberPassword("");
+    setShowMemberPassword(false);
+  }
+
+  async function assignPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!passwordMember || !organizationId || memberPassword.length < 12) return;
+    setIsSaving(true);
+    const response = await fetch("/api/admin/users", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, userId: passwordMember.userId, password: memberPassword }) });
+    setIsSaving(false);
+    if (!response.ok) {
+      setMemberPassword("");
+      return setMessage("No fue posible actualizar la contraseña. Verifica que el usuario siga teniendo acceso a esta organización.");
+    }
+    const name = passwordMember.profile?.full_name || passwordMember.profile?.email || "el usuario";
+    closePasswordAssignment();
+    setMessage(`Contraseña actualizada para ${name}. Compártela por un canal seguro.`);
+  }
+
   async function copyRecoveryLink() {
     if (!recoveryLink) return;
     let copied = false;
@@ -222,6 +259,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
 
       {message && <p className="operation-message">{message}</p>}
       {recoveryLink && <section className="panel recovery-link-panel"><div className="panel-heading"><div><span className="panel-label">RECUPERACIÓN ASISTIDA</span><h2>Enlace único para {recoveryLink.email}</h2><p>Este enlace no se envía por correo ni queda guardado en Atlas. Compártelo sólo con la persona autorizada.</p></div><button type="button" className="close-button" onClick={() => setRecoveryLink(null)} aria-label="Ocultar enlace">×</button></div><div className="recovery-link-row"><input ref={recoveryLinkInputRef} value={recoveryLink.url} readOnly aria-label="Enlace seguro de recuperación" /><button type="button" className="secondary-button" onClick={() => void copyRecoveryLink()}>Copiar enlace</button></div></section>}
+      {passwordMember && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) closePasswordAssignment(); }}><section className="entry-modal password-assignment-modal" role="dialog" aria-modal="true" aria-labelledby="password-assignment-title"><div className="modal-header"><div><span className="eyebrow">ACCESO DE USUARIO</span><h2 id="password-assignment-title">Asignar contraseña</h2><p>{passwordMember.profile?.full_name || passwordMember.profile?.email || "Usuario"} · {passwordMember.profile?.email ?? "Correo no disponible"}</p></div><button type="button" className="close-button" onClick={closePasswordAssignment} aria-label="Cerrar">×</button></div><form onSubmit={assignPassword}><div className="form-grid"><label>Contraseña nueva<div className="password-field"><input type={showMemberPassword ? "text" : "password"} value={memberPassword} onChange={(event) => setMemberPassword(event.target.value)} autoComplete="new-password" minLength={12} maxLength={256} placeholder="Mínimo 12 caracteres" required /><PasswordVisibilityButton visible={showMemberPassword} onClick={() => setShowMemberPassword((visible) => !visible)} /></div><small>Usa el ojo para revisar la contraseña antes de guardarla.</small></label></div><div className="form-actions"><button type="button" className="secondary-button" onClick={closePasswordAssignment} disabled={isSaving}>Cancelar</button><button type="submit" className="primary-button" disabled={isSaving || memberPassword.length < 12}>{isSaving ? "Guardando…" : "Guardar contraseña"}</button></div></form></section></div>}
       {isLoading ? <section className="panel billing-empty"><p>Cargando administración…</p></section> : <>
         <section className="admin-grid">
           <article className="panel">
@@ -257,7 +295,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
           <form className="admin-invite-form" onSubmit={createUser}>
             <label>Nombre completo<input value={newUserName} maxLength={160} onChange={(event) => setNewUserName(event.target.value)} placeholder="Nombre y apellido" required /></label>
             <label>Correo<input type="email" value={newUserEmail} onChange={(event) => setNewUserEmail(event.target.value)} placeholder="nombre@empresa.cl" required /></label>
-            <label>Contraseña inicial<input type="password" minLength={12} value={newUserPassword} onChange={(event) => setNewUserPassword(event.target.value)} placeholder="Mínimo 12 caracteres" required /></label>
+            <label>Contraseña inicial<div className="password-field"><input type={showNewUserPassword ? "text" : "password"} minLength={12} value={newUserPassword} onChange={(event) => setNewUserPassword(event.target.value)} placeholder="Mínimo 12 caracteres" autoComplete="new-password" required /><PasswordVisibilityButton visible={showNewUserPassword} onClick={() => setShowNewUserPassword((visible) => !visible)} /></div></label>
             <label>Rol<select value={newUserRole} onChange={(event) => setNewUserRole(event.target.value as OrganizationRole)}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             <button className="primary-button" type="submit" disabled={isSaving || !organizationId}>Crear usuario</button>
           </form>
@@ -267,7 +305,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
 
         <section className="table-section">
           <div className="table-heading"><div><span className="panel-label">MIEMBROS</span><h2>Accesos de {current?.legal_name ?? "la organización"}</h2><p>{membersLoadError ?? `${members.length} activo(s) · ${invitations.length} invitación(es) pendiente(s).`}</p></div><button type="button" className="secondary-button" disabled={isSaving} onClick={() => void loadMembers(organizationId)}>Actualizar</button></div>
-          <div className="table-scroll"><table className="admin-members-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th>Fecha</th><th>Acción</th></tr></thead><tbody>{membersLoadError ? <tr><td colSpan={5}>No se pudo cargar la información de accesos.</td></tr> : <>{invitations.map((invitation) => <tr key={`invitation-${invitation.id}`}><td><strong>{invitation.email}</strong><small>Invitación enviada por correo</small></td><td>{roleLabels[invitation.role]}</td><td><span className="status pending">Pendiente</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(invitation.invitedAt))}</td><td><button type="button" className="text-button" disabled={isSaving} onClick={() => void resendInvitation(invitation.id)}>Reenviar invitación</button></td></tr>)}{members.map((member) => <tr key={member.userId}><td><strong>{member.profile?.full_name || member.profile?.email || "Usuario"}</strong><small>{member.profile?.email ?? "Correo no disponible"}</small></td><td><select value={member.role} onChange={(event) => void changeRole(member.userId, event.target.value as OrganizationRole)} disabled={isSaving}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td><span className="status paid">Activo</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(member.createdAt))}</td><td><div className="member-actions"><button type="button" className="text-button" disabled={isSaving} onClick={() => void generateRecoveryLink(member)}>Generar enlace</button><button type="button" className="text-button" disabled={isSaving} onClick={() => void removeMember(member.userId)}>Quitar</button></div></td></tr>)}</>}</tbody></table></div>
+          <div className="table-scroll"><table className="admin-members-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th>Fecha</th><th>Acción</th></tr></thead><tbody>{membersLoadError ? <tr><td colSpan={5}>No se pudo cargar la información de accesos.</td></tr> : <>{invitations.map((invitation) => <tr key={`invitation-${invitation.id}`}><td><strong>{invitation.email}</strong><small>Invitación enviada por correo</small></td><td>{roleLabels[invitation.role]}</td><td><span className="status pending">Pendiente</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(invitation.invitedAt))}</td><td><button type="button" className="text-button" disabled={isSaving} onClick={() => void resendInvitation(invitation.id)}>Reenviar invitación</button></td></tr>)}{members.map((member) => <tr key={member.userId}><td><strong>{member.profile?.full_name || member.profile?.email || "Usuario"}</strong><small>{member.profile?.email ?? "Correo no disponible"}</small></td><td><select value={member.role} onChange={(event) => void changeRole(member.userId, event.target.value as OrganizationRole)} disabled={isSaving}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td><span className="status paid">Activo</span></td><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(member.createdAt))}</td><td><div className="member-actions"><button type="button" className="text-button" disabled={isSaving} onClick={() => openPasswordAssignment(member)}>Asignar contraseña</button><button type="button" className="text-button" disabled={isSaving} onClick={() => void generateRecoveryLink(member)}>Generar enlace</button><button type="button" className="text-button" disabled={isSaving} onClick={() => void removeMember(member.userId)}>Quitar</button></div></td></tr>)}</>}</tbody></table></div>
           {!membersLoadError && !members.length && !invitations.length && <p className="billing-empty">Aún no hay accesos ni invitaciones para esta organización.</p>}
         </section>
       </>}
