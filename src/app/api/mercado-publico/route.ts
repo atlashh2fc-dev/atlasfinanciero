@@ -15,9 +15,9 @@ async function organizationContext(organizationId: string, userId: string) {
   const supabase = await createClient();
   const [{ data: membership }, { data: settings }] = await Promise.all([
     supabase.from("organization_memberships").select("organization_id").eq("organization_id", organizationId).eq("user_id", userId).maybeSingle(),
-    supabase.from("public_market_radar_settings").select("search_keywords, excluded_keywords").eq("organization_id", organizationId).maybeSingle(),
+    supabase.from("public_market_radar_settings").select("search_keywords, excluded_keywords, minimum_score").eq("organization_id", organizationId).maybeSingle(),
   ]);
-  return membership ? { keywords: settings?.search_keywords ?? [], excluded: settings?.excluded_keywords ?? [] } : null;
+  return membership ? { keywords: settings?.search_keywords ?? [], excluded: settings?.excluded_keywords ?? [], minimumScore: Math.max(0, Math.min(100, Number(settings?.minimum_score ?? 35))) } : null;
 }
 
 export async function GET(request: NextRequest) {
@@ -54,13 +54,16 @@ export async function GET(request: NextRequest) {
 
     const needle = keyword.toLocaleLowerCase("es-CL");
     const matches = tenders.filter((item) => !needle || `${item.code} ${item.name}`.toLocaleLowerCase("es-CL").includes(needle)).map((item) => ({ ...item, match: scoreTender(item, undefined, context.keywords, context.excluded) })).sort((left, right) => {
+      const scoreDifference = right.match.score - left.match.score;
+      if (scoreDifference) return scoreDifference;
       if (!left.closeAt) return 1;
       if (!right.closeAt) return -1;
       return left.closeAt.localeCompare(right.closeAt);
     });
+    const relevantMatches = matches.filter((item) => item.match.score >= context.minimumScore).length;
     return NextResponse.json({
       tenders: matches.slice(0, limit),
-      counts: { source: numeric(payload.Cantidad) ?? tenders.length, matched: matches.length, returned: Math.min(matches.length, limit) },
+      counts: { source: numeric(payload.Cantidad) ?? tenders.length, evaluated: matches.length, matched: relevantMatches, returned: Math.min(matches.length, limit), minimumScore: context.minimumScore },
       fetchedAt: text(payload.FechaCreacion) || new Date().toISOString(),
       ticketMode: process.env.CHILECOMPRA_API_TICKET?.trim() ? "organization" : "documentation",
       source: { name: "API Mercado Público · ChileCompra", url: "https://www.chilecompra.cl/api/" },

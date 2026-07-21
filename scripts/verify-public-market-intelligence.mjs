@@ -9,6 +9,7 @@ const read = (path) => readFileSync(resolve(root, path), "utf8");
 const component = read("src/components/public-market-crm.tsx");
 const intelligence = read("src/lib/mercado-publico/intelligence.ts");
 const api = read("src/app/api/mercado-publico/intelligence/route.ts");
+const searchApi = read("src/app/api/mercado-publico/route.ts");
 const cron = read("src/app/api/mercado-publico/radar/route.ts");
 const migration = read("supabase/migrations/20260720215122_add_public_market_commercial_intelligence.sql");
 const vercel = JSON.parse(read("vercel.json"));
@@ -26,6 +27,9 @@ includes(intelligence, 'tier = score >= 65 ? "green" : score >= 35 ? "yellow" : 
 includes(component, "public-market-fit", "La vista no expone el semáforo de afinidad.");
 includes(component, "Por qué encaja", "Falta explicar el resultado del match.");
 includes(component, "Brechas y riesgos", "Falta explicar las brechas comerciales.");
+includes(searchApi, "right.match.score - left.match.score", "La búsqueda no prioriza las coincidencias de mayor afinidad.");
+includes(searchApi, "minimum_score", "La cantidad de coincidencias no usa el umbral configurable del radar.");
+includes(component, 'aria-sort="descending"', "La tabla no comunica que el match está ordenado de mayor a menor.");
 
 for (const field of ["contractDuration", "paymentTerms", "guarantees", "fines", "evaluationCriteria", "renewal", "subcontracting"]) {
   includes(intelligence, field, `El resumen ejecutivo no cubre ${field}.`);
