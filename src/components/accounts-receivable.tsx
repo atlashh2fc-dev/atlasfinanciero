@@ -353,6 +353,13 @@ export function AccountsReceivable({
       ),
     [regularizationReceivables],
   );
+  const infobusinessReconciliationRows = useMemo(
+    () =>
+      recordsForYear.filter((record) =>
+        record.id.startsWith("infobusiness-reconciliation-"),
+      ),
+    [recordsForYear],
+  );
 
   function openFollowup(record: InvoiceRecord) {
     const current = followupsByDocument.get(record.id);
@@ -596,6 +603,61 @@ export function AccountsReceivable({
           </small>
         </article>
       </section>
+
+      {infobusinessReconciliationRows.length > 0 && (
+        <section className="panel infobusiness-reconciliation-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="panel-label">CONCILIACIÓN DE COBRANZA</span>
+              <h2>Infobusiness · saldo pendiente de regularización</h2>
+              <p>
+                El saldo exigible es la diferencia neta por abonar más el IVA
+                pendiente de cada período. Los abonos se mantienen en bruto.
+              </p>
+            </div>
+            <span className="unit">CLP</span>
+          </div>
+          <div className="table-scroll">
+            <table className="infobusiness-reconciliation-table">
+              <thead>
+                <tr>
+                  <th>Período</th>
+                  <th className="money-col">Neto a facturar</th>
+                  <th className="money-col">Abonado</th>
+                  <th className="money-col">Neto por abonar</th>
+                  <th className="money-col">IVA pendiente</th>
+                  <th className="money-col">Saldo por cobrar</th>
+                </tr>
+              </thead>
+              <tbody>
+                {infobusinessReconciliationRows.map((record) => {
+                  const breakdown = reconciledBalanceBreakdown(record.id);
+                  return (
+                    <tr key={record.id}>
+                      <td>{formatDate(record.issueDate)}</td>
+                      <td className="money-col">
+                        {money.format(Number(record.netAmount ?? 0))}
+                      </td>
+                      <td className="money-col">
+                        {money.format(reconciledPaidAmount(record.id))}
+                      </td>
+                      <td className="money-col">
+                        {money.format(breakdown?.net ?? 0)}
+                      </td>
+                      <td className="money-col">
+                        {money.format(breakdown?.vat ?? 0)}
+                      </td>
+                      <td className="money-col">
+                        <strong>{money.format(outstandingBalance(record))}</strong>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       <section className="executive-grid">
         <article className="panel executive-chart">
