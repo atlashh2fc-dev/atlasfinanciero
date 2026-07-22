@@ -1848,6 +1848,10 @@ type StoredDocument = {
   attachment_name: string | null;
   attachment_mime_type: string | null;
   attachment_size: number | null;
+  payment_proof_path: string | null;
+  payment_proof_name: string | null;
+  payment_proof_mime_type: string | null;
+  payment_proof_size: number | null;
   source_file_name: string | null;
   source_sheet_name: string | null;
   source_row: number | null;
@@ -1951,8 +1955,11 @@ export function FinanceDashboard() {
   const [factoringProviders, setFactoringProviders] = useState<FactoringProvider[]>([]);
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [editDocumentFile, setEditDocumentFile] = useState<File | null>(null);
+  const [paymentProofFile, setPaymentProofFile] = useState<File | null>(null);
+  const [editPaymentProofFile, setEditPaymentProofFile] = useState<File | null>(null);
   const [loadingDocumentSources, setLoadingDocumentSources] = useState(false);
   const [attachmentByDocument, setAttachmentByDocument] = useState<Record<string, boolean>>({});
+  const [paymentProofByDocument, setPaymentProofByDocument] = useState<Record<string, boolean>>({});
   const [formError, setFormError] = useState("");
   const [sessionRecords, setSessionRecords] = useState<InvoiceRecord[]>([]);
   const [databaseRecords, setDatabaseRecords] = useState<InvoiceRecord[]>([]);
@@ -1963,6 +1970,7 @@ export function FinanceDashboard() {
     let active = true;
     setDatabaseRecords([]);
     setAttachmentByDocument({});
+    setPaymentProofByDocument({});
     fetch("/api/issued-documents", { cache: "no-store" })
       .then((response) =>
         response.ok
@@ -1973,6 +1981,7 @@ export function FinanceDashboard() {
         if (active && payload) {
           setDatabaseRecords(payload.documents.map(mapStoredDocument));
           setAttachmentByDocument(Object.fromEntries(payload.documents.map((document) => [document.id, Boolean(document.attachment_path)])));
+          setPaymentProofByDocument(Object.fromEntries(payload.documents.map((document) => [document.id, Boolean(document.payment_proof_path)])));
         }
       })
       .catch(() => undefined);
@@ -2226,6 +2235,7 @@ export function FinanceDashboard() {
       factoringRecourseAt: record.factoringRecourseAt ?? "",
     });
     setEditDocumentFile(null);
+    setEditPaymentProofFile(null);
     setFormError("");
   }
 
@@ -2235,12 +2245,23 @@ export function FinanceDashboard() {
       setFormError("Indica el estado actual del documento.");
       return;
     }
+    if (
+      editDraft.status === "Pagada" &&
+      !editPaymentProofFile &&
+      !paymentProofByDocument[editingRecord.id]
+    ) {
+      setFormError(
+        "Al marcar la factura como pagada debes adjuntar el comprobante de pago.",
+      );
+      return;
+    }
     const formData = new FormData();
     formData.set("id", editingRecord.id);
     Object.entries(editDraft).forEach(([field, value]) =>
       formData.set(field, value),
     );
     if (editDocumentFile) formData.set("file", editDocumentFile);
+    if (editPaymentProofFile) formData.set("paymentProof", editPaymentProofFile);
     const response = await fetch("/api/issued-documents", {
       method: "PATCH",
       body: formData,
@@ -2250,13 +2271,19 @@ export function FinanceDashboard() {
         error?: string;
       } | null;
       setFormError(
-        payload?.error === "invalid_document_attachment"
-          ? "El adjunto debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
-          : payload?.error === "invalid_document_update"
-            ? "Revisa el tipo de documento, estado y fecha de pago antes de guardar."
-            : payload?.error === "unable_to_upload_document_attachment"
-              ? "No fue posible subir el respaldo. Intenta nuevamente con el mismo archivo."
-              : "No fue posible actualizar el documento. Revisa tu sesión, permisos y datos.",
+        payload?.error === "payment_proof_required"
+          ? "Al marcar la factura como pagada debes adjuntar el comprobante de pago."
+          : payload?.error === "invalid_payment_proof"
+            ? "El comprobante debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
+            : payload?.error === "unable_to_upload_payment_proof"
+                ? "No fue posible subir el comprobante. Intenta nuevamente con el mismo archivo."
+                : payload?.error === "invalid_document_attachment"
+                  ? "El adjunto debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
+                  : payload?.error === "invalid_document_update"
+                    ? "Revisa el tipo de documento, estado y fecha de pago antes de guardar."
+                    : payload?.error === "unable_to_upload_document_attachment"
+                      ? "No fue posible subir el respaldo. Intenta nuevamente con el mismo archivo."
+                      : "No fue posible actualizar el documento. Revisa tu sesión, permisos y datos.",
       );
       return;
     }
@@ -2271,7 +2298,9 @@ export function FinanceDashboard() {
       ...current,
       [updated.id]: Boolean(payload.document.attachment_path),
     }));
+    setPaymentProofByDocument((current) => ({ ...current, [updated.id]: Boolean(payload.document.payment_proof_path) }));
     setEditDocumentFile(null);
+    setEditPaymentProofFile(null);
     setEditingRecord(null);
     setFormError("");
   }
@@ -2293,6 +2322,12 @@ export function FinanceDashboard() {
       );
       return;
     }
+    if (draft.status === "Pagada" && !paymentProofFile) {
+      setFormError(
+        "Al registrar una factura como pagada debes adjuntar el comprobante de pago.",
+      );
+      return;
+    }
     const formData = new FormData();
     formData.set("invoiceNumber", draft.invoiceNumber);
     formData.set("issueDate", draft.issueDate);
@@ -2306,6 +2341,7 @@ export function FinanceDashboard() {
     formData.set("status", draft.status);
     formData.set("paymentCondition", draft.paymentCondition);
     if (documentFile) formData.set("file", documentFile);
+    if (paymentProofFile) formData.set("paymentProof", paymentProofFile);
     const response = await fetch("/api/issued-documents", {
       method: "POST",
       body: formData,
@@ -2319,9 +2355,15 @@ export function FinanceDashboard() {
           ? "Inicia sesión con un usuario autorizado para guardar el documento."
           : payload?.error === "organization_selection_required"
             ? "Selecciona la empresa activa antes de registrar documentos."
-            : payload?.error === "invalid_document_attachment"
-              ? "El adjunto debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
-            : "No fue posible guardar el documento. Revisa tus permisos y los datos ingresados.",
+            : payload?.error === "payment_proof_required"
+              ? "Al registrar una factura como pagada debes adjuntar el comprobante de pago."
+              : payload?.error === "invalid_payment_proof"
+                ? "El comprobante debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
+                : payload?.error === "unable_to_upload_payment_proof"
+                  ? "No fue posible subir el comprobante. Intenta nuevamente con el mismo archivo."
+                  : payload?.error === "invalid_document_attachment"
+                    ? "El adjunto debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
+                    : "No fue posible guardar el documento. Revisa tus permisos y los datos ingresados.",
       );
       return;
     }
@@ -2346,6 +2388,10 @@ export function FinanceDashboard() {
         attachment_name: string | null;
         attachment_mime_type: string | null;
         attachment_size: number | null;
+        payment_proof_path: string | null;
+        payment_proof_name: string | null;
+        payment_proof_mime_type: string | null;
+        payment_proof_size: number | null;
         source_file_name: string;
         source_sheet_name: string;
         source_row: number;
@@ -2376,6 +2422,10 @@ export function FinanceDashboard() {
       attachment_name: payload.document.attachment_name,
       attachment_mime_type: payload.document.attachment_mime_type,
       attachment_size: payload.document.attachment_size,
+      payment_proof_path: payload.document.payment_proof_path,
+      payment_proof_name: payload.document.payment_proof_name,
+      payment_proof_mime_type: payload.document.payment_proof_mime_type,
+      payment_proof_size: payload.document.payment_proof_size,
       source_file_name: payload.document.source_file_name,
       source_sheet_name: payload.document.source_sheet_name,
       source_row: payload.document.source_row,
@@ -2386,8 +2436,10 @@ export function FinanceDashboard() {
       );
     else setSessionRecords((current) => [created, ...current]);
     if (payload.document.attachment_path) setAttachmentByDocument((current) => ({ ...current, [created.id]: true }));
+    if (payload.document.payment_proof_path) setPaymentProofByDocument((current) => ({ ...current, [created.id]: true }));
     setDraft(blankDraft);
     setDocumentFile(null);
+    setPaymentProofFile(null);
     setFormError("");
     setShowEntry(false);
     setActiveModule("Facturas");
@@ -2398,6 +2450,12 @@ export function FinanceDashboard() {
     const payload = await response.json().catch(() => null) as { signedUrl?: string } | null;
     if (response.ok && payload?.signedUrl) window.open(payload.signedUrl, "_blank", "noopener,noreferrer");
     else setFormError("No fue posible abrir el archivo adjunto.");
+  }
+  async function openPaymentProof(documentId: string) {
+    const response = await fetch(`/api/issued-documents?fileId=${encodeURIComponent(documentId)}&file=payment-proof`);
+    const payload = await response.json().catch(() => null) as { signedUrl?: string } | null;
+    if (response.ok && payload?.signedUrl) window.open(payload.signedUrl, "_blank", "noopener,noreferrer");
+    else setFormError("No fue posible abrir el comprobante de pago.");
   }
 
   async function signOut() {
@@ -3146,9 +3204,10 @@ export function FinanceDashboard() {
                         </td>
                         <td>
                           <div className="document-row-actions">
-                            {attachmentByDocument[record.id] && <button type="button" className="text-button" onClick={() => void openDocumentAttachment(record.id)}>Ver adjunto</button>}
+                            {attachmentByDocument[record.id] && <button type="button" className="text-button" onClick={() => void openDocumentAttachment(record.id)}>Ver factura</button>}
+                            {paymentProofByDocument[record.id] && <button type="button" className="text-button" onClick={() => void openPaymentProof(record.id)}>Ver comprobante</button>}
                             {hasEditPermission && databaseRecords && <button type="button" className="secondary-button" onClick={() => startDocumentEdit(record)}>Editar</button>}
-                            {!attachmentByDocument[record.id] && !(hasEditPermission && databaseRecords) && "—"}
+                            {!attachmentByDocument[record.id] && !paymentProofByDocument[record.id] && !(hasEditPermission && databaseRecords) && "—"}
                           </div>
                         </td>
                       </tr>
@@ -3297,6 +3356,20 @@ export function FinanceDashboard() {
                   <input type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" onChange={(event) => setDocumentFile(event.target.files?.[0] ?? null)} />
                   <small>PDF, JPG o PNG · máximo 50 MB</small>
                 </label>
+                {draft.status === "Pagada" && (
+                  <label>
+                    Comprobante de pago *
+                    <input
+                      type="file"
+                      required
+                      accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                      onChange={(event) =>
+                        setPaymentProofFile(event.target.files?.[0] ?? null)
+                      }
+                    />
+                    <small>Se guarda separado de la factura · PDF, JPG o PNG · máximo 50 MB</small>
+                  </label>
+                )}
               </div>
               {formError && <p className="form-error">{formError}</p>}
               <div className="form-actions">
@@ -3436,6 +3509,33 @@ export function FinanceDashboard() {
                     placeholder="Transferencia, depósito…"
                   />
                 </label>
+                {editDraft.status === "Pagada" && (
+                  <label>
+                    Comprobante de pago *
+                    <input
+                      type="file"
+                      required={!paymentProofByDocument[editingRecord.id]}
+                      accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                      onChange={(event) =>
+                        setEditPaymentProofFile(event.target.files?.[0] ?? null)
+                      }
+                    />
+                    <small>
+                      {paymentProofByDocument[editingRecord.id]
+                        ? "Ya existe un comprobante. Carga otro archivo para reemplazarlo."
+                        : "Obligatorio al registrar el pago · PDF, JPG o PNG · máximo 50 MB"}
+                    </small>
+                    {paymentProofByDocument[editingRecord.id] && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => void openPaymentProof(editingRecord.id)}
+                      >
+                        Ver comprobante actual
+                      </button>
+                    )}
+                  </label>
+                )}
                 {[
                   "Factorizada",
                   "Pagada al factoring",
