@@ -2125,6 +2125,7 @@ td small {
 .p2p-payment-batch-form .p2p-form-wide { grid-column:1 / -1; }
 .p2p-payment-batch-form .table-scroll table { min-width:920px; }
 .p2p-selection-state { display:inline-flex; align-items:center; min-height:26px; padding:0 8px; border-radius:999px; background:#e8f5ed; color:#28764d; font-size:11px; font-weight:800; }
+.p2p-modal-message { margin:0 0 14px; }
 .p2p-detail-modal { width:min(880px,100%); border:1px solid #ffffffcf; background:linear-gradient(135deg,#fffffff4,#f1f5ffec); box-shadow:0 32px 100px #101b3760; backdrop-filter:blur(24px) saturate(1.25); }
 .p2p-detail-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:18px 0; }
 .p2p-detail-grid article,.p2p-detail-section { padding:13px; border:1px solid #dce5f2; border-radius:10px; background:#ffffffa8; }

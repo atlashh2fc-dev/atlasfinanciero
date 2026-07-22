@@ -502,8 +502,9 @@ export async function GET(request: NextRequest) {
               linesByOrder.get(order.id) ?? [],
             )
           : false;
+      const isDirectDocument = !document.vendor_purchase_order_id;
       const paymentEligible =
-        document.purchase_match_status === "not_required"
+        isDirectDocument || document.purchase_match_status === "not_required"
           ? !reservedDocumentIds.has(document.id)
           : approvedException
             ? !reservedDocumentIds.has(document.id)
@@ -1462,13 +1463,15 @@ export async function POST(request: NextRequest) {
         { error: "duplicated_payment_documents" },
         { status: 400 },
       );
+    const queryIds = (ids: string[]) =>
+      ids.length ? ids : ["00000000-0000-0000-0000-000000000000"];
     const { data: documents, error: documentsError } = await context.supabase
       .from("received_documents")
       .select(
         "id, supplier_counterparty_id, supplier_name, document_number, due_date, total_amount, payment_status, vendor_purchase_order_id, purchase_match_status, purchase_match_approved_at, purchase_match_approved_by",
       )
       .eq("organization_id", organizationId)
-      .in("id", documentIds);
+      .in("id", queryIds(documentIds));
     if (
       documentsError ||
       !documents ||
@@ -1482,6 +1485,30 @@ export async function POST(request: NextRequest) {
         { error: "payment_documents_not_available" },
         { status: 409 },
       );
+    const directDocumentIds = documents
+      .filter((document) => !document.vendor_purchase_order_id)
+      .map((document) => document.id);
+    if (directDocumentIds.length) {
+      const { error: directDocumentsError } = await context.supabase
+        .from("received_documents")
+        .update({
+          purchase_match_status: "not_required",
+          purchase_match_note: "Documento directo sin orden de compra asociada.",
+          purchase_match_checked_at: new Date().toISOString(),
+          purchase_match_checked_by: context.user.id,
+        })
+        .eq("organization_id", organizationId)
+        .is("vendor_purchase_order_id", null)
+        .in("id", directDocumentIds);
+      if (directDocumentsError)
+        return NextResponse.json(
+          { error: "unable_to_validate_payment_documents" },
+          { status: 409 },
+        );
+      for (const document of documents)
+        if (!document.vendor_purchase_order_id)
+          document.purchase_match_status = "not_required";
+    }
     const purchaseOrderIds = [
       ...new Set(
         documents
@@ -1502,29 +1529,29 @@ export async function POST(request: NextRequest) {
           "id, supplier_counterparty_id, supplier_name, total_amount, status",
         )
         .eq("organization_id", organizationId)
-        .in("id", purchaseOrderIds),
+        .in("id", queryIds(purchaseOrderIds)),
       context.supabase
         .from("received_documents")
         .select("vendor_purchase_order_id, total_amount")
         .eq("organization_id", organizationId)
-        .in("vendor_purchase_order_id", purchaseOrderIds),
+        .in("vendor_purchase_order_id", queryIds(purchaseOrderIds)),
       context.supabase
         .from("payment_batch_items")
         .select("payment_batch_id, received_document_id")
         .eq("organization_id", organizationId)
-        .in("received_document_id", documentIds),
+        .in("received_document_id", queryIds(documentIds)),
       context.supabase
         .from("direct_payables")
         .select(
           "id, payable_number, supplier_name, invoice_number, due_date, total_amount, status, is_reference",
         )
         .eq("organization_id", organizationId)
-        .in("id", directPayableIds),
+        .in("id", queryIds(directPayableIds)),
       context.supabase
         .from("payment_batch_items")
         .select("payment_batch_id, direct_payable_id")
         .eq("organization_id", organizationId)
-        .in("direct_payable_id", directPayableIds),
+        .in("direct_payable_id", queryIds(directPayableIds)),
     ]);
     if (
       purchaseOrdersError ||

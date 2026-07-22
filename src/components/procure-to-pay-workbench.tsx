@@ -109,6 +109,12 @@ type DirectPayable = {
   payment_eligible: boolean;
   payment_block_reason: string | null;
 };
+type PostResult =
+  | {
+      ok: true;
+      payload: { proposal?: { proposalNumber?: string } } | null;
+    }
+  | { ok: false; error: string | null };
 type FinancingPlan = {
   id: string;
   plan_number: string;
@@ -230,6 +236,27 @@ function paymentBlockLabel(reason: string | null) {
           "Referencia de factoring: se controla desde Cuentas por pagar, sin propuesta ni salida de caja.",
       } as Record<string, string>
     )[reason ?? ""] ?? "No cumple las condiciones para pago."
+  );
+}
+function paymentProposalErrorMessage(code: string | null) {
+  return (
+    (
+      {
+        payment_document_already_reserved:
+          "Uno de los documentos ya está incluido en otra propuesta activa. Actualizamos la lista para que puedas corregir la selección.",
+        payment_documents_not_available:
+          "Uno de los documentos ya no está disponible para pago. Actualizamos la lista para que puedas revisar la selección.",
+        payment_documents_not_validated_against_purchase_order:
+          "La propuesta contiene un documento con OC que aún no cumple sus validaciones. Los documentos sin OC se procesan como pago directo.",
+        direct_payables_not_available:
+          "Una cuenta directa ya no está aprobada o disponible para pago. Actualizamos la lista para que puedas revisar la selección.",
+        unable_to_create_payment_proposal_items:
+          "No se pudieron vincular los documentos a la propuesta. No se creó ningún pago; vuelve a intentar con la lista actualizada.",
+        unable_to_create_payment_proposal:
+          "No se pudo crear la propuesta. Intenta nuevamente; si persiste, avísanos con este mensaje.",
+      } as Record<string, string>
+    )[code ?? ""] ??
+    "No se pudo crear la propuesta. Actualizamos la lista para que puedas revisar la selección."
   );
 }
 function paymentOrderStatusLabel(status: string) {
@@ -362,17 +389,22 @@ export function ProcureToPayWorkbench({
       setData(null);
       return;
     }
-    const response = await fetch(
-      `/api/procure-to-pay?organizationId=${encodeURIComponent(organizationId)}`,
-      { cache: "no-store" },
-    );
-    if (!response.ok) {
+    try {
+      const response = await fetch(
+        `/api/procure-to-pay?organizationId=${encodeURIComponent(organizationId)}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) {
+        setData(null);
+        setMessage("No fue posible cargar compras y pagos.");
+        return;
+      }
+      setData((await response.json()) as Payload);
+      setMessage(null);
+    } catch {
       setData(null);
       setMessage("No fue posible cargar compras y pagos.");
-      return;
     }
-    setData((await response.json()) as Payload);
-    setMessage(null);
   }
   useEffect(() => {
     void load();
@@ -631,22 +663,39 @@ export function ProcureToPayWorkbench({
       supplierName: supplier ? supplier.trade_name || supplier.legal_name : "",
     }));
   }
-  async function post(body: Record<string, unknown>) {
+  async function postWithResult(
+    body: Record<string, unknown>,
+  ): Promise<PostResult> {
     setSaving(true);
-    const response = await fetch("/api/procure-to-pay", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ organizationId, ...body }),
-    });
-    setSaving(false);
-    if (!response.ok) {
+    try {
+      const response = await fetch("/api/procure-to-pay", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ organizationId, ...body }),
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        proposal?: { proposalNumber?: string };
+      } | null;
+      if (!response.ok) {
+        await load();
+        return { ok: false, error: payload?.error ?? null };
+      }
+      await load();
+      return { ok: true, payload };
+    } catch {
+      return { ok: false, error: "network_error" };
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function post(body: Record<string, unknown>) {
+    const result = await postWithResult(body);
+    if (!result.ok)
       setMessage(
         "No fue posible guardar. Revisa los datos, el estado del flujo y tus permisos.",
       );
-      return false;
-    }
-    await load();
-    return true;
+    return result.ok;
   }
   async function transition(id: string, action: string) {
     setSaving(true);
@@ -909,17 +958,21 @@ export function ProcureToPayWorkbench({
   }
   async function createBatch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (
-      await post({
-        action: "create_payment_batch",
-        bankAccountId: batch.bankAccountId || undefined,
-        scheduledFor: batch.scheduledFor,
-        notes: batch.notes,
-        documentIds: batch.documentIds,
-        directPayableIds: batch.directPayableIds,
-        cashFlowCategories,
-      })
-    ) {
+    const result = await postWithResult({
+      action: "create_payment_batch",
+      bankAccountId: batch.bankAccountId || undefined,
+      scheduledFor: batch.scheduledFor,
+      notes: batch.notes,
+      documentIds: batch.documentIds,
+      directPayableIds: batch.directPayableIds,
+      cashFlowCategories,
+    });
+    if (!result.ok) {
+      setMessage(paymentProposalErrorMessage(result.error));
+      return;
+    }
+    {
+      const proposalNumber = result.payload?.proposal?.proposalNumber;
       setBatch({
         bankAccountId: "",
         scheduledFor: today(),
@@ -930,8 +983,13 @@ export function ProcureToPayWorkbench({
       setCashFlowCategories({});
       setShowBatchForm(false);
       setIsPreparingSelectedPayments(false);
+      setTab("proposals");
+      setSearch("");
+      setStateFilter("all");
       setMessage(
-        "Propuesta de pago creada como borrador. Envíala desde su expediente para aprobación.",
+        proposalNumber
+          ? `Propuesta ${proposalNumber} creada como borrador. Ya puedes abrirla para enviarla a aprobación.`
+          : "Propuesta de pago creada como borrador. Ya puedes abrirla para enviarla a aprobación.",
       );
     }
   }
@@ -2452,6 +2510,11 @@ export function ProcureToPayWorkbench({
               ×
             </button>
           </div>
+          {message && (
+            <p className="operation-message p2p-modal-message" role="alert">
+              {message}
+            </p>
+          )}
           <form
             className="admin-form p2p-compact-form p2p-payment-batch-form"
             onSubmit={createBatch}
