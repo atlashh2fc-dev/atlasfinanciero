@@ -348,7 +348,6 @@ export function ProcureToPayWorkbench({
     notes: "",
   });
   const [batch, setBatch] = useState({
-    batchNumber: "",
     bankAccountId: "",
     scheduledFor: today(),
     notes: "",
@@ -913,7 +912,6 @@ export function ProcureToPayWorkbench({
     if (
       await post({
         action: "create_payment_batch",
-        batchNumber: batch.batchNumber,
         bankAccountId: batch.bankAccountId || undefined,
         scheduledFor: batch.scheduledFor,
         notes: batch.notes,
@@ -923,7 +921,6 @@ export function ProcureToPayWorkbench({
       })
     ) {
       setBatch({
-        batchNumber: "",
         bankAccountId: "",
         scheduledFor: today(),
         notes: "",
@@ -2442,7 +2439,7 @@ export function ProcureToPayWorkbench({
               <p>
                 {isPreparingSelectedPayments
                   ? "Revisa los documentos que seleccionaste. Para cambiar la selección, vuelve a la bandeja de cuentas por pagar."
-                  : "Incluye documentos elegibles y cuentas directas que ya fueron aprobadas."}
+                  : "Incluye documentos elegibles y cuentas directas que ya fueron aprobadas."} El número de propuesta se asignará automáticamente al crearla.
               </p>
             </div>
             <span className="unit">{money.format(selectedTotal)}</span>
@@ -2459,19 +2456,6 @@ export function ProcureToPayWorkbench({
             className="admin-form p2p-compact-form p2p-payment-batch-form"
             onSubmit={createBatch}
           >
-            <label>
-              N° propuesta *
-              <input
-                required
-                value={batch.batchNumber}
-                onChange={(event) =>
-                  setBatch((current) => ({
-                    ...current,
-                    batchNumber: event.target.value,
-                  }))
-                }
-              />
-            </label>
             <label>
               Fecha de pago *
               <input

@@ -1420,11 +1420,6 @@ export async function POST(request: NextRequest) {
   }
 
   if (action === "create_payment_batch") {
-    const batchNumber = text(
-      body?.batchNumber ?? body?.proposalNumber,
-      100,
-      true,
-    );
     const scheduledFor = date(body?.scheduledFor);
     const bankAccountId = body?.bankAccountId
       ? isUuid(body.bankAccountId)
@@ -1447,7 +1442,6 @@ export async function POST(request: NextRequest) {
         ? (body.directPayableIds as string[])
         : null;
     if (
-      !batchNumber ||
       !scheduledFor ||
       !itemCategories ||
       !documentIds ||
@@ -1648,7 +1642,6 @@ export async function POST(request: NextRequest) {
       .from("payment_batches")
       .insert({
         organization_id: organizationId,
-        batch_number: batchNumber,
         bank_account_id: bankAccountId,
         scheduled_for: scheduledFor,
         currency_code: "CLP",
