@@ -214,6 +214,42 @@ function NavigationGroupIcon({ label }: { label: NavigationGroup["label"] }) {
   if (label === "PLANIFICACIÓN Y ANÁLISIS") return <svg {...iconProps}><path d="M4 19V5m0 14h16" /><path d="m7 15 4-4 3 2 5-6" /></svg>;
   return <svg {...iconProps}><circle cx="9" cy="8" r="3" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0m5-11v6m3-3h-6" /></svg>;
 }
+
+function NavigationItemIcon({ item }: { item: Module }) {
+  const iconProps = {
+    width: 17,
+    height: 17,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  if (item === "Inicio") return <svg {...iconProps}><path d="m4 11 8-7 8 7v9H4z" /><path d="M9 20v-5h6v5" /></svg>;
+  if (item === "Gestión 360") return <svg {...iconProps}><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></svg>;
+  if (item === "CRM y clientes" || item === "Remuneraciones") return <svg {...iconProps}><circle cx="9" cy="8" r="3" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0m2-10a3 3 0 0 1 0 6m1.5-8a3 3 0 0 1 0 5" /></svg>;
+  if (item === "Mercado Público") return <svg {...iconProps}><circle cx="10.5" cy="10.5" r="5.5" /><path d="m15 15 4.5 4.5M7 10.5h7M10.5 7v7" /></svg>;
+  if (item === "Prefacturación") return <svg {...iconProps}><path d="M6 3h9l4 4v14H6z" /><path d="M14 3v5h5M9 14l5-5 2 2-5 5-3 1z" /></svg>;
+  if (item === "Facturas" || item === "Cuentas por pagar") return <svg {...iconProps}><path d="M6 3h12v18H6z" /><path d="M9 8h6M9 12h6M9 16h3" /></svg>;
+  if (item === "Recurrentes") return <svg {...iconProps}><path d="M18 8a7 7 0 0 0-12-2L4 8m2-2v4h4M6 16a7 7 0 0 0 12 2l2-2m-2 2v-4h-4" /></svg>;
+  if (item === "Cuentas por cobrar") return <svg {...iconProps}><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></svg>;
+  if (item === "OC de clientes" || item === "Compras, obligaciones y pagos") return <svg {...iconProps}><path d="M7 5h10v15H7z" /><path d="M9 5V3h6v2M10 11h4m-4 4h4" /></svg>;
+  if (item === "Proveedores") return <svg {...iconProps}><path d="M5 20V6l7-3 7 3v14M3 20h18M9 9h1m4 0h1M9 13h1m4 0h1" /></svg>;
+  if (item === "Tesorería") return <svg {...iconProps}><path d="M4 7h16v11H4z" /><path d="M4 10h16M8 15h3" /></svg>;
+  if (item === "Contabilidad") return <svg {...iconProps}><path d="M5 4h14v16H5z" /><path d="M8 8h8M8 12h8M8 16h5" /></svg>;
+  if (item === "Proyecciones" || item === "Reportes") return <svg {...iconProps}><path d="M4 19V5m0 14h16" /><path d="m7 15 4-4 3 2 5-6" /></svg>;
+  if (item === "Planificación financiera") return <svg {...iconProps}><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4m8-4v4M4 10h16m-11 4h3m-3 3h6" /></svg>;
+  if (item === "Centros de costo") return <svg {...iconProps}><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></svg>;
+  if (item === "Imputaciones pendientes") return <svg {...iconProps}><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Z" /><path d="m4 12 8 4.5 8-4.5M4 16.5 12 21l8-4.5" /></svg>;
+  if (item === "Aprobaciones") return <svg {...iconProps}><circle cx="12" cy="12" r="8" /><path d="m8.5 12 2.3 2.3 4.8-5" /></svg>;
+  if (item === "Cierre financiero") return <svg {...iconProps}><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>;
+  if (item === "Bitácora de actividad") return <svg {...iconProps}><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2M8 4 6 6" /></svg>;
+  return <svg {...iconProps}><path d="M12 3v3m0 12v3m9-9h-3M6 12H3m15.4-6.4-2.1 2.1M7.7 16.3l-2.1 2.1m12.8 0-2.1-2.1M7.7 7.7 5.6 5.6" /><circle cx="12" cy="12" r="3" /></svg>;
+}
+
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
 type AccessProfile = {
   user: { email: string | null };
@@ -2131,6 +2167,7 @@ function mapStoredDocument(document: StoredDocument): InvoiceRecord {
 
 export function FinanceDashboard() {
   const [activeModule, setActiveModule] = useState<Module>("Inicio");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [expandedNavigationGroups, setExpandedNavigationGroups] = useState<string[]>([
     "RESUMEN",
   ]);
@@ -2869,11 +2906,22 @@ export function FinanceDashboard() {
   }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
+    <div className={`app-shell ${sidebarCollapsed ? "sidebar-is-collapsed" : ""}`}>
+      <aside className={`sidebar ${sidebarCollapsed ? "is-collapsed" : ""}`}>
         <div className="brand">
-          <img className="brand-logo" src="/atlas-financiero-logo.png" alt="" />
-          <span className="brand-name">Atlas <b>Financiero</b></span>
+          <div className="brand-identity">
+            <img className="brand-logo" src="/atlas-financiero-logo.png" alt="" />
+            <span className="brand-name">Atlas <b>Financiero</b></span>
+          </div>
+          <button
+            className="sidebar-collapse-button"
+            type="button"
+            onClick={() => setSidebarCollapsed((current) => !current)}
+            aria-label={sidebarCollapsed ? "Expandir navegación" : "Contraer navegación"}
+            title={sidebarCollapsed ? "Expandir navegación" : "Contraer navegación"}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m14 7-5 5 5 5" /><path d="M20 5v14" /></svg>
+          </button>
         </div>
         <div className="workspace-label">ESPACIO DE TRABAJO</div>
         <select
@@ -2915,9 +2963,9 @@ export function FinanceDashboard() {
               >
                 <span className="navigation-group-heading">
                   <span className="navigation-group-icon"><NavigationGroupIcon label={group.label} /></span>
-                  {group.label}
+                  <span className="navigation-group-label">{group.label}</span>
                 </span>
-                <span className="navigation-group-chevron" aria-hidden="true">⌄</span>
+                <span className="navigation-group-chevron" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m7 10 5 5 5-5" /></svg></span>
               </button>
               <div
                 className={`navigation-group-items ${(expandedNavigationGroups.includes(group.label) || group.label === activeNavigationGroup) ? "is-open" : ""}`}
@@ -2932,53 +2980,9 @@ export function FinanceDashboard() {
                   aria-describedby={`module-preview-${item.replaceAll(" ", "-")}`}
                 >
                   <span className="nav-icon">
-                  {item === "Gestión 360"
-                      ? "◈"
-                      : item === "Contabilidad"
-                        ? "⌘"
-                      : item === "Inicio"
-                      ? "⌂"
-                      : item === "Facturas"
-                        ? "▤"
-                        : item === "OC de clientes"
-                          ? "⌑"
-                          : item === "Proyecciones"
-                            ? "⌁"
-                          : item === "Recurrentes"
-                            ? "↻"
-                            : item === "Prefacturación"
-                              ? "✦"
-                            : item === "CRM y clientes"
-                                ? "◉"
-                                : item === "Mercado Público"
-                                  ? "◎"
-                                : item === "Cuentas por cobrar"
-                                  ? "◷"
-                                  : item === "Cuentas por pagar"
-                                  ? "▣"
-                                  : item === "Compras, obligaciones y pagos"
-                                    ? "▤"
-                                  : item === "Tesorería"
-                                    ? "◒"
-                                    : item === "Planificación financiera"
-                                      ? "⌁"
-                                  : item === "Remuneraciones"
-                                      ? "◫"
-                                      : item === "Centros de costo"
-                                        ? "⊞"
-                                        : item === "Imputaciones pendientes"
-                                          ? "◌"
-                                        : item === "Aprobaciones"
-                                          ? "✓"
-                                          : item === "Cierre financiero"
-                                            ? "◉"
-                                        : item === "Reportes"
-                                          ? "◔"
-                                          : item === "Bitácora de actividad"
-                                            ? "◷"
-                                          : "⚙"}
+                    <NavigationItemIcon item={item} />
                   </span>
-                  {item}
+                  <span className="nav-item-label">{item}</span>
                   {item === "Facturas" && (
                     <span className="nav-count">{records.length}</span>
                   )}
