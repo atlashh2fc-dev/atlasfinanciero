@@ -32,6 +32,13 @@ type CollectionFollowup = {
   note: string | null;
 };
 
+type IssuedDocumentPayment = {
+  id: string;
+  issued_document_id: string;
+  amount: number | string;
+  paid_on: string;
+};
+
 const money = new Intl.NumberFormat("es-CL", {
   style: "currency",
   currency: "CLP",
@@ -76,6 +83,7 @@ export function AccountsReceivable({
   organizationId,
   canManage,
   isPersisted,
+  payments = [],
   onEditDocument,
   onDocumentNormalized,
 }: {
@@ -83,6 +91,7 @@ export function AccountsReceivable({
   organizationId: string | null;
   canManage: boolean;
   isPersisted: boolean;
+  payments?: IssuedDocumentPayment[];
   onEditDocument?: (record: InvoiceRecord) => void;
   onDocumentNormalized?: (recordId: string, invoiceNumber: string) => void;
 }) {
@@ -143,20 +152,39 @@ export function AccountsReceivable({
         : records.filter((record) => record.year === Number(year)),
     [records, year],
   );
+  const paidAmountByDocument = useMemo(() => {
+    const amounts = new Map<string, number>();
+    payments.forEach((payment) =>
+      amounts.set(
+        payment.issued_document_id,
+        (amounts.get(payment.issued_document_id) ?? 0) + Number(payment.amount),
+      ),
+    );
+    return amounts;
+  }, [payments]);
+  const outstandingBalance = (record: InvoiceRecord) =>
+    Math.max(
+      0,
+      Number(record.totalAmount ?? recognizedNetAmount(record)) -
+        (paidAmountByDocument.get(record.id) ?? 0),
+    );
   const receivables = useMemo(
     () =>
       recordsForYear.filter(
         (record) =>
           !isPurchaseOrderDocument(record) &&
           !isCreditNoteDocument(record) &&
-          record.status?.toLowerCase().includes("pendiente"),
+          ["pendiente", "abonada"].includes(
+            record.status?.trim().toLocaleLowerCase("es-CL") ?? "",
+          ) &&
+          outstandingBalance(record) > 0,
       ),
-    [recordsForYear],
+    [recordsForYear, paidAmountByDocument],
   );
   const totalPending = useMemo(
     () =>
       receivables.reduce(
-        (total, record) => total + recognizedNetAmount(record),
+        (total, record) => total + outstandingBalance(record),
         0,
       ),
     [receivables],
@@ -170,7 +198,7 @@ export function AccountsReceivable({
   );
   const overdueAmount = useMemo(
     () =>
-      overdue.reduce((total, record) => total + recognizedNetAmount(record), 0),
+      overdue.reduce((total, record) => total + outstandingBalance(record), 0),
     [overdue],
   );
   const aging = useMemo(
@@ -190,7 +218,7 @@ export function AccountsReceivable({
             (record) =>
               agingBucket(daysOverdue(record.dueDate, today)) === bucket,
           )
-          .reduce((total, record) => total + recognizedNetAmount(record), 0),
+          .reduce((total, record) => total + outstandingBalance(record), 0),
       })),
     [receivables, today],
   );
@@ -202,7 +230,7 @@ export function AccountsReceivable({
     () =>
       receivables
         .filter((record) => followupsByDocument.get(record.id)?.next_action_on)
-        .reduce((total, record) => total + recognizedNetAmount(record), 0),
+        .reduce((total, record) => total + outstandingBalance(record), 0),
     [receivables, followupsByDocument],
   );
   const greenAlertAmount = aging
@@ -301,7 +329,7 @@ export function AccountsReceivable({
         <article className="kpi-card">
           <span>Cuentas por cobrar</span>
           <strong>{money.format(totalPending)}</strong>
-          <small>{receivables.length} documento(s) con estado pendiente</small>
+            <small>{receivables.length} documento(s) con saldo pendiente</small>
         </article>
         <article className="kpi-card accent">
           <span>Vencido</span>
@@ -361,7 +389,7 @@ export function AccountsReceivable({
                     border: "1px solid #e6e9ef",
                   }}
                 />
-                <Bar dataKey="amount" name="Pendiente" radius={[5, 5, 0, 0]}>
+                <Bar dataKey="amount" name="Saldo pendiente" radius={[5, 5, 0, 0]}>
                   {aging.map((item) => (
                     <Cell
                       key={item.bucket}
@@ -424,7 +452,7 @@ export function AccountsReceivable({
             <article key={bucket}>
               <span>{green ? "ALERTA VERDE" : "PLANIFICACIÓN"}</span>
               <strong>{bucket}</strong>
-              <p>{money.format(amount)} pendiente neto/exento.</p>
+              <p>{money.format(amount)} de saldo pendiente.</p>
             </article>
           );
         })}
@@ -448,7 +476,9 @@ export function AccountsReceivable({
               <tr>
                 <th>Documento / cliente</th>
                 <th>Vence</th>
-                <th className="money-col">Neto</th>
+                <th className="money-col">Factura</th>
+                <th className="money-col">Abonado</th>
+                <th className="money-col">Saldo</th>
                 <th>Antigüedad</th>
                 <th>Gestión</th>
                 <th>Acción</th>
@@ -476,7 +506,13 @@ export function AccountsReceivable({
                     </td>
                     <td>{formatDate(record.dueDate)}</td>
                     <td className="money-col">
-                      {money.format(recognizedNetAmount(record))}
+                      {money.format(Number(record.totalAmount ?? recognizedNetAmount(record)))}
+                    </td>
+                    <td className="money-col">
+                      {money.format(paidAmountByDocument.get(record.id) ?? 0)}
+                    </td>
+                    <td className="money-col">
+                      <strong>{money.format(outstandingBalance(record))}</strong>
                     </td>
                     <td>
                       <span
@@ -559,7 +595,7 @@ export function AccountsReceivable({
         </div>
         {!receivables.length && (
           <p className="billing-empty">
-            No hay documentos con estado pendiente en los datos disponibles.
+            No hay documentos con saldo pendiente en los datos disponibles.
           </p>
         )}
       </section>

@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: context.error }, { status: context.status });
 
   const range = dateRangeForYear(year);
-  const [membership, plans, budgetLines, settings, adjustments, issued, received, directPayables, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations] = await Promise.all([
+  const [membership, plans, budgetLines, settings, adjustments, issued, issuedPayments, received, directPayables, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations] = await Promise.all([
     context.supabase
       .from("organization_memberships")
       .select("role")
@@ -104,6 +104,10 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId)
       .order("issue_date", { ascending: false })
       .limit(1500),
+    context.supabase
+      .from("issued_document_payments")
+      .select("issued_document_id, amount")
+      .eq("organization_id", organizationId),
     context.supabase
       .from("received_documents")
       .select("id, supplier_counterparty_id, supplier_name, document_number, issue_date, due_date, payment_term_days, document_type, net_amount, total_amount, payment_status")
@@ -173,7 +177,7 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId),
   ]);
 
-  const results = [plans, budgetLines, settings, adjustments, issued, received, directPayables, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations];
+  const results = [plans, budgetLines, settings, adjustments, issued, issuedPayments, received, directPayables, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations];
   if (results.some((result) => result.error))
     return NextResponse.json({ error: "unable_to_load_financial_planning" }, { status: 500 });
 
@@ -185,6 +189,7 @@ export async function GET(request: NextRequest) {
     settings: settings.data ?? { horizon_weeks: 13, include_overdue_in_first_week: true },
     adjustments: adjustments.data ?? [],
     issuedDocuments: issued.data ?? [],
+    issuedPayments: issuedPayments.data ?? [],
     receivedDocuments: received.data ?? [],
     directPayables: directPayables.data ?? [],
     amortizationSchedules: amortizationSchedules.data ?? [],

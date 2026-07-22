@@ -18,7 +18,7 @@ type DocumentRequest = {
 
 const writeRoles = new Set(["administrator", "finance", "operations"]);
 const paymentConditions = new Set(["advance", "post_service"]);
-const paymentStatuses = new Set(["Pendiente", "Pagada", "Factorizada", "Pagada al factoring", "Recomprada al factoring", "Anulada", "Nota de crédito"]);
+const paymentStatuses = new Set(["Pendiente", "Abonada", "Pagada", "Factorizada", "Pagada al factoring", "Recomprada al factoring", "Anulada", "Nota de crédito"]);
 const documentTypes = new Set(["Factura afecta", "Factura exenta", "Nota de crédito", "Nota de débito"]);
 
 function readText(value: unknown, maxLength: number, required = false) {
@@ -103,7 +103,7 @@ export async function POST(request: NextRequest) {
   const upload = form.get("file");
   const paymentProof = form.get("paymentProof");
   const requiresPaymentCondition = documentType?.startsWith("Factura");
-  if (!issueDate || !documentType || !issuerName || !documentTypes.has(documentType) || !paymentStatuses.has(status ?? "") || !isUuid(clientId) || (contactId && !isUuid(contactId)) || typeof netAmount !== "number" || (requiresPaymentCondition && (!paymentCondition || !dueDate)) || (upload !== null && !(upload instanceof File))) return NextResponse.json({ error: "invalid_document" }, { status: 400 });
+  if (!issueDate || !documentType || !issuerName || !documentTypes.has(documentType) || !paymentStatuses.has(status ?? "") || status === "Abonada" || !isUuid(clientId) || (contactId && !isUuid(contactId)) || typeof netAmount !== "number" || (requiresPaymentCondition && (!paymentCondition || !dueDate)) || (upload !== null && !(upload instanceof File))) return NextResponse.json({ error: "invalid_document" }, { status: 400 });
   if (upload instanceof File && (upload.size === 0 || upload.size > 52_428_800 || !new Set(["application/pdf", "image/jpeg", "image/png"]).has(upload.type))) return NextResponse.json({ error: "invalid_document_attachment" }, { status: 400 });
   if (paymentProof !== null && !(paymentProof instanceof File)) return NextResponse.json({ error: "invalid_payment_proof" }, { status: 400 });
   if (paymentProof instanceof File && (paymentProof.size === 0 || paymentProof.size > 52_428_800 || !new Set(["application/pdf", "image/jpeg", "image/png"]).has(paymentProof.type))) return NextResponse.json({ error: "invalid_payment_proof" }, { status: 400 });

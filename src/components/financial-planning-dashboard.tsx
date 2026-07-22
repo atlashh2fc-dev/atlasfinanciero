@@ -6,6 +6,7 @@ type Plan = { id: string; fiscal_year: number; name: string; status: "draft" | "
 type BudgetLine = { id: string; plan_version_id: string; period_month: string; kind: "revenue" | "expense"; name: string; amount: number | string; cost_center_id: string | null; counterparty_id: string | null; service_catalog_id: string | null; notes: string | null };
 type Adjustment = { id: string; expected_on: string; direction: "inflow" | "outflow"; amount: number | string; description: string; counterparty_id: string | null; notes: string | null };
 type IssuedDocument = { id: string; counterparty_id: string | null; document_number: string | null; issue_date: string | null; due_date: string | null; payment_term_days: number | null; document_type: string | null; net_amount: number | string | null; total_amount: number | string | null; payment_status: string | null; client_name: string | null };
+type IssuedPayment = { issued_document_id: string; amount: number | string };
 type ReceivedDocument = { id: string; supplier_counterparty_id: string | null; supplier_name: string; document_number: string | null; issue_date: string; due_date: string | null; payment_term_days: number | null; document_type: string; net_amount: number | string; total_amount: number | string; payment_status: string | null };
 type DirectPayable = { id: string; payable_number: string; supplier_name: string; due_date: string | null; total_amount: number | string; currency_code: "CLP" | "UF"; status: string };
 type AmortizationSchedule = { id: string; plan_id: string; period_month: string; amortization_amount_clp: number | string; asset_financing_plans: { asset_name: string; status: string } | null };
@@ -19,7 +20,7 @@ type Preinvoice = { id: string; counterparty_id: string; period_month: string; s
 type PreinvoiceLine = { id: string; preinvoice_id: string; customer_service_id: string | null; service_catalog_id: string | null; description: string; net_amount: number | string };
 type Allocation = { id: string; received_document_id: string; counterparty_id: string; customer_service_id: string | null; allocation_percentage: number | string; allocated_amount: number | string; notes: string | null };
 type AllocationDraft = { id: string; counterpartyId: string; customerServiceId: string; percentage: string; notes: string };
-type Payload = { year: number; role: string; plans: Plan[]; budgetLines: BudgetLine[]; settings: { horizon_weeks: number; include_overdue_in_first_week: boolean }; adjustments: Adjustment[]; issuedDocuments: IssuedDocument[]; receivedDocuments: ReceivedDocument[]; directPayables: DirectPayable[]; amortizationSchedules: AmortizationSchedule[]; financingPlans: FinancingPlan[]; bankAccounts: BankAccount[]; bankTransactions: BankTransaction[]; customers: Customer[]; services: Service[]; customerServices: CustomerService[]; preinvoices: Preinvoice[]; preinvoiceLines: PreinvoiceLine[]; allocations: Allocation[] };
+type Payload = { year: number; role: string; plans: Plan[]; budgetLines: BudgetLine[]; settings: { horizon_weeks: number; include_overdue_in_first_week: boolean }; adjustments: Adjustment[]; issuedDocuments: IssuedDocument[]; issuedPayments: IssuedPayment[]; receivedDocuments: ReceivedDocument[]; directPayables: DirectPayable[]; amortizationSchedules: AmortizationSchedule[]; financingPlans: FinancingPlan[]; bankAccounts: BankAccount[]; bankTransactions: BankTransaction[]; customers: Customer[]; services: Service[]; customerServices: CustomerService[]; preinvoices: Preinvoice[]; preinvoiceLines: PreinvoiceLine[]; allocations: Allocation[] };
 
 const money = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 const number = (value: number | string | null | undefined) => Number(value ?? 0);
@@ -135,12 +136,14 @@ export function FinancialPlanningDashboard({ organizationId }: { organizationId:
       return sum + (latestBalance === undefined ? number(account.opening_balance) + movements.reduce((subtotal, movement) => subtotal + number(movement.amount), 0) : number(latestBalance));
     }, 0);
     const start = weekStart();
+    const paidByIssuedDocument = new Map<string, number>();
+    data.issuedPayments.forEach((payment) => paidByIssuedDocument.set(payment.issued_document_id, (paidByIssuedDocument.get(payment.issued_document_id) ?? 0) + number(payment.amount)));
     let closing = opening;
     const weeks = Array.from({ length: data.settings.horizon_weeks }, (_, index) => {
       const week = addDays(start, index * 7);
       const end = addDays(week, 6);
       const belongs = (value: string) => value >= dateText(week) && value <= dateText(end) || (data.settings.include_overdue_in_first_week && index === 0 && value < dateText(week));
-      const inflows = data.issuedDocuments.filter((document) => !isPaid(document.payment_status) && belongs(dueDate(document))).reduce((sum, document) => sum + Math.max(0, number(document.total_amount)), 0)
+      const inflows = data.issuedDocuments.filter((document) => !isPaid(document.payment_status) && belongs(dueDate(document))).reduce((sum, document) => sum + Math.max(0, number(document.total_amount) - (paidByIssuedDocument.get(document.id) ?? 0)), 0)
         + data.financingPlans.filter((plan) => plan.currency_code === "CLP" && plan.disbursement_date && belongs(plan.disbursement_date)).reduce((sum, plan) => sum + number(plan.disbursement_amount), 0)
         + data.adjustments.filter((item) => item.direction === "inflow" && belongs(item.expected_on)).reduce((sum, item) => sum + number(item.amount), 0);
       const outflows = data.receivedDocuments.filter((document) => !isPaid(document.payment_status) && belongs(dueDate(document))).reduce((sum, document) => sum + Math.max(0, number(document.total_amount)), 0)

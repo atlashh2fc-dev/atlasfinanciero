@@ -217,6 +217,28 @@ type DocumentUpdateDraft = {
   factoringRecourseAt: string;
 };
 
+type IssuedDocumentPayment = {
+  id: string;
+  organization_id: string;
+  issued_document_id: string;
+  amount: number | string;
+  paid_on: string;
+  payment_method: string | null;
+  notes: string | null;
+  proof_path: string | null;
+  proof_name: string | null;
+  proof_mime_type: string | null;
+  proof_size: number | null;
+  created_at: string;
+};
+
+type PaymentDraft = {
+  amount: string;
+  paidOn: string;
+  paymentMethod: string;
+  notes: string;
+};
+
 type DocumentSortColumn =
   | "invoiceNumber"
   | "issueDate"
@@ -244,6 +266,13 @@ const blankDraft: InvoiceDraft = {
   status: "Pendiente",
   paymentCondition: "post_service",
 };
+
+const blankPaymentDraft = (): PaymentDraft => ({
+  amount: "",
+  paidOn: new Date().toISOString().slice(0, 10),
+  paymentMethod: "",
+  notes: "",
+});
 
 const money = new Intl.NumberFormat("es-CL", {
   style: "currency",
@@ -319,10 +348,15 @@ function sumRecognizedNet(records: InvoiceRecord[]) {
 function statusClass(status: string | null) {
   const normalized = status?.toLowerCase() ?? "";
   if (normalized.includes("pagada")) return "status paid";
-  if (normalized.includes("pendiente")) return "status pending";
+  if (normalized.includes("pendiente") || normalized.includes("abonada")) return "status pending";
   if (normalized.includes("anulada") || normalized.includes("credito"))
     return "status cancelled";
   return "status neutral";
+}
+
+function isOutstandingStatus(status: string | null) {
+  const normalized = status?.trim().toLocaleLowerCase("es-CL") ?? "";
+  return normalized === "pendiente" || normalized === "abonada";
 }
 
 function compareText(first: string | null | undefined, second: string | null | undefined) {
@@ -464,7 +498,7 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
     (record) =>
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
-      record.status?.toLowerCase().includes("pendiente"),
+      isOutstandingStatus(record.status),
   );
   const pendingAmount = sumRecognizedNet(pending);
   const overdue = pending.filter(
@@ -976,7 +1010,7 @@ function buildCustomerEvolution(records: InvoiceRecord[]) {
       current.total += amount;
       current.documents += 1;
       if (record.paymentDate) current.withPaymentDate += 1;
-      if (record.status === "Pendiente") current.pendingNet += amount;
+      if (isOutstandingStatus(record.status)) current.pendingNet += amount;
       if (record.month)
         current.byMonth[record.month] =
           (current.byMonth[record.month] ?? 0) + amount;
@@ -1061,7 +1095,7 @@ function CustomerModule({
               !isPurchaseOrderDocument(record) &&
               (record.client || record.recipient || "No informado") ===
                 selectedPendingClient.client &&
-              record.status === "Pendiente",
+              isOutstandingStatus(record.status),
           )
         : [],
     [customerRecords, selectedPendingClient],
@@ -1960,6 +1994,10 @@ export function FinanceDashboard() {
   const [loadingDocumentSources, setLoadingDocumentSources] = useState(false);
   const [attachmentByDocument, setAttachmentByDocument] = useState<Record<string, boolean>>({});
   const [paymentProofByDocument, setPaymentProofByDocument] = useState<Record<string, boolean>>({});
+  const [partialPayments, setPartialPayments] = useState<IssuedDocumentPayment[]>([]);
+  const [paymentDraft, setPaymentDraft] = useState<PaymentDraft>(blankPaymentDraft);
+  const [paymentInstallmentProof, setPaymentInstallmentProof] = useState<File | null>(null);
+  const [isRegisteringPayment, setIsRegisteringPayment] = useState(false);
   const [formError, setFormError] = useState("");
   const [sessionRecords, setSessionRecords] = useState<InvoiceRecord[]>([]);
   const [databaseRecords, setDatabaseRecords] = useState<InvoiceRecord[]>([]);
@@ -1988,6 +2026,20 @@ export function FinanceDashboard() {
     return () => {
       active = false;
     };
+  }, [access?.membership.organizationId]);
+
+  useEffect(() => {
+    const organizationId = access?.membership.organizationId;
+    if (!organizationId) {
+      setPartialPayments([]);
+      return;
+    }
+    let active = true;
+    fetch(`/api/issued-document-payments?organizationId=${encodeURIComponent(organizationId)}`, { cache: "no-store" })
+      .then((response) => response.ok ? response.json() as Promise<{ payments: IssuedDocumentPayment[] }> : null)
+      .then((payload) => { if (active) setPartialPayments(payload?.payments ?? []); })
+      .catch(() => { if (active) setPartialPayments([]); });
+    return () => { active = false; };
   }, [access?.membership.organizationId]);
 
   useEffect(() => {
@@ -2196,14 +2248,14 @@ export function FinanceDashboard() {
     (record) =>
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
-      record.status === "Pendiente",
+      isOutstandingStatus(record.status),
   ).length;
   const currentDate = new Date().toISOString().slice(0, 10);
   const overdueRecords = yearFilteredRecords.filter(
     (record) =>
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
-      record.status === "Pendiente" &&
+      isOutstandingStatus(record.status) &&
       Boolean(record.dueDate) &&
       record.dueDate! < currentDate,
   );
@@ -2214,6 +2266,20 @@ export function FinanceDashboard() {
   const hasEditPermission =
     access !== null &&
     ["administrator", "finance", "operations"].includes(access.membership.role);
+  const canRegisterPartialPayments =
+    access !== null && ["administrator", "finance"].includes(access.membership.role);
+  const editingPayments = useMemo(
+    () => editingRecord
+      ? partialPayments.filter((payment) => payment.issued_document_id === editingRecord.id)
+      : [],
+    [editingRecord, partialPayments],
+  );
+  const editingPaidAmount = editingPayments.reduce(
+    (total, payment) => total + Number(payment.amount),
+    0,
+  );
+  const editingDocumentTotal = Number(editingRecord?.totalAmount ?? 0);
+  const editingOutstandingAmount = Math.max(0, editingDocumentTotal - editingPaidAmount);
 
   function updateDraft(field: keyof InvoiceDraft, value: string) {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -2236,6 +2302,8 @@ export function FinanceDashboard() {
     });
     setEditDocumentFile(null);
     setEditPaymentProofFile(null);
+    setPaymentDraft(blankPaymentDraft());
+    setPaymentInstallmentProof(null);
     setFormError("");
   }
 
@@ -2303,6 +2371,67 @@ export function FinanceDashboard() {
     setEditPaymentProofFile(null);
     setEditingRecord(null);
     setFormError("");
+  }
+
+  async function registerPartialPayment() {
+    if (!editingRecord || !access?.membership.organizationId) return;
+    const amount = Number(paymentDraft.amount);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > editingOutstandingAmount) {
+      setFormError(`Ingresa un abono mayor a $0 y de hasta ${formatMoney(editingOutstandingAmount)}.`);
+      return;
+    }
+    if (!paymentDraft.paidOn) {
+      setFormError("Indica la fecha del abono.");
+      return;
+    }
+    setIsRegisteringPayment(true);
+    setFormError("");
+    const formData = new FormData();
+    formData.set("organizationId", access.membership.organizationId);
+    formData.set("issuedDocumentId", editingRecord.id);
+    formData.set("amount", paymentDraft.amount);
+    formData.set("paidOn", paymentDraft.paidOn);
+    formData.set("paymentMethod", paymentDraft.paymentMethod);
+    formData.set("notes", paymentDraft.notes);
+    if (paymentInstallmentProof) formData.set("proof", paymentInstallmentProof);
+    const response = await fetch("/api/issued-document-payments", {
+      method: "POST",
+      body: formData,
+    });
+    const payload = (await response.json().catch(() => null)) as {
+      error?: string;
+      payment?: IssuedDocumentPayment;
+      document?: { id: string; payment_status: string | null; payment_date: string | null; payment_method: string | null };
+    } | null;
+    setIsRegisteringPayment(false);
+    if (!response.ok || !payload?.payment) {
+      setFormError(
+        payload?.error === "payment_exceeds_outstanding_balance"
+          ? "El abono excede el saldo pendiente. Actualiza la ventana e inténtalo nuevamente."
+          : payload?.error === "invalid_payment_proof"
+            ? "El comprobante debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
+            : "No fue posible registrar el abono. Revisa los datos y tus permisos.",
+      );
+      return;
+    }
+    setPartialPayments((current) => [payload.payment!, ...current]);
+    if (payload.document) {
+      const change = {
+        status: payload.document.payment_status,
+        paymentDate: payload.document.payment_date,
+        paymentMethod: payload.document.payment_method,
+      };
+      setDatabaseRecords((current) => current?.map((record) => record.id === payload.document!.id ? { ...record, ...change } : record) ?? current);
+      setEditingRecord((current) => current?.id === payload.document!.id ? { ...current, ...change } : current);
+      setEditDraft((current) => ({
+        ...current,
+        status: payload.document!.payment_status ?? current.status,
+        paymentDate: payload.document!.payment_date ?? "",
+        paymentMethod: payload.document!.payment_method ?? "",
+      }));
+    }
+    setPaymentDraft(blankPaymentDraft());
+    setPaymentInstallmentProof(null);
   }
 
   async function submitEntry(event: FormEvent<HTMLFormElement>) {
@@ -2456,6 +2585,12 @@ export function FinanceDashboard() {
     const payload = await response.json().catch(() => null) as { signedUrl?: string } | null;
     if (response.ok && payload?.signedUrl) window.open(payload.signedUrl, "_blank", "noopener,noreferrer");
     else setFormError("No fue posible abrir el comprobante de pago.");
+  }
+  async function openPartialPaymentProof(paymentId: string) {
+    const response = await fetch(`/api/issued-document-payments?organizationId=${encodeURIComponent(access?.membership.organizationId ?? "")}&paymentId=${encodeURIComponent(paymentId)}`);
+    const payload = await response.json().catch(() => null) as { signedUrl?: string } | null;
+    if (response.ok && payload?.signedUrl) window.open(payload.signedUrl, "_blank", "noopener,noreferrer");
+    else setFormError("No fue posible abrir el comprobante del abono.");
   }
 
   async function signOut() {
@@ -2719,6 +2854,7 @@ export function FinanceDashboard() {
             organizationId={access?.membership.organizationId ?? null}
             canManage={hasEditPermission}
             isPersisted={Boolean(databaseRecords)}
+            payments={partialPayments}
             onEditDocument={(record) => {
               setActiveModule("Facturas");
               startDocumentEdit(record);
@@ -3418,8 +3554,8 @@ export function FinanceDashboard() {
                   Documento N° {editingRecord.invoiceNumber ?? "—"}
                 </h2>
                 <p>
-                  Completa el respaldo tributario, corrige el tipo documental y
-                  actualiza el estado real, pago directo o ciclo de factoring.
+                  Registra abonos sucesivos y conserva el saldo real hasta que
+                  la factura quede completamente pagada.
                 </p>
               </div>
               <button
@@ -3460,6 +3596,7 @@ export function FinanceDashboard() {
                   Estado *
                   <select
                     value={editDraft.status}
+                    disabled={editingPayments.length > 0}
                     onChange={(event) =>
                       setEditDraft((current) => ({
                         ...current,
@@ -3468,6 +3605,7 @@ export function FinanceDashboard() {
                     }
                   >
                     <option value="Pendiente">Pendiente</option>
+                    <option value="Abonada" disabled>Abonada</option>
                     <option value="Pagada">Pagada</option>
                     <option value="Factorizada">Factorizada</option>
                     <option value="Pagada al factoring">
@@ -3479,6 +3617,7 @@ export function FinanceDashboard() {
                     <option value="Anulada">Anulada</option>
                     <option value="Nota de crédito">Nota de crédito</option>
                   </select>
+                  {editingPayments.length > 0 && <small>El estado se calcula automáticamente desde los abonos registrados.</small>}
                 </label>
                 <label>
                   Condición del servicio
@@ -3498,33 +3637,35 @@ export function FinanceDashboard() {
                     </option>
                   </select>
                 </label>
-                <label>
-                  Fecha pago directo
-                  <input
-                    type="date"
-                    value={editDraft.paymentDate}
-                    onChange={(event) =>
-                      setEditDraft((current) => ({
-                        ...current,
-                        paymentDate: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <label>
-                  Medio de pago
-                  <input
-                    value={editDraft.paymentMethod}
-                    onChange={(event) =>
-                      setEditDraft((current) => ({
-                        ...current,
-                        paymentMethod: event.target.value,
-                      }))
-                    }
-                    placeholder="Transferencia, depósito…"
-                  />
-                </label>
-                {editDraft.status === "Pagada" && (
+                {!editingPayments.length && <>
+                  <label>
+                    Fecha pago directo
+                    <input
+                      type="date"
+                      value={editDraft.paymentDate}
+                      onChange={(event) =>
+                        setEditDraft((current) => ({
+                          ...current,
+                          paymentDate: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Medio de pago
+                    <input
+                      value={editDraft.paymentMethod}
+                      onChange={(event) =>
+                        setEditDraft((current) => ({
+                          ...current,
+                          paymentMethod: event.target.value,
+                        }))
+                      }
+                      placeholder="Transferencia, depósito…"
+                    />
+                  </label>
+                </>}
+                {!editingPayments.length && editDraft.status === "Pagada" && (
                   <label>
                     Comprobante de pago *
                     <input
@@ -3551,7 +3692,7 @@ export function FinanceDashboard() {
                     )}
                   </label>
                 )}
-                {[
+                {!editingPayments.length && [
                   "Factorizada",
                   "Pagada al factoring",
                   "Recomprada al factoring",
@@ -3636,6 +3777,56 @@ export function FinanceDashboard() {
                   </small>
                 </label>
               </div>
+              <section className="table-section payment-installments-section" aria-label="Abonos registrados">
+                <div className="table-heading">
+                  <div>
+                    <span className="panel-label">ABONOS Y SALDO</span>
+                    <h3>Pago parcial de la factura</h3>
+                    <p>Registra cada abono. El saldo y el estado se recalculan automáticamente.</p>
+                  </div>
+                </div>
+                <div className="analysis-strip">
+                  <article><span>TOTAL FACTURA</span><strong>{formatMoney(editingDocumentTotal)}</strong></article>
+                  <article><span>ABONADO</span><strong>{formatMoney(editingPaidAmount)}</strong></article>
+                  <article><span>SALDO PENDIENTE</span><strong>{formatMoney(editingOutstandingAmount)}</strong></article>
+                </div>
+                {canRegisterPartialPayments && editingOutstandingAmount > 0 && (
+                  <div className="form-grid">
+                    <label>
+                      Monto del abono *
+                      <input type="number" min="1" max={editingOutstandingAmount} step="1" value={paymentDraft.amount} onChange={(event) => setPaymentDraft((current) => ({ ...current, amount: event.target.value }))} placeholder={`Máximo ${formatMoney(editingOutstandingAmount)}`} />
+                    </label>
+                    <label>
+                      Fecha de pago *
+                      <input type="date" value={paymentDraft.paidOn} onChange={(event) => setPaymentDraft((current) => ({ ...current, paidOn: event.target.value }))} />
+                    </label>
+                    <label>
+                      Medio de pago
+                      <input maxLength={120} value={paymentDraft.paymentMethod} onChange={(event) => setPaymentDraft((current) => ({ ...current, paymentMethod: event.target.value }))} placeholder="Transferencia, depósito…" />
+                    </label>
+                    <label>
+                      Comprobante del abono
+                      <input type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" onChange={(event) => setPaymentInstallmentProof(event.target.files?.[0] ?? null)} />
+                      <small>Opcional · PDF, JPG o PNG · máximo 50 MB</small>
+                    </label>
+                    <label className="p2p-form-wide">
+                      Observación
+                      <input maxLength={2000} value={paymentDraft.notes} onChange={(event) => setPaymentDraft((current) => ({ ...current, notes: event.target.value }))} placeholder="Ej. Abono correspondiente a julio" />
+                    </label>
+                    <div className="form-actions">
+                      <button type="button" className="primary-button" disabled={isRegisteringPayment} onClick={() => void registerPartialPayment()}>{isRegisteringPayment ? "Registrando abono…" : "Registrar abono"}</button>
+                    </div>
+                  </div>
+                )}
+                {editingPayments.length > 0 && (
+                  <div className="table-scroll">
+                    <table>
+                      <thead><tr><th>Fecha</th><th className="money-col">Abono</th><th>Medio / observación</th><th>Respaldo</th></tr></thead>
+                      <tbody>{editingPayments.map((payment) => <tr key={payment.id}><td>{new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${payment.paid_on}T00:00:00`))}</td><td className="money-col">{formatMoney(Number(payment.amount))}</td><td>{payment.payment_method || "Medio no informado"}<small>{payment.notes || "Sin observación"}</small></td><td>{payment.proof_path ? <button type="button" className="text-button" onClick={() => void openPartialPaymentProof(payment.id)}>Ver comprobante</button> : "—"}</td></tr>)}</tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
               {formError && <p className="form-error">{formError}</p>}
               <div className="form-actions">
                 <button
