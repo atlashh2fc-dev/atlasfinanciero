@@ -78,11 +78,28 @@ export async function GET(request: NextRequest) {
   const directPayablesResult = directPayableIds.length
     ? await context.supabase
       .from("direct_payables")
-      .select("id, supplier_name, invoice_number, category, category_detail, description, issue_date, due_date, notes, cost_center_id")
+      .select("id, supplier_name, beneficiary_name, invoice_number, category, category_detail, description, issue_date, due_date, notes, cost_center_id")
       .eq("organization_id", organizationId)
       .in("id", directPayableIds)
     : { data: [], error: null };
   if (directPayablesResult.error) return NextResponse.json({ error: "unable_to_load_approvals" }, { status: 500 });
+  const attachmentsResult = directPayableIds.length
+    ? await context.supabase
+      .from("direct_payable_attachments")
+      .select("id, direct_payable_id, file_name, storage_path")
+      .eq("organization_id", organizationId)
+      .in("direct_payable_id", directPayableIds)
+    : { data: [], error: null };
+  if (attachmentsResult.error) return NextResponse.json({ error: "unable_to_load_approvals" }, { status: 500 });
+  const attachmentsByPayable = new Map<string, { id: string; fileName: string; signedUrl: string | null }[]>();
+  await Promise.all((attachmentsResult.data ?? []).map(async (attachment) => {
+    const { data } = await context.supabase.storage
+      .from("direct-payable-files")
+      .createSignedUrl(attachment.storage_path, 60);
+    const list = attachmentsByPayable.get(attachment.direct_payable_id) ?? [];
+    list.push({ id: attachment.id, fileName: attachment.file_name, signedUrl: data?.signedUrl ?? null });
+    attachmentsByPayable.set(attachment.direct_payable_id, list);
+  }));
   const centerIds = [...new Set((directPayablesResult.data ?? []).map((payable) => payable.cost_center_id).filter((id): id is string => Boolean(id)))];
   const centersResult = centerIds.length
     ? await context.supabase.from("cost_centers").select("id, code, name").eq("organization_id", organizationId).in("id", centerIds)
@@ -91,6 +108,7 @@ export async function GET(request: NextRequest) {
   const centersById = new Map((centersResult.data ?? []).map((center) => [center.id, { code: center.code, name: center.name }]));
   const directPayablesById = new Map((directPayablesResult.data ?? []).map((payable) => [payable.id, {
     supplier_name: payable.supplier_name,
+    beneficiary_name: payable.beneficiary_name,
     invoice_number: payable.invoice_number,
     category: payable.category,
     category_detail: payable.category_detail,
@@ -99,6 +117,7 @@ export async function GET(request: NextRequest) {
     due_date: payable.due_date,
     notes: payable.notes,
     cost_center: payable.cost_center_id ? centersById.get(payable.cost_center_id) ?? null : null,
+    attachments: attachmentsByPayable.get(payable.id) ?? [],
   }]));
   const requesterIds = [...new Set(approvalRequests.map((approval) => approval.requested_by).filter((id): id is string => Boolean(id)))];
   const requesterNames = new Map<string, string>();

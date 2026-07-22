@@ -393,7 +393,7 @@ export async function GET(request: NextRequest) {
     context.supabase
       .from("direct_payables")
       .select(
-        "id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, cost_center_id, status, notes, payment_reference, is_reference, reference_settled_at",
+        "id, payable_number, supplier_counterparty_id, supplier_name, beneficiary_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, cost_center_id, status, notes, payment_reference, is_reference, reference_settled_at",
       )
       .eq("organization_id", organizationId)
       .order("due_date", { ascending: true })
@@ -1119,6 +1119,7 @@ export async function POST(request: NextRequest) {
 
   if (action === "create_direct_payable") {
     const supplierName = text(body?.supplierName, 300, true);
+    const beneficiaryName = text(body?.beneficiaryName, 300);
     const description = text(body?.description, 2_000, true);
     const totalAmount = positive(body?.totalAmount);
     const issueDate =
@@ -1138,6 +1139,7 @@ export async function POST(request: NextRequest) {
         "taxes",
         "insurance",
         "subscriptions",
+        "termination",
         "other",
       ].includes(body.category)
         ? body.category
@@ -1158,6 +1160,7 @@ export async function POST(request: NextRequest) {
       !description ||
       !totalAmount ||
       !costCenterId ||
+      (category === "termination" && !beneficiaryName) ||
       (category === "other" && !categoryDetail) ||
       (body?.dueDate && !dueDate) ||
       (dueDate && dueDate < issueDate)
@@ -1173,9 +1176,10 @@ export async function POST(request: NextRequest) {
         payable_number: payableNumber,
         supplier_counterparty_id: supplier.id,
         supplier_name: supplier.name,
+        beneficiary_name: beneficiaryName,
         invoice_number: invoiceNumber,
         category,
-        category_detail: category === "other" ? categoryDetail : null,
+        category_detail: category === "other" ? categoryDetail : category === "termination" ? "Finiquito" : null,
         description,
         issue_date: issueDate,
         due_date: dueDate,
@@ -1737,6 +1741,7 @@ export async function PATCH(request: NextRequest) {
     "start_payment_batch",
     "mark_payment_batch_paid",
     "submit_direct_payable",
+    "set_direct_payable_beneficiary",
     "submit_asset_financing_plan",
   ].includes(action);
   const context = financeOnly
@@ -1747,6 +1752,21 @@ export async function PATCH(request: NextRequest) {
       { error: context.error },
       { status: context.status },
     );
+  if (action === "set_direct_payable_beneficiary") {
+    const beneficiaryName = text(body?.beneficiaryName, 300, true);
+    if (!beneficiaryName)
+      return NextResponse.json({ error: "invalid_direct_payable_beneficiary" }, { status: 400 });
+    const { data, error } = await context.supabase
+      .from("direct_payables")
+      .update({ beneficiary_name: beneficiaryName })
+      .eq("id", id)
+      .eq("organization_id", organizationId)
+      .select("id, beneficiary_name")
+      .maybeSingle();
+    if (error || !data)
+      return NextResponse.json({ error: "unable_to_update_direct_payable_beneficiary" }, { status: 409 });
+    return NextResponse.json({ item: data });
+  }
   if (
     !financeOnly &&
     !(await canWriteProcurement(

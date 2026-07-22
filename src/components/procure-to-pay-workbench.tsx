@@ -91,6 +91,7 @@ type DirectPayable = {
   payable_number: string;
   supplier_counterparty_id: string | null;
   supplier_name: string;
+  beneficiary_name: string | null;
   invoice_number: string | null;
   category: string;
   category_detail: string | null;
@@ -311,6 +312,7 @@ export function ProcureToPayWorkbench({
     costCenterId: "",
     supplierId: "",
     supplierName: "",
+    beneficiaryName: "",
     invoiceNumber: "",
     category: "utilities",
     categoryDetail: "",
@@ -320,6 +322,8 @@ export function ProcureToPayWorkbench({
     totalAmount: "",
     notes: "",
   });
+  const [directPayableFile, setDirectPayableFile] = useState<File | null>(null);
+  const [payableBeneficiaryDraft, setPayableBeneficiaryDraft] = useState("");
   const [financing, setFinancing] = useState({
     planKind: "asset_financing",
     planNumber: "",
@@ -372,6 +376,13 @@ export function ProcureToPayWorkbench({
   useEffect(() => {
     void load();
   }, [organizationId]);
+  useEffect(() => {
+    setPayableBeneficiaryDraft(
+      detail?.kind === "payable"
+        ? ((detail.item as DirectPayable).beneficiary_name ?? "")
+        : "",
+    );
+  }, [detail]);
   useEffect(() => {
     function closeModal(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
@@ -746,11 +757,43 @@ export function ProcureToPayWorkbench({
   }
   async function createDirectPayable(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (await post({ action: "create_direct_payable", ...directPayable })) {
+    if (!organizationId) return;
+    setSaving(true);
+    const response = await fetch("/api/procure-to-pay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        organizationId,
+        action: "create_direct_payable",
+        ...directPayable,
+      }),
+    });
+    const payload = (await response.json().catch(() => null)) as { id?: string } | null;
+    if (!response.ok || !payload?.id) {
+      setSaving(false);
+      setMessage("No fue posible crear la cuenta por pagar. Revisa los datos y tus permisos.");
+      return;
+    }
+    let attachmentError = false;
+    if (directPayableFile) {
+      const attachment = new FormData();
+      attachment.set("organizationId", organizationId);
+      attachment.set("payableId", payload.id);
+      attachment.set("file", directPayableFile);
+      const attachmentResponse = await fetch("/api/direct-payable-attachments", {
+        method: "POST",
+        body: attachment,
+      });
+      attachmentError = !attachmentResponse.ok;
+    }
+    setSaving(false);
+    await load();
+    {
       setDirectPayable({
         costCenterId: "",
         supplierId: "",
         supplierName: "",
+        beneficiaryName: "",
         invoiceNumber: "",
         category: "utilities",
         categoryDetail: "",
@@ -760,11 +803,56 @@ export function ProcureToPayWorkbench({
         totalAmount: "",
         notes: "",
       });
+      setDirectPayableFile(null);
       setShowDirectPayableForm(false);
       setMessage(
-        "Cuenta por pagar enviada a aprobación. Quedará disponible para pago al aprobarse.",
+        attachmentError
+          ? "Cuenta por pagar enviada a aprobación, pero no se pudo adjuntar el respaldo. Ábrela desde la bandeja para reintentar."
+          : "Cuenta por pagar enviada a aprobación. Quedará disponible para pago al aprobarse.",
       );
     }
+  }
+  async function uploadPayableAttachment(payableId: string, file: File | null) {
+    if (!organizationId || !file) return;
+    setSaving(true);
+    const attachment = new FormData();
+    attachment.set("organizationId", organizationId);
+    attachment.set("payableId", payableId);
+    attachment.set("file", file);
+    const response = await fetch("/api/direct-payable-attachments", {
+      method: "POST",
+      body: attachment,
+    });
+    setSaving(false);
+    setMessage(
+      response.ok
+        ? "Respaldo adjuntado al expediente de pago."
+        : "No fue posible adjuntar el respaldo. Usa PDF, JPG o PNG de hasta 50 MB y verifica tus permisos.",
+    );
+  }
+  async function savePayableBeneficiary(payableId: string) {
+    if (!organizationId || !payableBeneficiaryDraft.trim()) return;
+    setSaving(true);
+    const response = await fetch("/api/procure-to-pay", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        organizationId,
+        id: payableId,
+        action: "set_direct_payable_beneficiary",
+        beneficiaryName: payableBeneficiaryDraft,
+      }),
+    });
+    setSaving(false);
+    if (!response.ok) {
+      setMessage("No fue posible guardar el beneficiario. Verifica tus permisos y vuelve a intentar.");
+      return;
+    }
+    await load();
+    setDetail((current) => current?.kind === "payable"
+      ? { ...current, item: { ...current.item, beneficiary_name: payableBeneficiaryDraft.trim() } }
+      : current);
+    setMessage("Beneficiario/a actualizado/a en el expediente de pago.");
   }
   async function createFinancingPlan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1297,7 +1385,12 @@ export function ProcureToPayWorkbench({
                                 : item.description}
                             </small>
                           </td>
-                          <td>{item.supplier_name}</td>
+                          <td>
+                            <strong>{item.supplier_name}</strong>
+                            {!isDocument && item.beneficiary_name && (
+                              <small>Beneficiario/a: {item.beneficiary_name}</small>
+                            )}
+                          </td>
                           <td>{displayDate(item.due_date)}</td>
                           <td className="money-col">
                             {money.format(amount(item.total_amount))}
@@ -1729,6 +1822,23 @@ export function ProcureToPayWorkbench({
                 }
               />
             </label>
+            {directPayable.category === "termination" && (
+              <label>
+                Persona beneficiaria *
+                <input
+                  required
+                  maxLength={300}
+                  value={directPayable.beneficiaryName}
+                  onChange={(event) =>
+                    setDirectPayable((current) => ({
+                      ...current,
+                      beneficiaryName: event.target.value,
+                    }))
+                  }
+                  placeholder="Nombre de la persona desvinculada"
+                />
+              </label>
+            )}
             <label>
               Tipo
               <select
@@ -1749,6 +1859,7 @@ export function ProcureToPayWorkbench({
                 <option value="taxes">Impuestos / contribuciones</option>
                 <option value="insurance">Seguros</option>
                 <option value="subscriptions">Suscripciones</option>
+                <option value="termination">Finiquito</option>
                 <option value="other">Otro</option>
               </select>
             </label>
@@ -1836,6 +1947,17 @@ export function ProcureToPayWorkbench({
                   }))
                 }
               />
+            </label>
+            <label className="p2p-form-wide">
+              Documento de respaldo
+              <input
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                onChange={(event) =>
+                  setDirectPayableFile(event.target.files?.[0] ?? null)
+                }
+              />
+              <small>PDF, JPG o PNG · máximo 50 MB. Quedará disponible para quien apruebe el pago.</small>
             </label>
             <button className="primary-button" disabled={saving} type="submit">
               Crear cuenta por pagar
@@ -2685,11 +2807,48 @@ export function ProcureToPayWorkbench({
             {detail.kind === "payable" && (
               <div className="p2p-detail-section">
                 <h3>Control de pago</h3>
+                {(detail.item as DirectPayable).beneficiary_name && (
+                  <p><strong>Beneficiario/a:</strong> {(detail.item as DirectPayable).beneficiary_name}</p>
+                )}
                 <p>
                   {paymentBlockLabel(
                     (detail.item as DirectPayable).payment_block_reason,
                   )}
                 </p>
+                {canManagePayments && (
+                  <>
+                    <div className="p2p-inline-action">
+                      <input
+                        aria-label="Persona beneficiaria"
+                        value={payableBeneficiaryDraft}
+                        onChange={(event) => setPayableBeneficiaryDraft(event.target.value)}
+                        placeholder="Persona beneficiaria"
+                      />
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={saving || !payableBeneficiaryDraft.trim()}
+                        onClick={() => void savePayableBeneficiary(detail.item.id)}
+                      >
+                        Guardar beneficiario
+                      </button>
+                    </div>
+                    <label className="p2p-inline-file">
+                      Adjuntar respaldo al expediente
+                      <input
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                        disabled={saving}
+                        onChange={(event) =>
+                          void uploadPayableAttachment(
+                            detail.item.id,
+                            event.target.files?.[0] ?? null,
+                          )
+                        }
+                      />
+                    </label>
+                  </>
+                )}
               </div>
             )}
             <div className="modal-actions">
