@@ -114,6 +114,8 @@ type DirectPayable = {
   payment_eligible: boolean;
   payment_block_reason: string | null;
 };
+const directPayableDocumentNumber = (payable: Pick<DirectPayable, "invoice_number" | "payable_number">) =>
+  payable.invoice_number?.trim() || payable.payable_number;
 type PostResult =
   | {
       ok: true;
@@ -603,7 +605,7 @@ export function ProcureToPayWorkbench({
         (item) =>
           inYear("issue_date" in item ? item.issue_date : null) &&
           matches(
-            `${item.supplier_name} ${"document_number" in item ? (item.document_number ?? "") : item.payable_number}`,
+            `${item.supplier_name} ${"document_number" in item ? (item.document_number ?? "") : `${item.invoice_number ?? ""} ${item.payable_number}`}`,
           ) &&
           (stateFilter === "all" ||
             (stateFilter === "overdue" &&
@@ -1507,12 +1509,12 @@ export function ProcureToPayWorkbench({
                             <strong>
                               {isDocument
                                 ? item.document_number || "Sin folio"
-                                : item.payable_number}
+                                : directPayableDocumentNumber(item)}
                             </strong>
                             <small>
                               {isDocument
                                 ? "Factura recibida"
-                                : item.description}
+                                : `${item.description} · ${item.invoice_number ? `Código interno ${item.payable_number}` : "Cuenta directa"}`}
                             </small>
                           </td>
                           <td>
@@ -2774,7 +2776,7 @@ export function ProcureToPayWorkbench({
                     : "purchase_order_number" in detail.item
                       ? detail.item.purchase_order_number
                       : "payable_number" in detail.item
-                        ? detail.item.payable_number
+                        ? directPayableDocumentNumber(detail.item as DirectPayable)
                         : "document_number" in detail.item
                           ? detail.item.document_number || "Factura sin folio"
                           : "batch_number" in detail.item
