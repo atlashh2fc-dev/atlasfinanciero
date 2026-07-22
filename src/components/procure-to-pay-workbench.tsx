@@ -718,26 +718,32 @@ export function ProcureToPayWorkbench({
   }
   async function transition(id: string, action: string) {
     setSaving(true);
-    const response = await fetch("/api/procure-to-pay", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        organizationId,
-        id,
-        action,
-        paymentReference:
-          action === "mark_payment_batch_paid"
-            ? "Orden de pago ejecutada"
-            : undefined,
-      }),
-    });
-    setSaving(false);
-    setMessage(
-      response.ok
-        ? "Estado actualizado."
-        : "No fue posible avanzar: el flujo exige la aprobación o condición previa correspondiente.",
-    );
-    if (response.ok) await load();
+    try {
+      const response = await fetch("/api/procure-to-pay", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationId,
+          id,
+          action,
+          paymentReference:
+            action === "mark_payment_batch_paid"
+              ? "Orden de pago ejecutada"
+              : undefined,
+        }),
+      });
+      if (!response.ok) {
+        setMessage("No fue posible avanzar: el flujo exige la aprobación o condición previa correspondiente.");
+        return;
+      }
+      setDetail(null);
+      await load();
+      setMessage("Estado actualizado.");
+    } catch {
+      setMessage("No fue posible avanzar por un problema de conexión.");
+    } finally {
+      setSaving(false);
+    }
   }
   async function confirmPayment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -821,6 +827,7 @@ export function ProcureToPayWorkbench({
       })
     ) {
       setDocumentToLink((current) => ({ ...current, [orderId]: "" }));
+      setDetail(null);
       setMessage(
         "Factura vinculada a la OC. Quedó disponible para el ciclo de pago.",
       );
@@ -969,9 +976,7 @@ export function ProcureToPayWorkbench({
       return;
     }
     await load();
-    setDetail((current) => current?.kind === "payable"
-      ? { ...current, item: { ...current.item, beneficiary_name: payableBeneficiaryDraft.trim() } }
-      : current);
+    setDetail(null);
     setMessage("Beneficiario/a actualizado/a en el expediente de pago.");
   }
   async function createFinancingPlan(event: FormEvent<HTMLFormElement>) {
