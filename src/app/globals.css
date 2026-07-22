@@ -3420,6 +3420,24 @@ td small {
   border: 1px solid #e3e9f5;
   border-radius: 8px;
 }
+.document-normalization-flag {
+  display: block;
+  width: fit-content;
+  margin-top: 5px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: #fff4dd;
+  color: #a56a0d;
+  font-size: 9px;
+  font-weight: 750;
+}
+.reconciled-balance-detail {
+  display: block;
+  margin-top: 5px;
+  color: #62718a;
+  font-size: 10px;
+  font-weight: 700;
+}
 @media (max-width: 720px) {
   .receivables-toolbar {
     align-items: stretch;

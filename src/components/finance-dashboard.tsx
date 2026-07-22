@@ -485,7 +485,7 @@ function statusClass(status: string | null) {
 
 function isOutstandingStatus(status: string | null) {
   const normalized = status?.trim().toLocaleLowerCase("es-CL") ?? "";
-  return normalized === "pendiente" || normalized === "abonada";
+  return normalized === "pendiente" || normalized.startsWith("abon");
 }
 
 function compareText(first: string | null | undefined, second: string | null | undefined) {
@@ -663,7 +663,6 @@ function ExecutiveDashboard({
   }, [payments]);
   const pending = periodRecords.filter(
     (record) =>
-      isActiveIssuedInvoice(record) &&
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
       isOutstandingStatus(record.status) &&
@@ -2410,7 +2409,6 @@ export function FinanceDashboard() {
   const currentDate = localIsoDate();
   const overdueRecords = yearFilteredRecords.filter(
     (record) =>
-      isActiveIssuedInvoice(record) &&
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
       isOutstandingStatus(record.status) &&

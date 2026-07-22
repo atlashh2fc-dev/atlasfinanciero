@@ -12,6 +12,11 @@ import {
 } from "recharts";
 import type { InvoiceRecord } from "@/data/facturas-emitidas-2026";
 import {
+  reconciledBalanceBreakdown,
+  reconciledPaidAmount,
+  reconciledReceivablesForYear,
+} from "@/data/infobusiness-reconciliation-2026";
+import {
   isActiveIssuedInvoice,
   isCreditNoteDocument,
   isPurchaseOrderDocument,
@@ -164,12 +169,20 @@ export function AccountsReceivable({
       ).sort((first, second) => second - first),
     [records],
   );
-  const recordsForYear = useMemo(
+  const sourceRecordsForYear = useMemo(
     () =>
       year === "Todos"
         ? records
         : records.filter((record) => record.year === Number(year)),
     [records, year],
+  );
+  const recordsForYear = useMemo(
+    () =>
+      reconciledReceivablesForYear(
+        sourceRecordsForYear,
+        year === "Todos" ? null : Number(year),
+      ),
+    [sourceRecordsForYear, year],
   );
   const paidAmountByDocument = useMemo(() => {
     const amounts = new Map<string, number>();
@@ -179,20 +192,25 @@ export function AccountsReceivable({
         (amounts.get(payment.issued_document_id) ?? 0) + Number(payment.amount),
       ),
     );
+    recordsForYear.forEach((record) => {
+      const reconciledPaid = reconciledPaidAmount(record.id);
+      if (reconciledPaid) amounts.set(record.id, reconciledPaid);
+    });
     return amounts;
-  }, [payments]);
+  }, [payments, recordsForYear]);
   const outstandingBalance = (record: InvoiceRecord) =>
     outstandingDocumentBalance(record, paidAmountByDocument.get(record.id));
+  const hasOpenBalanceStatus = (status: string | null) => {
+    const normalized = status?.trim().toLocaleLowerCase("es-CL") ?? "";
+    return normalized === "pendiente" || normalized.startsWith("abon");
+  };
   const receivables = useMemo(
     () =>
       recordsForYear.filter(
         (record) =>
-          isActiveIssuedInvoice(record) &&
           !isPurchaseOrderDocument(record) &&
           !isCreditNoteDocument(record) &&
-          ["pendiente", "abonada"].includes(
-            record.status?.trim().toLocaleLowerCase("es-CL") ?? "",
-          ) &&
+          hasOpenBalanceStatus(record.status) &&
           outstandingBalance(record) > 0,
       ),
     [recordsForYear, paidAmountByDocument],
@@ -225,6 +243,7 @@ export function AccountsReceivable({
         balance: number;
         overdueBalance: number;
         overdueDocuments: number;
+        regularizationDocuments: number;
         nextDueDate: string | null;
       }
     >();
@@ -241,6 +260,7 @@ export function AccountsReceivable({
         balance: 0,
         overdueBalance: 0,
         overdueDocuments: 0,
+        regularizationDocuments: 0,
         nextDueDate: null,
       };
       const balance = outstandingBalance(record);
@@ -248,6 +268,7 @@ export function AccountsReceivable({
 
       current.documents.push(record);
       current.balance += balance;
+      if (!isActiveIssuedInvoice(record)) current.regularizationDocuments += 1;
       if (isOverdue) {
         current.overdueBalance += balance;
         current.overdueDocuments += 1;
@@ -320,12 +341,18 @@ export function AccountsReceivable({
         .reduce((total, record) => total + outstandingBalance(record), 0),
     [receivables, followupsByDocument],
   );
-  const greenAlertAmount = aging
-    .filter(
-      (item) =>
-        item.bucket === "Vence en 2 días" || item.bucket === "Vence en 7 días",
-    )
-    .reduce((total, item) => total + item.amount, 0);
+  const regularizationReceivables = useMemo(
+    () => receivables.filter((record) => !isActiveIssuedInvoice(record)),
+    [receivables],
+  );
+  const regularizationAmount = useMemo(
+    () =>
+      regularizationReceivables.reduce(
+        (total, record) => total + outstandingBalance(record),
+        0,
+      ),
+    [regularizationReceivables],
+  );
 
   function openFollowup(record: InvoiceRecord) {
     const current = followupsByDocument.get(record.id);
@@ -378,6 +405,7 @@ export function AccountsReceivable({
     const bucket = agingBucket(days);
     const greenAlert =
       bucket === "Vence en 7 días" || bucket === "Vence en 2 días";
+    const reconciliation = reconciledBalanceBreakdown(record.id);
 
     return (
       <tr key={record.id}>
@@ -388,6 +416,16 @@ export function AccountsReceivable({
           <small>
             {record.recipient ?? record.documentType ?? "Documento emitido"}
           </small>
+          {!isActiveIssuedInvoice(record) && (
+            <span className="document-normalization-flag">
+              Sin factura vigente · Regularizar
+            </span>
+          )}
+          {reconciliation && (
+            <small className="reconciled-balance-detail">
+              Neto pendiente {money.format(reconciliation.net)} · IVA pendiente {money.format(reconciliation.vat)}
+            </small>
+          )}
         </td>
         <td>{formatDate(record.dueDate)}</td>
         <td className="money-col">
@@ -461,7 +499,9 @@ export function AccountsReceivable({
                   })
                 }
               >
-                {record.invoiceNumber ? "Adjuntar factura" : "Ingresar factura"}
+                {isActiveIssuedInvoice(record)
+                  ? "Adjuntar factura"
+                  : "Regularizar factura"}
               </button>
             </div>
           ) : (
@@ -549,9 +589,11 @@ export function AccountsReceivable({
           <small>Seguimientos con promesa registrada</small>
         </article>
         <article className="kpi-card">
-          <span>Alerta verde ≤ 7 días</span>
-          <strong>{money.format(greenAlertAmount)}</strong>
-          <small>Vence en 7 o 2 días: programar caja</small>
+          <span>Por regularizar</span>
+          <strong>{money.format(regularizationAmount)}</strong>
+          <small>
+            {regularizationReceivables.length} documento(s) sin factura vigente
+          </small>
         </article>
       </section>
 
@@ -725,9 +767,11 @@ export function AccountsReceivable({
                         <td>
                           <strong>{group.documents.length}</strong>
                           <small>
-                            {group.overdueDocuments
-                              ? `${group.overdueDocuments} vencido(s)`
-                              : "Sin documentos vencidos"}
+                            {group.regularizationDocuments
+                              ? `${group.regularizationDocuments} sin factura vigente`
+                              : group.overdueDocuments
+                                ? `${group.overdueDocuments} vencido(s)`
+                                : "Sin documentos vencidos"}
                           </small>
                         </td>
                         <td className="money-col">
@@ -757,7 +801,7 @@ export function AccountsReceivable({
                                   <tr>
                                     <th>Documento / cliente</th>
                                     <th>Vence</th>
-                                    <th className="money-col">Factura</th>
+                                    <th className="money-col">Monto bruto</th>
                                     <th className="money-col">Abonado</th>
                                     <th className="money-col">Saldo</th>
                                     <th>Antigüedad</th>
@@ -784,7 +828,7 @@ export function AccountsReceivable({
                 <tr>
                   <th>Documento / cliente</th>
                   <th>Vence</th>
-                  <th className="money-col">Factura</th>
+                  <th className="money-col">Monto bruto</th>
                   <th className="money-col">Abonado</th>
                   <th className="money-col">Saldo</th>
                   <th>Antigüedad</th>
