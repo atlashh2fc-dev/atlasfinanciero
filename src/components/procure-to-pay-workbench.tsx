@@ -272,6 +272,8 @@ export function ProcureToPayWorkbench({
   const [showDirectPayableForm, setShowDirectPayableForm] = useState(false);
   const [showFinancingForm, setShowFinancingForm] = useState(false);
   const [showBatchForm, setShowBatchForm] = useState(false);
+  const [isPreparingSelectedPayments, setIsPreparingSelectedPayments] =
+    useState(false);
   const [tab, setTab] = useState<
     "summary" | "requests" | "orders" | "payables" | "proposals" | "financing"
   >("summary");
@@ -446,6 +448,28 @@ export function ProcureToPayWorkbench({
   const paymentEligibleDirectPayables = useMemo(
     () => openDirectPayables.filter((payable) => payable.payment_eligible),
     [openDirectPayables],
+  );
+  const paymentProposalDocuments = useMemo(
+    () =>
+      isPreparingSelectedPayments
+        ? paymentEligibleDocuments.filter((document) =>
+            batch.documentIds.includes(document.id),
+          )
+        : paymentEligibleDocuments,
+    [batch.documentIds, isPreparingSelectedPayments, paymentEligibleDocuments],
+  );
+  const paymentProposalDirectPayables = useMemo(
+    () =>
+      isPreparingSelectedPayments
+        ? paymentEligibleDirectPayables.filter((payable) =>
+            batch.directPayableIds.includes(payable.id),
+          )
+        : paymentEligibleDirectPayables,
+    [
+      batch.directPayableIds,
+      isPreparingSelectedPayments,
+      paymentEligibleDirectPayables,
+    ],
   );
   const selectedTotal = useMemo(
     () =>
@@ -908,6 +932,7 @@ export function ProcureToPayWorkbench({
       });
       setCashFlowCategories({});
       setShowBatchForm(false);
+      setIsPreparingSelectedPayments(false);
       setMessage(
         "Propuesta de pago creada como borrador. Envíala desde su expediente para aprobación.",
       );
@@ -936,6 +961,7 @@ export function ProcureToPayWorkbench({
       );
       return;
     }
+    setIsPreparingSelectedPayments(true);
     setShowBatchForm(true);
     window.setTimeout(
       () =>
@@ -1204,7 +1230,10 @@ export function ProcureToPayWorkbench({
             {tab === "proposals" && canManagePayments && (
               <button
                 className="primary-button"
-                onClick={() => setShowBatchForm(true)}
+                onClick={() => {
+                  setIsPreparingSelectedPayments(false);
+                  setShowBatchForm(true);
+                }}
               >
                 Crear propuesta de pago
               </button>
@@ -2400,7 +2429,7 @@ export function ProcureToPayWorkbench({
 
       {showBatchForm && canManagePayments && (
         <section
-          className="panel p2p-create-panel"
+          className="panel p2p-create-panel p2p-payment-batch-modal"
           id="p2p-payment-batch"
           role="dialog"
           aria-modal="true"
@@ -2411,8 +2440,9 @@ export function ProcureToPayWorkbench({
               <span className="panel-label">PASO 5 · PROPUESTA DE PAGO</span>
               <h2>Preparar propuesta de pago</h2>
               <p>
-                Incluye documentos elegibles y cuentas directas que ya fueron
-                aprobadas.
+                {isPreparingSelectedPayments
+                  ? "Revisa los documentos que seleccionaste. Para cambiar la selección, vuelve a la bandeja de cuentas por pagar."
+                  : "Incluye documentos elegibles y cuentas directas que ya fueron aprobadas."}
               </p>
             </div>
             <span className="unit">{money.format(selectedTotal)}</span>
@@ -2425,7 +2455,10 @@ export function ProcureToPayWorkbench({
               ×
             </button>
           </div>
-          <form className="admin-form p2p-compact-form" onSubmit={createBatch}>
+          <form
+            className="admin-form p2p-compact-form p2p-payment-batch-form"
+            onSubmit={createBatch}
+          >
             <label>
               N° propuesta *
               <input
@@ -2491,7 +2524,7 @@ export function ProcureToPayWorkbench({
               <table>
                 <thead>
                   <tr>
-                    <th>Incluir</th>
+                    <th>{isPreparingSelectedPayments ? "Estado" : "Incluir"}</th>
                     <th>Proveedor / documento</th>
                     <th>Vencimiento</th>
                     <th>Clasificación IAS 7</th>
@@ -2499,15 +2532,19 @@ export function ProcureToPayWorkbench({
                   </tr>
                 </thead>
                 <tbody>
-                  {paymentEligibleDocuments.map((document) => (
+                  {paymentProposalDocuments.map((document) => (
                     <tr key={document.id}>
                       <td>
-                        <input
-                          aria-label={`Incluir ${document.supplier_name}`}
-                          type="checkbox"
-                          checked={batch.documentIds.includes(document.id)}
-                          onChange={() => toggleDocument(document.id)}
-                        />
+                        {isPreparingSelectedPayments ? (
+                          <span className="p2p-selection-state">Incluida</span>
+                        ) : (
+                          <input
+                            aria-label={`Incluir ${document.supplier_name}`}
+                            type="checkbox"
+                            checked={batch.documentIds.includes(document.id)}
+                            onChange={() => toggleDocument(document.id)}
+                          />
+                        )}
                       </td>
                       <td>
                         <strong>{document.supplier_name}</strong>
@@ -2542,15 +2579,19 @@ export function ProcureToPayWorkbench({
                       </td>
                     </tr>
                   ))}
-                  {paymentEligibleDirectPayables.map((payable) => (
+                  {paymentProposalDirectPayables.map((payable) => (
                     <tr key={payable.id}>
                       <td>
-                        <input
-                          aria-label={`Incluir ${payable.supplier_name}`}
-                          type="checkbox"
-                          checked={batch.directPayableIds.includes(payable.id)}
-                          onChange={() => toggleDirectPayable(payable.id)}
-                        />
+                        {isPreparingSelectedPayments ? (
+                          <span className="p2p-selection-state">Incluida</span>
+                        ) : (
+                          <input
+                            aria-label={`Incluir ${payable.supplier_name}`}
+                            type="checkbox"
+                            checked={batch.directPayableIds.includes(payable.id)}
+                            onChange={() => toggleDirectPayable(payable.id)}
+                          />
+                        )}
                       </td>
                       <td>
                         <strong>{payable.supplier_name}</strong>
@@ -2590,7 +2631,7 @@ export function ProcureToPayWorkbench({
                 </tbody>
               </table>
             </div>
-            {paymentBlockedDocuments.length > 0 && (
+            {!isPreparingSelectedPayments && paymentBlockedDocuments.length > 0 && (
               <div className="p2p-payment-blocked p2p-form-wide">
                 <strong>Documentos no elegibles para esta propuesta</strong>
                 {paymentBlockedDocuments.map((document) => (
