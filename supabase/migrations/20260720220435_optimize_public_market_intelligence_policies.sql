@@ -6,18 +6,6 @@ drop policy if exists "operators manage public market radar settings" on public.
 drop policy if exists "operators manage public market tenders" on public.public_market_tenders;
 drop policy if exists "operators manage public market documents" on public.public_market_documents;
 drop policy if exists "operators manage public market award history" on public.public_market_award_history;
-drop policy if exists "operators insert public market radar settings" on public.public_market_radar_settings;
-drop policy if exists "operators update public market radar settings" on public.public_market_radar_settings;
-drop policy if exists "operators delete public market radar settings" on public.public_market_radar_settings;
-drop policy if exists "operators insert public market tenders" on public.public_market_tenders;
-drop policy if exists "operators update public market tenders" on public.public_market_tenders;
-drop policy if exists "operators delete public market tenders" on public.public_market_tenders;
-drop policy if exists "operators insert public market documents" on public.public_market_documents;
-drop policy if exists "operators update public market documents" on public.public_market_documents;
-drop policy if exists "operators delete public market documents" on public.public_market_documents;
-drop policy if exists "operators insert public market award history" on public.public_market_award_history;
-drop policy if exists "operators update public market award history" on public.public_market_award_history;
-drop policy if exists "operators delete public market award history" on public.public_market_award_history;
 
 create policy "operators insert public market radar settings" on public.public_market_radar_settings for insert to authenticated with check (exists (select 1 from public.organization_memberships membership where membership.organization_id = public_market_radar_settings.organization_id and membership.user_id = (select auth.uid()) and membership.role in ('administrator', 'finance', 'operations')));
 create policy "operators update public market radar settings" on public.public_market_radar_settings for update to authenticated using (exists (select 1 from public.organization_memberships membership where membership.organization_id = public_market_radar_settings.organization_id and membership.user_id = (select auth.uid()) and membership.role in ('administrator', 'finance', 'operations'))) with check (exists (select 1 from public.organization_memberships membership where membership.organization_id = public_market_radar_settings.organization_id and membership.user_id = (select auth.uid()) and membership.role in ('administrator', 'finance', 'operations')));
@@ -34,3 +22,4 @@ create policy "operators delete public market documents" on public.public_market
 create policy "operators insert public market award history" on public.public_market_award_history for insert to authenticated with check (exists (select 1 from public.organization_memberships membership where membership.organization_id = public_market_award_history.organization_id and membership.user_id = (select auth.uid()) and membership.role in ('administrator', 'finance', 'operations')));
 create policy "operators update public market award history" on public.public_market_award_history for update to authenticated using (exists (select 1 from public.organization_memberships membership where membership.organization_id = public_market_award_history.organization_id and membership.user_id = (select auth.uid()) and membership.role in ('administrator', 'finance', 'operations'))) with check (exists (select 1 from public.organization_memberships membership where membership.organization_id = public_market_award_history.organization_id and membership.user_id = (select auth.uid()) and membership.role in ('administrator', 'finance', 'operations')));
 create policy "operators delete public market award history" on public.public_market_award_history for delete to authenticated using (exists (select 1 from public.organization_memberships membership where membership.organization_id = public_market_award_history.organization_id and membership.user_id = (select auth.uid()) and membership.role in ('administrator', 'finance', 'operations')));
+;

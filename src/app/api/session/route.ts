@@ -12,15 +12,16 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "authentication_required" }, { status: 401 });
 
-  const [{ data, error }, { data: profile, error: profileError }] = await Promise.all([
+  const [{ data, error }, { data: profile, error: profileError }, { data: platformAdministrator, error: platformAdministratorError }] = await Promise.all([
     supabase
     .from("organization_memberships")
     .select("organization_id, role, organizations (legal_name)")
     .eq("user_id", user.id),
     supabase.from("profiles").select("active_organization_id").eq("id", user.id).maybeSingle(),
+    supabase.from("platform_administrators").select("user_id").eq("user_id", user.id).maybeSingle(),
   ]);
 
-  if (error || profileError) return NextResponse.json({ error: "unable_to_read_memberships" }, { status: 500 });
+  if (error || profileError || platformAdministratorError) return NextResponse.json({ error: "unable_to_read_memberships" }, { status: 500 });
 
   const memberships = (data ?? []) as Membership[];
   const membership = memberships.find((item) => item.organization_id === profile?.active_organization_id) ?? memberships[0];
@@ -28,6 +29,7 @@ export async function GET() {
 
   return NextResponse.json({
     user: { email: user.email ?? null },
+    isSuperAdmin: Boolean(platformAdministrator),
     membership: {
       organizationId: membership.organization_id,
       organizationName: membership.organizations[0]?.legal_name ?? "Organización",

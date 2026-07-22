@@ -2,6 +2,22 @@ import { createClient } from "@/lib/supabase/server";
 
 export type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
 
+export async function requirePlatformAdministrator() {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "authentication_required" as const, status: 401, supabase: null, user: null };
+
+  const { data: administrator, error } = await supabase
+    .from("platform_administrators")
+    .select("user_id")
+    .eq("user_id", user.id)
+    .maybeSingle();
+  if (error) return { error: "unable_to_read_platform_administrator" as const, status: 500, supabase: null, user: null };
+  if (!administrator) return { error: "platform_administrator_required" as const, status: 403, supabase: null, user: null };
+
+  return { error: null, status: 200, supabase, user };
+}
+
 export async function requireOrganizationAdministrator(organizationId: string) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();

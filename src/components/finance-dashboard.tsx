@@ -44,6 +44,7 @@ import { ActivityAuditLog } from "@/components/activity-audit-log";
 import { SupplierConsolidation } from "@/components/supplier-consolidation";
 import { AtlasAssistant } from "@/components/atlas-assistant";
 import { ManagementCenter } from "@/components/management-center";
+import { PlatformSuperAdminDashboard } from "@/components/platform-super-admin-dashboard";
 import { AccountingWorkbench } from "@/components/accounting-workbench";
 import {
   isCreditNoteDocument,
@@ -116,6 +117,7 @@ const modulePreviews: Record<Module, string> = {
     "Checklist, pre-cierre, cierre bloqueado y evidencia auditable por período mensual.",
   Administración: "Organizaciones, usuarios, roles e invitaciones de acceso.",
   "Bitácora de actividad": "Cambios registrados por usuario, entidad, fecha y hora para control administrativo.",
+  "Control SaaS": "Portafolio transversal de empresas, usuarios y resultados para Super Admin.",
   Reportes:
     "Estado de resultados, evolución y análisis financiero por período.",
 };
@@ -144,7 +146,8 @@ type Module =
   | "Cierre financiero"
   | "Reportes"
   | "Administración"
-  | "Bitácora de actividad";
+  | "Bitácora de actividad"
+  | "Control SaaS";
 const navigationGroups: Array<{ label: string; items: Module[] }> = [
   { label: "RESUMEN", items: ["Gestión 360", "Inicio"] },
   {
@@ -169,12 +172,13 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
   },
   {
     label: "PERSONAS Y CONTROL",
-    items: ["Remuneraciones", "Aprobaciones", "Cierre financiero", "Administración", "Bitácora de actividad"],
+    items: ["Remuneraciones", "Aprobaciones", "Cierre financiero", "Administración", "Bitácora de actividad", "Control SaaS"],
   },
 ];
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
 type AccessProfile = {
   user: { email: string | null };
+  isSuperAdmin: boolean;
   membership: {
     organizationId: string;
     organizationName: string;
@@ -365,6 +369,7 @@ function EmptyModule({
     | "Cierre financiero"
     | "Administración"
     | "Bitácora de actividad"
+    | "Control SaaS"
   >;
 }) {
   const detail: Record<typeof module, string> = {
@@ -2408,6 +2413,7 @@ export function FinanceDashboard() {
         (item) =>
           (item !== "Administración" && item !== "Bitácora de actividad" ||
             access?.membership.role === "administrator") &&
+          (item !== "Control SaaS" || access?.isSuperAdmin) &&
           (item !== "Centros de costo" || canManageCostCenters) &&
           (item !== "Imputaciones pendientes" || canManageCostCenters) &&
           (item !== "Cuentas por pagar" || canReadExpenses) &&
@@ -2717,6 +2723,8 @@ export function FinanceDashboard() {
           access?.membership.role === "administrator" ? (
             <ActivityAuditLog organizationId={access.membership.organizationId} />
           ) : null
+        ) : activeModule === "Control SaaS" ? (
+          access?.isSuperAdmin ? <PlatformSuperAdminDashboard /> : null
         ) : activeModule !== "Facturas" ? (
           <EmptyModule module={activeModule} />
         ) : (

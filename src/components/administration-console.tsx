@@ -115,12 +115,15 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
     const payload = await response.json().catch(() => null) as { organization?: Organization } | null;
     setIsSaving(false);
     if (!response.ok || !payload?.organization) return setMessage("No fue posible crear la organización.");
-    await fetch("/api/session/active-organization", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId: payload.organization.id }) });
+    const activateResponse = await fetch("/api/session/active-organization", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId: payload.organization.id }) });
+    if (!activateResponse.ok) {
+      await loadOrganizations();
+      return setMessage("La empresa fue creada, pero no se pudo activarla. Actualiza la vista; si el problema continúa, revisaremos su asignación de administrador.");
+    }
     setNewLegalName("");
     setNewTaxId("");
     setOrganizationId(payload.organization.id);
-    setMessage("Organización creada. Quedaste asignado como Administrador y quedó seleccionada como activa.");
-    await loadOrganizations();
+    window.location.assign("/");
   }
 
   async function inviteMember(event: FormEvent<HTMLFormElement>) {
