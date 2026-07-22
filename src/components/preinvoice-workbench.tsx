@@ -136,7 +136,14 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
   function matchingDocuments(preinvoice: Preinvoice) {
     const customer = customers.get(preinvoice.counterparty_id);
     const names = new Set([normalized(customer?.legal_name), normalized(customer?.trade_name)].filter(Boolean));
-    return (data?.documents ?? []).filter((document) => document.counterparty_id === preinvoice.counterparty_id || (!document.counterparty_id && [document.client_name, document.recipient_name].some((name) => names.has(normalized(name)))));
+    return (data?.documents ?? []).filter((document) =>
+      Boolean(document.document_number?.trim()) &&
+      (document.counterparty_id === preinvoice.counterparty_id ||
+        (!document.counterparty_id &&
+          [document.client_name, document.recipient_name].some((name) =>
+            names.has(normalized(name)),
+          ))),
+    );
   }
 
   return <main className="dashboard billing-dashboard">

@@ -100,10 +100,11 @@ export async function POST(request: NextRequest) {
   const contactId = form.get("contactId");
   const netAmount = readAmount(form.get("netAmount"), true);
   const paymentCondition = readPaymentCondition(form.get("paymentCondition"));
+  const invoiceNumber = readText(form.get("invoiceNumber"), 80, true);
   const upload = form.get("file");
   const paymentProof = form.get("paymentProof");
   const requiresPaymentCondition = documentType?.startsWith("Factura");
-  if (!issueDate || !documentType || !issuerName || !documentTypes.has(documentType) || !paymentStatuses.has(status ?? "") || status === "Abonada" || !isUuid(clientId) || (contactId && !isUuid(contactId)) || typeof netAmount !== "number" || (requiresPaymentCondition && (!paymentCondition || !dueDate)) || (upload !== null && !(upload instanceof File))) return NextResponse.json({ error: "invalid_document" }, { status: 400 });
+  if (!invoiceNumber || !issueDate || !documentType || !issuerName || !documentTypes.has(documentType) || !paymentStatuses.has(status ?? "") || status === "Abonada" || !isUuid(clientId) || (contactId && !isUuid(contactId)) || typeof netAmount !== "number" || (requiresPaymentCondition && (!paymentCondition || !dueDate)) || (upload !== null && !(upload instanceof File))) return NextResponse.json({ error: "invalid_document" }, { status: 400 });
   if (upload instanceof File && (upload.size === 0 || upload.size > 52_428_800 || !new Set(["application/pdf", "image/jpeg", "image/png"]).has(upload.type))) return NextResponse.json({ error: "invalid_document_attachment" }, { status: 400 });
   if (paymentProof !== null && !(paymentProof instanceof File)) return NextResponse.json({ error: "invalid_payment_proof" }, { status: 400 });
   if (paymentProof instanceof File && (paymentProof.size === 0 || paymentProof.size > 52_428_800 || !new Set(["application/pdf", "image/jpeg", "image/png"]).has(paymentProof.type))) return NextResponse.json({ error: "invalid_payment_proof" }, { status: 400 });
@@ -178,7 +179,7 @@ export async function POST(request: NextRequest) {
     .insert({
       organization_id: membership.organization_id,
       counterparty_id: client.id,
-      document_number: readText(form.get("invoiceNumber"), 80),
+      document_number: invoiceNumber,
       issue_date: issueDate,
       document_type: documentType,
       issuer_name: issuerName,

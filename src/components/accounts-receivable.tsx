@@ -12,8 +12,10 @@ import {
 } from "recharts";
 import type { InvoiceRecord } from "@/data/facturas-emitidas-2026";
 import {
+  hasIssuedDocumentNumber,
   isCreditNoteDocument,
   isPurchaseOrderDocument,
+  outstandingDocumentBalance,
   recognizedNetAmount,
 } from "@/lib/document-revenue";
 import {
@@ -180,15 +182,12 @@ export function AccountsReceivable({
     return amounts;
   }, [payments]);
   const outstandingBalance = (record: InvoiceRecord) =>
-    Math.max(
-      0,
-      Number(record.totalAmount ?? recognizedNetAmount(record)) -
-        (paidAmountByDocument.get(record.id) ?? 0),
-    );
+    outstandingDocumentBalance(record, paidAmountByDocument.get(record.id));
   const receivables = useMemo(
     () =>
       recordsForYear.filter(
         (record) =>
+          hasIssuedDocumentNumber(record) &&
           !isPurchaseOrderDocument(record) &&
           !isCreditNoteDocument(record) &&
           ["pendiente", "abonada"].includes(

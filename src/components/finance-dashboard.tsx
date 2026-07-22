@@ -44,8 +44,10 @@ import { ManagementCenter } from "@/components/management-center";
 import { PlatformSuperAdminDashboard } from "@/components/platform-super-admin-dashboard";
 import { AccountingWorkbench } from "@/components/accounting-workbench";
 import {
+  hasIssuedDocumentNumber,
   isCreditNoteDocument,
   isPurchaseOrderDocument,
+  outstandingDocumentBalance,
   recognizedNetAmount,
 } from "@/lib/document-revenue";
 
@@ -78,7 +80,7 @@ const modulePreviews: Record<Module, string> = {
   "Gestión 360": "Prioridades operativas anuales que abren directamente cobranza, pagos, aprobaciones, tesorería e imputaciones.",
   Contabilidad: "Libro diario, mayor, balance y asientos manuales con cuadratura y bloqueo de períodos.",
   Facturas:
-    "Documentos emitidos, estados, pagos, notas de crédito y evolución neta por período.",
+    "Ingresos registrados, documentos emitidos, estados, pagos y evolución neta por período.",
   "OC de clientes":
     "Órdenes de compra recibidas de clientes y saldo disponible después de cada facturación parcial.",
   Recurrentes:
@@ -334,8 +336,9 @@ function monthFromDate(value: string) {
   return calendarMonths[new Date(`${value}T00:00:00`).getMonth()] ?? null;
 }
 
-function sum(records: InvoiceRecord[], field: "netAmount" | "totalAmount") {
-  return records.reduce((total, record) => total + (record[field] ?? 0), 0);
+function localIsoDate(value = new Date()) {
+  const local = new Date(value.getTime() - value.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
 }
 
 function sumRecognizedNet(records: InvoiceRecord[]) {
@@ -431,7 +434,17 @@ function EmptyModule({
   );
 }
 
-function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
+function ExecutiveDashboard({
+  records,
+  payments,
+  onOpenReceivables,
+  onOpenPreinvoices,
+}: {
+  records: InvoiceRecord[];
+  payments: IssuedDocumentPayment[];
+  onOpenReceivables: () => void;
+  onOpenPreinvoices: () => void;
+}) {
   const [marketData, setMarketData] = useState<MarketIndicatorsPayload | null>(
     null,
   );
@@ -458,7 +471,7 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
   }, []);
 
   const asOf = new Date();
-  const currentDate = asOf.toISOString().slice(0, 10);
+  const currentDate = localIsoDate(asOf);
   const currentMonthIndex = asOf.getMonth();
   const currentMonthStart = `${currentDate.slice(0, 8)}01`;
   const availableYears = useMemo(
@@ -493,18 +506,54 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
   );
   const netDocumented = sumRecognizedNet(periodRecords);
   const netDocumentedYtd = sumRecognizedNet(periodRecords);
-  const netDocumentedClosedMonths = sumRecognizedNet(closedMonthRecords);
-  const pending = periodRecords.filter(
+  const netInvoicedYtd = sumRecognizedNet(
+    periodRecords.filter(
+      (record) =>
+        hasIssuedDocumentNumber(record) && !isPurchaseOrderDocument(record),
+    ),
+  );
+  const pendingToInvoiceAmount = netDocumentedYtd - netInvoicedYtd;
+  const pendingToInvoiceCount = periodRecords.filter(
     (record) =>
+      !hasIssuedDocumentNumber(record) &&
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
-      isOutstandingStatus(record.status),
+      recognizedNetAmount(record) > 0,
+  ).length;
+  const netDocumentedClosedMonths = sumRecognizedNet(closedMonthRecords);
+  const paidAmountByDocument = useMemo(() => {
+    const amounts = new Map<string, number>();
+    payments.forEach((payment) =>
+      amounts.set(
+        payment.issued_document_id,
+        (amounts.get(payment.issued_document_id) ?? 0) + Number(payment.amount),
+      ),
+    );
+    return amounts;
+  }, [payments]);
+  const pending = periodRecords.filter(
+    (record) =>
+      hasIssuedDocumentNumber(record) &&
+      !isPurchaseOrderDocument(record) &&
+      !isCreditNoteDocument(record) &&
+      isOutstandingStatus(record.status) &&
+      outstandingDocumentBalance(record, paidAmountByDocument.get(record.id)) > 0,
   );
-  const pendingAmount = sumRecognizedNet(pending);
+  const pendingAmount = pending.reduce(
+    (total, record) =>
+      total +
+      outstandingDocumentBalance(record, paidAmountByDocument.get(record.id)),
+    0,
+  );
   const overdue = pending.filter(
     (record) => Boolean(record.dueDate) && record.dueDate! < currentDate,
   );
-  const overdueAmount = sum(overdue, "netAmount");
+  const overdueAmount = overdue.reduce(
+    (total, record) =>
+      total +
+      outstandingDocumentBalance(record, paidAmountByDocument.get(record.id)),
+    0,
+  );
   const paymentObserved = periodRecords.filter(
     (record) => record.issueDate && record.paymentDate,
   );
@@ -603,49 +652,41 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
       <section className="kpis kpis-five" aria-label="Indicadores ejecutivos">
         <article
           className="kpi-card"
-          data-help="Suma neta documentada hasta la fecha de corte: facturas y exentos menos notas de crédito; no considera órdenes de compra."
+          data-help="Suma neta de ingresos registrados hasta la fecha de corte, tengan o no folio emitido. Incluye facturas y exentos, menos notas de crédito; no considera órdenes de compra."
         >
-          <span>Facturado neto acumulado</span>
+          <span>Ingreso total acumulado</span>
           <strong>{formatMoney(netDocumentedYtd)}</strong>
           <small>
-            Facturas y exentos, menos notas de crédito. OCs excluidas.
+            Registrado, con y sin folio de factura. OCs excluidas.
           </small>
         </article>
         <article
           className="kpi-card"
-          data-help="Facturación neta de meses cerrados dividida por el presupuesto de esos mismos meses. Mide avance, no caja."
+          data-help="Ingreso neto respaldado por un documento emitido con folio hasta la fecha de corte. Las notas de crédito con folio ya están descontadas."
         >
-          <span>Ejecución del plan cerrado</span>
-          <strong>
-            {planExecution === null
-              ? "—"
-              : new Intl.NumberFormat("es-CL", {
-                  style: "percent",
-                  maximumFractionDigits: 1,
-                }).format(planExecution)}
-          </strong>
+          <span>Ingreso facturado acumulado</span>
+          <strong>{formatMoney(netInvoicedYtd)}</strong>
           <small>
-            {formatMoney(netDocumentedClosedMonths - budgetClosedMonths)} frente
-            a meses ya cerrados
+            Sólo documentos con folio emitido.
           </small>
         </article>
-        <article
-          className="kpi-card"
-          data-help="Facturación neta observada a la fecha más el presupuesto de los meses futuros. Es un escenario base, no una predicción de caja."
+        <button
+          type="button"
+          className="kpi-card kpi-card-button"
+          data-help="Diferencia entre el ingreso registrado y el ingreso ya facturado. Corresponde a ingresos que aún requieren definir y emitir su documento."
+          onClick={onOpenPreinvoices}
         >
-          <span>Cierre anual base</span>
-          <strong>
-            {closingBase === null ? "—" : formatMoney(closingBase)}
-          </strong>
+          <span>Pendiente de facturar</span>
+          <strong>{formatMoney(pendingToInvoiceAmount)}</strong>
           <small>
-            {hasForecastPlan && closingBase !== null
-              ? `${formatMoney(closingBase - annualBudget)} contra el plan anual`
-              : "Sin presupuesto cargado para este año"}
+            {pendingToInvoiceCount} ingreso(s) sin folio: exige prefactura · Gestionar
           </small>
-        </article>
-        <article
-          className="kpi-card accent"
-          data-help="Documentos pendientes cuya fecha de vencimiento ya pasó. Se calcula en neto/exento y requiere gestión de cobranza."
+        </button>
+        <button
+          type="button"
+          className="kpi-card kpi-card-button accent"
+          data-help="Mismo saldo vencido que Cuentas por cobrar: sólo documentos con folio, saldo pendiente después de abonos y vencimiento superado."
+          onClick={onOpenReceivables}
         >
           <span>Cartera vencida</span>
           <strong>{formatMoney(overdueAmount)}</strong>
@@ -656,12 +697,12 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
                   maximumFractionDigits: 1,
                 }).format(overdueAmount / pendingAmount)
               : "0%"}{" "}
-            de la cartera pendiente
+            de la cartera pendiente · Ver detalle
           </small>
-        </article>
+        </button>
         <article
           className="kpi-card"
-          data-help="Proporción del facturado neto que concentran los cinco clientes de mayor monto. Indica dependencia comercial."
+          data-help="Proporción del ingreso total registrado que concentran los cinco clientes de mayor monto. Indica dependencia comercial."
         >
           <span>Concentración Top 5</span>
           <strong>
@@ -693,7 +734,7 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
           </strong>
           <p>
             {hasForecastPlan
-              ? `${formatMoney(netDocumentedClosedMonths)} documentados frente a ${formatMoney(budgetClosedMonths)} en meses cerrados.`
+              ? `${formatMoney(netDocumentedClosedMonths)} de ingreso registrado frente a ${formatMoney(budgetClosedMonths)} en meses cerrados.`
               : "Carga presupuesto anual para comparar la ejecución del período."}
           </p>
         </article>
@@ -719,7 +760,7 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
               style: "percent",
               maximumFractionDigits: 1,
             }).format(topFiveShare)}{" "}
-            del monto documentado.
+            del ingreso registrado.
           </p>
         </article>
         <article>
@@ -785,7 +826,7 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
           <div className="panel-heading">
             <div>
               <span className="panel-label">CONCENTRACIÓN</span>
-              <h2>Clientes por monto documentado</h2>
+              <h2>Clientes por ingreso registrado</h2>
             </div>
             <span className="unit">Top 6</span>
           </div>
@@ -826,7 +867,7 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
             <span className="panel-label">LECTURA DE CIERRE</span>
             <h2>Escenario base del año</h2>
             <p>
-              Facturación documentada a la fecha más presupuesto de los meses
+              Ingreso registrado a la fecha más presupuesto de los meses
               posteriores. No es una probabilidad ni una estimación de caja.
             </p>
           </div>
@@ -840,7 +881,7 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
             </strong>
             <small>
               {hasForecastPlan
-                ? "No incorpora saldo no documentado del mes en curso"
+                ? "No incorpora saldo de ingreso del mes en curso"
                 : "Sin presupuesto anual cargado"}
             </small>
           </article>
@@ -2261,25 +2302,41 @@ export function FinanceDashboard() {
     [yearFilteredRecords],
   );
 
-  const pendingCount = yearFilteredRecords.filter(
-    (record) =>
-      !isPurchaseOrderDocument(record) &&
-      !isCreditNoteDocument(record) &&
-      isOutstandingStatus(record.status),
-  ).length;
-  const currentDate = new Date().toISOString().slice(0, 10);
+  const paidAmountByDocument = useMemo(() => {
+    const amounts = new Map<string, number>();
+    partialPayments.forEach((payment) =>
+      amounts.set(
+        payment.issued_document_id,
+        (amounts.get(payment.issued_document_id) ?? 0) + Number(payment.amount),
+      ),
+    );
+    return amounts;
+  }, [partialPayments]);
+  const currentDate = localIsoDate();
   const overdueRecords = yearFilteredRecords.filter(
     (record) =>
+      hasIssuedDocumentNumber(record) &&
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
       isOutstandingStatus(record.status) &&
+      outstandingDocumentBalance(record, paidAmountByDocument.get(record.id)) > 0 &&
       Boolean(record.dueDate) &&
       record.dueDate! < currentDate,
   );
-  const overdueAmount = sumRecognizedNet(overdueRecords);
-  const creditNotesAmount = yearFilteredRecords
-    .filter(isCreditNoteDocument)
-    .reduce((total, record) => total + Math.abs(record.netAmount ?? 0), 0);
+  const overdueAmount = overdueRecords.reduce(
+    (total, record) =>
+      total +
+      outstandingDocumentBalance(record, paidAmountByDocument.get(record.id)),
+    0,
+  );
+  const registeredIncome = sumRecognizedNet(yearFilteredRecords);
+  const invoicedIncome = sumRecognizedNet(
+    yearFilteredRecords.filter(
+      (record) =>
+        hasIssuedDocumentNumber(record) && !isPurchaseOrderDocument(record),
+    ),
+  );
+  const pendingInvoiceIncome = registeredIncome - invoicedIncome;
   const hasEditPermission =
     access !== null &&
     ["administrator", "finance", "operations"].includes(access.membership.role);
@@ -2454,6 +2511,7 @@ export function FinanceDashboard() {
   async function submitEntry(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (
+      !draft.invoiceNumber.trim() ||
       !draft.issueDate ||
       !draft.documentType ||
       !draft.issuerName.trim() ||
@@ -2464,7 +2522,7 @@ export function FinanceDashboard() {
         (!draft.paymentCondition || !draft.dueDate))
     ) {
       setFormError(
-        "Completa fecha de emisión y vencimiento, tipo, emisor, cliente, monto neto, estado y condición del servicio para facturas.",
+        "Para registrar una factura debes indicar su folio. Si el ingreso aún no tiene documento emitido, crea primero una prefactura.",
       );
       return;
     }
@@ -2839,7 +2897,12 @@ export function FinanceDashboard() {
         ) : activeModule === "Contabilidad" ? (
           canReadExpenses ? <AccountingWorkbench organizationId={access?.membership.organizationId ?? null} /> : null
         ) : activeModule === "Inicio" ? (
-          <ExecutiveDashboard records={records} />
+          <ExecutiveDashboard
+            records={records}
+            payments={partialPayments}
+            onOpenReceivables={() => selectModule("Cuentas por cobrar", "INGRESOS")}
+            onOpenPreinvoices={() => selectModule("Prefacturación", "INGRESOS")}
+          />
         ) : activeModule === "OC de clientes" ? (
           <CustomerPurchaseOrders
             organizationId={access?.membership.organizationId ?? null}
@@ -3050,38 +3113,36 @@ export function FinanceDashboard() {
                 className="kpi-card"
                 data-help="Ingreso reconocido: facturas y documentos exentos, menos notas de crédito. Las órdenes de compra no son venta facturada."
               >
-                <span>Facturado neto</span>
-                <strong>
-                  {formatMoney(sumRecognizedNet(yearFilteredRecords))}
-                </strong>
+                <span>Ingreso total</span>
+                <strong>{formatMoney(registeredIncome)}</strong>
                 <small>
-                  Facturas y exentos, menos notas de crédito. OCs excluidas.
+                  Registrado, con y sin folio. OCs excluidas.
                 </small>
               </article>
               <article
                 className="kpi-card"
-                data-help="Valor neto que rebajó el ingreso por notas de crédito emitidas en el período filtrado."
+                data-help="Ingreso neto de documentos ya emitidos con folio. Las notas de crédito con folio ya están descontadas."
               >
-                <span>Notas de crédito emitidas</span>
-                <strong>{formatMoney(creditNotesAmount)}</strong>
-                <small>Rebaja ya incorporada en facturado neto</small>
+                <span>Ingreso facturado</span>
+                <strong>{formatMoney(invoicedIncome)}</strong>
+                <small>Sólo documentos con folio emitido</small>
               </article>
               <article
                 className="kpi-card accent"
-                data-help="Número de documentos cuyo estado actual es Pendiente. El importe asociado se revisa en Cuentas por cobrar."
+                data-help="Ingreso registrado que aún no tiene folio emitido. Debe respaldarse en una prefactura antes de emitir el documento tributario."
               >
-                <span>Estado “Pendiente”</span>
-                <strong>{number.format(pendingCount)}</strong>
-                <small>Documentos con ese estado exacto</small>
+                <span>Pendiente de facturar</span>
+                <strong>{formatMoney(pendingInvoiceIncome)}</strong>
+                <small>Exige prefactura antes de emitir</small>
               </article>
               <article
                 className="kpi-card"
-                data-help="Monto neto/exento de documentos pendientes cuya fecha de vencimiento ya pasó. Requiere gestión prioritaria."
+                data-help="Mismo saldo vencido que Cuentas por cobrar: documentos con folio, saldo pendiente después de abonos y vencimiento superado."
               >
                 <span>Cartera vencida</span>
                 <strong>{formatMoney(overdueAmount)}</strong>
                 <small>
-                  {number.format(overdueRecords.length)} pendiente(s) vencido(s)
+                  {number.format(overdueRecords.length)} documento(s) vencido(s)
                   a la fecha
                 </small>
               </article>
@@ -3435,7 +3496,8 @@ export function FinanceDashboard() {
                 <p>
                   El emisor se propone desde la empresa activa y puede corregirse.
                   Cliente y destinatario provienen de las fichas comerciales. IVA y
-                  total se calculan automáticamente.
+                  total se calculan automáticamente. Los ingresos sin folio se
+                  gestionan primero desde Prefacturación.
                 </p>
               </div>
               <button
@@ -3450,12 +3512,13 @@ export function FinanceDashboard() {
             <form onSubmit={submitEntry}>
               <div className="form-grid">
                 <label>
-                  N° documento
+                  N° documento *
                   <input
                     value={draft.invoiceNumber}
                     onChange={(event) =>
                       updateDraft("invoiceNumber", event.target.value)
                     }
+                    required
                   />
                 </label>
                 <label>
@@ -3573,6 +3636,16 @@ export function FinanceDashboard() {
               </div>
               {formError && <p className="form-error">{formError}</p>}
               <div className="form-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setShowEntry(false);
+                    setActiveModule("Prefacturación");
+                  }}
+                >
+                  Crear prefactura
+                </button>
                 <button
                   type="button"
                   className="secondary-button"
