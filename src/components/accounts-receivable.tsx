@@ -12,7 +12,7 @@ import {
 } from "recharts";
 import type { InvoiceRecord } from "@/data/facturas-emitidas-2026";
 import {
-  hasIssuedDocumentNumber,
+  isActiveIssuedInvoice,
   isCreditNoteDocument,
   isPurchaseOrderDocument,
   outstandingDocumentBalance,
@@ -187,7 +187,7 @@ export function AccountsReceivable({
     () =>
       recordsForYear.filter(
         (record) =>
-          hasIssuedDocumentNumber(record) &&
+          isActiveIssuedInvoice(record) &&
           !isPurchaseOrderDocument(record) &&
           !isCreditNoteDocument(record) &&
           ["pendiente", "abonada"].includes(

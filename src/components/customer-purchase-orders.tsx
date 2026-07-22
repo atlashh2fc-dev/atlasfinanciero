@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { InvoiceRecord } from "@/data/facturas-emitidas-2026";
-import { isAllocatableInvoice } from "@/lib/document-revenue";
+import { isActiveIssuedInvoice } from "@/lib/document-revenue";
 
 type PurchaseOrder = { id: string; purchase_order_number: string; customer_counterparty_id: string | null; customer_name: string; customer_tax_id: string | null; received_date: string; valid_until: string | null; net_amount: number | string; currency_code: string; notes: string | null; status: "open" | "closed" | "cancelled" };
 type Allocation = { id: string; purchase_order_id: string; issued_document_id: string; allocated_net_amount: number | string; created_at: string };
@@ -38,7 +38,7 @@ export function CustomerPurchaseOrders({ organizationId, records, canManage }: {
     const allocated = (data?.allocations ?? []).filter((item) => item.purchase_order_id === purchaseOrder.id).reduce((total, item) => total + Number(item.allocated_net_amount), 0);
     return { ...purchaseOrder, netAmount: Number(purchaseOrder.net_amount), allocated, remaining: Number(purchaseOrder.net_amount) - allocated };
   }), [data]);
-  const allocatableInvoices = useMemo(() => records.filter(isAllocatableInvoice), [records]);
+  const allocatableInvoices = useMemo(() => records.filter(isActiveIssuedInvoice), [records]);
   const allocatedDocumentIds = useMemo(() => new Set((data?.allocations ?? []).map((item) => item.issued_document_id)), [data]);
   const unallocatedInvoices = allocatableInvoices.filter((item) => !allocatedDocumentIds.has(item.id));
   const availableOrders = summaries.filter((item) => item.status === "open" && item.remaining > 0);

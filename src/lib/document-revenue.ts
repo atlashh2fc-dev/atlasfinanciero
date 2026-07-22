@@ -1,6 +1,7 @@
 export type RevenueDocument = {
   documentType?: string | null;
   invoiceNumber?: string | null;
+  status?: string | null;
   netAmount?: number | null;
   totalAmount?: number | null;
 };
@@ -25,7 +26,19 @@ export function isAllocatableInvoice(document: RevenueDocument) {
 
 /** A revenue entry is only invoiced once its fiscal document has a folio. */
 export function hasIssuedDocumentNumber(document: RevenueDocument) {
-  return Boolean(document.invoiceNumber?.trim());
+  const folio = document.invoiceNumber?.trim();
+  // XX / XXXX se usa en el libro como marcador de "sin documento"; no es folio.
+  return Boolean(folio && !/^x+$/i.test(folio.replace(/\s/g, "")));
+}
+
+/** Factura vigente: folio real, tipo factura y sin estado de anulación. */
+export function isActiveIssuedInvoice(document: RevenueDocument) {
+  const status = normalizedDocumentType(document.status);
+  return (
+    hasIssuedDocumentNumber(document) &&
+    isAllocatableInvoice(document) &&
+    !status.includes("anulad")
+  );
 }
 
 export function recognizedNetAmount(document: RevenueDocument) {

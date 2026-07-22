@@ -44,7 +44,7 @@ import { ManagementCenter } from "@/components/management-center";
 import { PlatformSuperAdminDashboard } from "@/components/platform-super-admin-dashboard";
 import { AccountingWorkbench } from "@/components/accounting-workbench";
 import {
-  hasIssuedDocumentNumber,
+  isActiveIssuedInvoice,
   isCreditNoteDocument,
   isPurchaseOrderDocument,
   outstandingDocumentBalance,
@@ -507,19 +507,18 @@ function ExecutiveDashboard({
   const netDocumented = sumRecognizedNet(periodRecords);
   const netDocumentedYtd = sumRecognizedNet(periodRecords);
   const netInvoicedYtd = sumRecognizedNet(
-    periodRecords.filter(
-      (record) =>
-        hasIssuedDocumentNumber(record) && !isPurchaseOrderDocument(record),
-    ),
+    periodRecords.filter(isActiveIssuedInvoice),
   );
-  const pendingToInvoiceAmount = netDocumentedYtd - netInvoicedYtd;
-  const pendingToInvoiceCount = periodRecords.filter(
+  const pendingToInvoiceRecords = periodRecords.filter(
     (record) =>
-      !hasIssuedDocumentNumber(record) &&
+      !isActiveIssuedInvoice(record) &&
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
+      !record.status?.toLocaleLowerCase("es-CL").includes("anulad") &&
       recognizedNetAmount(record) > 0,
-  ).length;
+  );
+  const pendingToInvoiceAmount = sumRecognizedNet(pendingToInvoiceRecords);
+  const pendingToInvoiceCount = pendingToInvoiceRecords.length;
   const netDocumentedClosedMonths = sumRecognizedNet(closedMonthRecords);
   const paidAmountByDocument = useMemo(() => {
     const amounts = new Map<string, number>();
@@ -533,7 +532,7 @@ function ExecutiveDashboard({
   }, [payments]);
   const pending = periodRecords.filter(
     (record) =>
-      hasIssuedDocumentNumber(record) &&
+      isActiveIssuedInvoice(record) &&
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
       isOutstandingStatus(record.status) &&
@@ -662,24 +661,24 @@ function ExecutiveDashboard({
         </article>
         <article
           className="kpi-card"
-          data-help="Ingreso neto respaldado por un documento emitido con folio hasta la fecha de corte. Las notas de crédito con folio ya están descontadas."
+          data-help="Facturas vigentes con folio válido. Excluye registros XX/XXXX, documentos sin tipo Factura y facturas anuladas; éstas no son facturación vigente."
         >
-          <span>Ingreso facturado acumulado</span>
+          <span>Facturación vigente acumulada</span>
           <strong>{formatMoney(netInvoicedYtd)}</strong>
           <small>
-            Sólo documentos con folio emitido.
+            Sólo facturas vigentes; anuladas y XX/XXXX fuera.
           </small>
         </article>
         <button
           type="button"
           className="kpi-card kpi-card-button"
-          data-help="Diferencia entre el ingreso registrado y el ingreso ya facturado. Corresponde a ingresos que aún requieren definir y emitir su documento."
+          data-help="Ingresos registrados sin una factura vigente: XX/XXXX, sin tipo Factura o sin folio válido. Las anuladas no se suman aquí: se neutralizan con su nota de crédito."
           onClick={onOpenPreinvoices}
         >
           <span>Pendiente de facturar</span>
           <strong>{formatMoney(pendingToInvoiceAmount)}</strong>
           <small>
-            {pendingToInvoiceCount} ingreso(s) sin folio: exige prefactura · Gestionar
+            {pendingToInvoiceCount} ingreso(s) sin factura vigente: exige prefactura · Gestionar
           </small>
         </button>
         <button
@@ -2315,7 +2314,7 @@ export function FinanceDashboard() {
   const currentDate = localIsoDate();
   const overdueRecords = yearFilteredRecords.filter(
     (record) =>
-      hasIssuedDocumentNumber(record) &&
+      isActiveIssuedInvoice(record) &&
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
       isOutstandingStatus(record.status) &&
@@ -2331,12 +2330,18 @@ export function FinanceDashboard() {
   );
   const registeredIncome = sumRecognizedNet(yearFilteredRecords);
   const invoicedIncome = sumRecognizedNet(
+    yearFilteredRecords.filter(isActiveIssuedInvoice),
+  );
+  const pendingInvoiceIncome = sumRecognizedNet(
     yearFilteredRecords.filter(
       (record) =>
-        hasIssuedDocumentNumber(record) && !isPurchaseOrderDocument(record),
+        !isActiveIssuedInvoice(record) &&
+        !isPurchaseOrderDocument(record) &&
+        !isCreditNoteDocument(record) &&
+        !record.status?.toLocaleLowerCase("es-CL").includes("anulad") &&
+        recognizedNetAmount(record) > 0,
     ),
   );
-  const pendingInvoiceIncome = registeredIncome - invoicedIncome;
   const hasEditPermission =
     access !== null &&
     ["administrator", "finance", "operations"].includes(access.membership.role);
@@ -3121,15 +3126,15 @@ export function FinanceDashboard() {
               </article>
               <article
                 className="kpi-card"
-                data-help="Ingreso neto de documentos ya emitidos con folio. Las notas de crédito con folio ya están descontadas."
+                data-help="Facturas vigentes con folio válido. XX/XXXX, documentos sin tipo Factura y facturas anuladas no se consideran facturación vigente."
               >
-                <span>Ingreso facturado</span>
+                <span>Facturación vigente</span>
                 <strong>{formatMoney(invoicedIncome)}</strong>
-                <small>Sólo documentos con folio emitido</small>
+                <small>Sólo facturas vigentes; anuladas y XX/XXXX fuera</small>
               </article>
               <article
                 className="kpi-card accent"
-                data-help="Ingreso registrado que aún no tiene folio emitido. Debe respaldarse en una prefactura antes de emitir el documento tributario."
+                data-help="Ingreso registrado sin una factura vigente. XX/XXXX o sin tipo Factura cuentan como sin documento y requieren prefactura; las anuladas quedan neutralizadas con su nota de crédito."
               >
                 <span>Pendiente de facturar</span>
                 <strong>{formatMoney(pendingInvoiceIncome)}</strong>
