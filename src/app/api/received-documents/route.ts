@@ -14,15 +14,38 @@ function yearFrom(value: string | null) {
 export async function GET(request: NextRequest) {
   const organizationId = request.nextUrl.searchParams.get("organizationId");
   const requestedYear = request.nextUrl.searchParams.get("year");
+  const fileId = request.nextUrl.searchParams.get("fileId");
   const year = yearFrom(requestedYear);
-  if (!isUuid(organizationId) || (requestedYear && year === null)) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
+  if (
+    !isUuid(organizationId) ||
+    (requestedYear && year === null) ||
+    (fileId && !isUuid(fileId))
+  )
+    return NextResponse.json({ error: "invalid_request" }, { status: 400 });
 
   const context = await requireOrganizationExpenseReadAccess(organizationId);
   if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
 
+  if (fileId) {
+    const { data: document, error } = await context.supabase
+      .from("received_documents")
+      .select("attachment_path")
+      .eq("id", fileId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+    if (error || !document?.attachment_path)
+      return NextResponse.json({ error: "document_file_not_found" }, { status: 404 });
+    const { data: signed, error: signedError } = await context.supabase.storage
+      .from("received-document-files")
+      .createSignedUrl(document.attachment_path, 60);
+    if (signedError || !signed)
+      return NextResponse.json({ error: "unable_to_open_document_file" }, { status: 409 });
+    return NextResponse.json({ signedUrl: signed.signedUrl });
+  }
+
   let documentsQuery = context.supabase
     .from("received_documents")
-    .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_method, payment_bank, payment_reference, payment_notes, payment_date, payment_recorded_at, payment_recorded_by, source_file_name, source_sheet_name, source_row")
+    .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_method, payment_bank, payment_reference, payment_notes, payment_date, payment_recorded_at, payment_recorded_by, attachment_path, attachment_name, attachment_mime_type, attachment_size, source_file_name, source_sheet_name, source_row")
     .eq("organization_id", organizationId)
     .order("issue_date", { ascending: false })
     .order("source_row", { ascending: false });

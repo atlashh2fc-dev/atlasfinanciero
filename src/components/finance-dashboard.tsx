@@ -2217,6 +2217,23 @@ export function FinanceDashboard() {
       }),
     [months, yearFilteredRecords],
   );
+  const annual = useMemo(
+    () =>
+      availableYears
+        .slice()
+        .sort((first, second) => first - second)
+        .map((item) => {
+          const matching = records.filter((record) => record.year === item);
+          return {
+            year: String(item),
+            montoNeto: sumRecognizedNet(matching),
+            documentos: matching.filter(
+              (record) => !isPurchaseOrderDocument(record),
+            ).length,
+          };
+        }),
+    [availableYears, records],
+  );
   const statusesChart = useMemo(
     () =>
       statuses.map((item) => ({
@@ -3075,58 +3092,90 @@ export function FinanceDashboard() {
                 <div className="panel-heading">
                   <div>
                     <span className="panel-label">EVOLUCIÓN</span>
-                    <h2>Facturación neta por mes</h2>
+                    <h2>
+                      {year === "Todos"
+                        ? "Facturación neta por año"
+                        : "Facturación neta por mes"}
+                    </h2>
                   </div>
                   <span className="unit">CLP neto/exento</span>
                 </div>
                 <div className="chart-wrap">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart
-                      data={monthly}
-                      margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
-                    >
-                      <defs>
-                        <linearGradient
-                          id="netFill"
-                          x1="0"
-                          x2="0"
-                          y1="0"
-                          y2="1"
-                        >
-                          <stop
-                            offset="0%"
-                            stopColor="#5968df"
-                            stopOpacity={0.26}
-                          />
-                          <stop
-                            offset="100%"
-                            stopColor="#5968df"
-                            stopOpacity={0.01}
-                          />
-                        </linearGradient>
-                      </defs>
-                      <XAxis
-                        dataKey="month"
-                        tickLine={false}
-                        axisLine={false}
-                        tick={{ fill: "#7e8ba0", fontSize: 12 }}
-                      />
-                      <YAxis hide />
-                      <Tooltip
-                        formatter={(value) => formatMoney(Number(value))}
-                        contentStyle={{
-                          borderRadius: 12,
-                          border: "1px solid #e6e9ef",
-                        }}
-                      />
-                      <Area
-                        type="monotone"
-                        dataKey="montoNeto"
-                        stroke="#5968df"
-                        strokeWidth={2.5}
-                        fill="url(#netFill)"
-                      />
-                    </AreaChart>
+                    {year === "Todos" ? (
+                      <BarChart
+                        data={annual}
+                        margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                      >
+                        <XAxis
+                          dataKey="year"
+                          tickLine={false}
+                          axisLine={false}
+                          tick={{ fill: "#7e8ba0", fontSize: 12 }}
+                        />
+                        <YAxis hide />
+                        <Tooltip
+                          formatter={(value) => formatMoney(Number(value))}
+                          contentStyle={{
+                            borderRadius: 12,
+                            border: "1px solid #e6e9ef",
+                          }}
+                        />
+                        <Bar
+                          dataKey="montoNeto"
+                          name="Facturación neta"
+                          fill="#5968df"
+                          radius={[6, 6, 0, 0]}
+                        />
+                      </BarChart>
+                    ) : (
+                      <AreaChart
+                        data={monthly}
+                        margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                      >
+                        <defs>
+                          <linearGradient
+                            id="netFill"
+                            x1="0"
+                            x2="0"
+                            y1="0"
+                            y2="1"
+                          >
+                            <stop
+                              offset="0%"
+                              stopColor="#5968df"
+                              stopOpacity={0.26}
+                            />
+                            <stop
+                              offset="100%"
+                              stopColor="#5968df"
+                              stopOpacity={0.01}
+                            />
+                          </linearGradient>
+                        </defs>
+                        <XAxis
+                          dataKey="month"
+                          tickLine={false}
+                          axisLine={false}
+                          tick={{ fill: "#7e8ba0", fontSize: 12 }}
+                        />
+                        <YAxis hide />
+                        <Tooltip
+                          formatter={(value) => formatMoney(Number(value))}
+                          contentStyle={{
+                            borderRadius: 12,
+                            border: "1px solid #e6e9ef",
+                          }}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="montoNeto"
+                          stroke="#5968df"
+                          strokeWidth={2.5}
+                          fill="url(#netFill)"
+                        />
+                      </AreaChart>
+                    )}
                   </ResponsiveContainer>
                 </div>
               </article>
