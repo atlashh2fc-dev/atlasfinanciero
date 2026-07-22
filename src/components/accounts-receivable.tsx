@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, Fragment, useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -78,6 +78,18 @@ function displayFollowupStatus(status: FollowupStatus) {
   ];
 }
 
+function normalizeSearchText(value: string | null | undefined) {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es-CL")
+    .trim();
+}
+
+function customerName(record: InvoiceRecord) {
+  return record.client?.trim() || record.recipient?.trim() || "Cliente no informado";
+}
+
 export function AccountsReceivable({
   records,
   organizationId,
@@ -108,6 +120,11 @@ export function AccountsReceivable({
   const [normalizationTarget, setNormalizationTarget] =
     useState<NormalizationTarget | null>(null);
   const [year, setYear] = useState(String(new Date().getFullYear()));
+  const [portfolioView, setPortfolioView] = useState<"customers" | "documents">(
+    "customers",
+  );
+  const [portfolioSearch, setPortfolioSearch] = useState("");
+  const [expandedCustomers, setExpandedCustomers] = useState<string[]>([]);
 
   async function loadFollowups() {
     if (!organizationId) {
@@ -181,6 +198,77 @@ export function AccountsReceivable({
       ),
     [recordsForYear, paidAmountByDocument],
   );
+  const filteredReceivables = useMemo(() => {
+    const search = normalizeSearchText(portfolioSearch);
+    if (!search) return receivables;
+
+    return receivables.filter((record) =>
+      normalizeSearchText(
+        [
+          customerName(record),
+          record.recipient,
+          record.recipientRut,
+          record.invoiceNumber,
+          record.documentType,
+          record.notes,
+        ].join(" "),
+      ).includes(search),
+    );
+  }, [portfolioSearch, receivables]);
+  const customerGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        key: string;
+        name: string;
+        rut: string | null;
+        documents: InvoiceRecord[];
+        balance: number;
+        overdueBalance: number;
+        overdueDocuments: number;
+        nextDueDate: string | null;
+      }
+    >();
+
+    filteredReceivables.forEach((record) => {
+      const name = customerName(record);
+      const rut = record.recipientRut?.trim() || null;
+      const key = rut ? `rut:${rut}` : `name:${normalizeSearchText(name)}`;
+      const current = groups.get(key) ?? {
+        key,
+        name,
+        rut,
+        documents: [],
+        balance: 0,
+        overdueBalance: 0,
+        overdueDocuments: 0,
+        nextDueDate: null,
+      };
+      const balance = outstandingBalance(record);
+      const isOverdue = (daysOverdue(record.dueDate, today) ?? -1) > 0;
+
+      current.documents.push(record);
+      current.balance += balance;
+      if (isOverdue) {
+        current.overdueBalance += balance;
+        current.overdueDocuments += 1;
+      }
+      if (
+        record.dueDate &&
+        (!current.nextDueDate || record.dueDate < current.nextDueDate)
+      ) {
+        current.nextDueDate = record.dueDate;
+      }
+      groups.set(key, current);
+    });
+
+    return Array.from(groups.values()).sort(
+      (first, second) =>
+        second.overdueBalance - first.overdueBalance ||
+        second.balance - first.balance ||
+        first.name.localeCompare(second.name, "es-CL"),
+    );
+  }, [filteredReceivables, paidAmountByDocument, today]);
   const totalPending = useMemo(
     () =>
       receivables.reduce(
@@ -275,6 +363,114 @@ export function AccountsReceivable({
     setMessage("Gestión de cobranza guardada.");
     setSelected(null);
     await loadFollowups();
+  }
+
+  function toggleCustomer(key: string) {
+    setExpandedCustomers((current) =>
+      current.includes(key)
+        ? current.filter((item) => item !== key)
+        : [...current, key],
+    );
+  }
+
+  function renderDocumentRow(record: InvoiceRecord) {
+    const days = daysOverdue(record.dueDate, today);
+    const followup = followupsByDocument.get(record.id);
+    const bucket = agingBucket(days);
+    const greenAlert =
+      bucket === "Vence en 7 días" || bucket === "Vence en 2 días";
+
+    return (
+      <tr key={record.id}>
+        <td>
+          <strong>
+            N° {record.invoiceNumber ?? "—"} · {customerName(record)}
+          </strong>
+          <small>
+            {record.recipient ?? record.documentType ?? "Documento emitido"}
+          </small>
+        </td>
+        <td>{formatDate(record.dueDate)}</td>
+        <td className="money-col">
+          {money.format(Number(record.totalAmount ?? recognizedNetAmount(record)))}
+        </td>
+        <td className="money-col">
+          {money.format(paidAmountByDocument.get(record.id) ?? 0)}
+        </td>
+        <td className="money-col">
+          <strong>{money.format(outstandingBalance(record))}</strong>
+        </td>
+        <td>
+          <span
+            className={
+              days !== null && days > 0
+                ? "status cancelled"
+                : greenAlert
+                  ? "status paid"
+                  : "status neutral"
+            }
+          >
+            {days === null
+              ? "Sin fecha"
+              : days > 0
+                ? `${days} día(s) vencido`
+                : bucket}
+          </span>
+        </td>
+        <td>
+          {followup ? (
+            <>
+              <strong>{displayFollowupStatus(followup.status)}</strong>
+              <small>
+                {followup.next_action_on
+                  ? `Próxima acción ${formatDate(followup.next_action_on)}`
+                  : followup.note || "Sin próxima fecha"}
+              </small>
+            </>
+          ) : (
+            <span className="origin">Sin gestión registrada</span>
+          )}
+        </td>
+        <td>
+          {canManage && isPersisted ? (
+            <div className="cycle-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => openFollowup(record)}
+              >
+                Gestionar
+              </button>
+              {onEditDocument && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => onEditDocument(record)}
+                >
+                  Editar pago
+                </button>
+              )}
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() =>
+                  setNormalizationTarget({
+                    id: record.id,
+                    kind: "issued",
+                    title: `${customerName(record)} · ${record.documentType ?? "Documento emitido"}`,
+                    invoiceNumber: record.invoiceNumber,
+                  })
+                }
+              >
+                {record.invoiceNumber ? "Adjuntar factura" : "Ingresar factura"}
+              </button>
+            </div>
+          ) : (
+            "—"
+          )}
+        </td>
+      </tr>
+    );
   }
 
   return (
@@ -462,140 +658,150 @@ export function AccountsReceivable({
         <div className="table-heading">
           <div>
             <span className="panel-label">CARTERA OPERATIVA</span>
-            <h2>Documentos pendientes</h2>
+            <h2>
+              {portfolioView === "customers"
+                ? "Cartera agrupada por cliente"
+                : "Documentos pendientes"}
+            </h2>
             <p>
               {isLoading
                 ? "Cargando gestión…"
-                : `${receivables.length} documento(s) priorizados por vencimiento.`}
+                : portfolioView === "customers"
+                  ? `${customerGroups.length} cliente(s) con saldo pendiente.`
+                  : `${filteredReceivables.length} documento(s) priorizados por vencimiento.`}
             </p>
           </div>
+          <div className="receivables-toolbar">
+            <label className="receivables-search">
+              Buscar cartera
+              <input
+                type="search"
+                value={portfolioSearch}
+                onChange={(event) => setPortfolioSearch(event.target.value)}
+                placeholder="Cliente, RUT, folio o detalle"
+                aria-label="Buscar por cliente, RUT, folio o detalle"
+              />
+            </label>
+            <div className="receivables-view-toggle" aria-label="Vista de cartera">
+              <button
+                type="button"
+                className={portfolioView === "customers" ? "active" : ""}
+                onClick={() => setPortfolioView("customers")}
+              >
+                Por cliente
+              </button>
+              <button
+                type="button"
+                className={portfolioView === "documents" ? "active" : ""}
+                onClick={() => setPortfolioView("documents")}
+              >
+                Por documento
+              </button>
+            </div>
+          </div>
         </div>
-        <div className="table-scroll">
-          <table className="receivables-table">
-            <thead>
-              <tr>
-                <th>Documento / cliente</th>
-                <th>Vence</th>
-                <th className="money-col">Factura</th>
-                <th className="money-col">Abonado</th>
-                <th className="money-col">Saldo</th>
-                <th>Antigüedad</th>
-                <th>Gestión</th>
-                <th>Acción</th>
-              </tr>
-            </thead>
-            <tbody>
-              {receivables.map((record) => {
-                const days = daysOverdue(record.dueDate, today);
-                const followup = followupsByDocument.get(record.id);
-                const bucket = agingBucket(days);
-                const greenAlert =
-                  bucket === "Vence en 7 días" || bucket === "Vence en 2 días";
-                return (
-                  <tr key={record.id}>
-                    <td>
-                      <strong>
-                        N° {record.invoiceNumber ?? "—"} ·{" "}
-                        {record.client ?? "Cliente no informado"}
-                      </strong>
-                      <small>
-                        {record.recipient ??
-                          record.documentType ??
-                          "Documento emitido"}
-                      </small>
-                    </td>
-                    <td>{formatDate(record.dueDate)}</td>
-                    <td className="money-col">
-                      {money.format(Number(record.totalAmount ?? recognizedNetAmount(record)))}
-                    </td>
-                    <td className="money-col">
-                      {money.format(paidAmountByDocument.get(record.id) ?? 0)}
-                    </td>
-                    <td className="money-col">
-                      <strong>{money.format(outstandingBalance(record))}</strong>
-                    </td>
-                    <td>
-                      <span
-                        className={
-                          days !== null && days > 0
-                            ? "status cancelled"
-                            : greenAlert
-                              ? "status paid"
-                              : "status neutral"
-                        }
-                      >
-                        {days === null
-                          ? "Sin fecha"
-                          : days > 0
-                            ? `${days} día(s) vencido`
-                            : bucket}
-                      </span>
-                    </td>
-                    <td>
-                      {followup ? (
-                        <>
-                          <strong>
-                            {displayFollowupStatus(followup.status)}
-                          </strong>
+        {portfolioView === "customers" ? (
+          <div className="table-scroll">
+            <table className="receivables-table receivables-customer-table">
+              <thead>
+                <tr>
+                  <th>Cliente</th>
+                  <th>Documentos</th>
+                  <th className="money-col">Vencido</th>
+                  <th className="money-col">Saldo pendiente</th>
+                  <th>Próximo vencimiento</th>
+                  <th>Detalle</th>
+                </tr>
+              </thead>
+              <tbody>
+                {customerGroups.map((group) => {
+                  const isExpanded = expandedCustomers.includes(group.key);
+                  return (
+                    <Fragment key={group.key}>
+                      <tr>
+                        <td>
+                          <strong>{group.name}</strong>
+                          <small>{group.rut ? `RUT ${group.rut}` : "Sin RUT informado"}</small>
+                        </td>
+                        <td>
+                          <strong>{group.documents.length}</strong>
                           <small>
-                            {followup.next_action_on
-                              ? `Próxima acción ${formatDate(followup.next_action_on)}`
-                              : followup.note || "Sin próxima fecha"}
+                            {group.overdueDocuments
+                              ? `${group.overdueDocuments} vencido(s)`
+                              : "Sin documentos vencidos"}
                           </small>
-                        </>
-                      ) : (
-                        <span className="origin">Sin gestión registrada</span>
-                      )}
-                    </td>
-                    <td>
-                      {canManage && isPersisted ? (
-                        <div className="cycle-actions">
+                        </td>
+                        <td className="money-col">
+                          <strong>{money.format(group.overdueBalance)}</strong>
+                        </td>
+                        <td className="money-col">
+                          <strong>{money.format(group.balance)}</strong>
+                        </td>
+                        <td>{formatDate(group.nextDueDate)}</td>
+                        <td>
                           <button
                             type="button"
                             className="secondary-button"
-                            onClick={() => openFollowup(record)}
+                            onClick={() => toggleCustomer(group.key)}
+                            aria-expanded={isExpanded}
                           >
-                            Gestionar
+                            {isExpanded ? "Ocultar documentos" : "Ver documentos"}
                           </button>
-                          {onEditDocument && (
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() => onEditDocument(record)}
-                            >
-                              Editar pago
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            onClick={() =>
-                              setNormalizationTarget({
-                                id: record.id,
-                                kind: "issued",
-                                title: `${record.client ?? "Cliente no informado"} · ${record.documentType ?? "Documento emitido"}`,
-                                invoiceNumber: record.invoiceNumber,
-                              })
-                            }
-                          >
-                            {record.invoiceNumber
-                              ? "Adjuntar factura"
-                              : "Ingresar factura"}
-                          </button>
-                        </div>
-                      ) : (
-                        "—"
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr key={`${group.key}-details`} className="receivables-customer-detail">
+                          <td colSpan={6}>
+                            <div className="table-scroll">
+                              <table className="receivables-table">
+                                <thead>
+                                  <tr>
+                                    <th>Documento / cliente</th>
+                                    <th>Vence</th>
+                                    <th className="money-col">Factura</th>
+                                    <th className="money-col">Abonado</th>
+                                    <th className="money-col">Saldo</th>
+                                    <th>Antigüedad</th>
+                                    <th>Gestión</th>
+                                    <th>Acción</th>
+                                  </tr>
+                                </thead>
+                                <tbody>{group.documents.map(renderDocumentRow)}</tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        {!receivables.length && (
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="table-scroll">
+            <table className="receivables-table">
+              <thead>
+                <tr>
+                  <th>Documento / cliente</th>
+                  <th>Vence</th>
+                  <th className="money-col">Factura</th>
+                  <th className="money-col">Abonado</th>
+                  <th className="money-col">Saldo</th>
+                  <th>Antigüedad</th>
+                  <th>Gestión</th>
+                  <th>Acción</th>
+                </tr>
+              </thead>
+              <tbody>{filteredReceivables.map(renderDocumentRow)}</tbody>
+            </table>
+          </div>
+        )}
+        {!filteredReceivables.length && (
           <p className="billing-empty">
-            No hay documentos con saldo pendiente en los datos disponibles.
+            {portfolioSearch
+              ? "No encontramos documentos pendientes con esa búsqueda."
+              : "No hay documentos con saldo pendiente en los datos disponibles."}
           </p>
         )}
       </section>
