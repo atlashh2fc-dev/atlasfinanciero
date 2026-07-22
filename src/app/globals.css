@@ -1635,6 +1635,75 @@ td small {
   width: min(1140px, 100%);
   max-height: calc(100vh - 68px);
 }
+.received-document-backdrop {
+  background: linear-gradient(135deg, #101b378f, #33446473);
+  backdrop-filter: blur(7px) saturate(1.12);
+}
+.received-document-modal {
+  width: min(1240px, 100%);
+  max-height: calc(100vh - 44px);
+  background: linear-gradient(135deg, #ffffffed, #eaf0ffdc);
+  border: 1px solid #ffffffc7;
+  box-shadow: 0 30px 90px #101b3770, inset 0 1px 0 #ffffff;
+  backdrop-filter: blur(24px) saturate(1.18);
+}
+.received-document-layout {
+  display: grid;
+  grid-template-columns: minmax(330px, .9fr) minmax(420px, 1.1fr);
+  gap: 18px;
+  margin-top: 18px;
+}
+.received-document-preview,
+.received-document-form {
+  min-width: 0;
+  border: 1px solid #d8e2f2;
+  border-radius: 14px;
+  background: #ffffffa8;
+  padding: 16px;
+}
+.received-document-preview {
+  display: grid;
+  grid-template-rows: auto minmax(440px, 1fr);
+  gap: 12px;
+}
+.received-document-preview-heading,
+.received-document-form-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.received-document-preview iframe,
+.received-document-preview img {
+  width: 100%;
+  height: 100%;
+  min-height: 440px;
+  border: 0;
+  border-radius: 10px;
+  background: #f1f4fa;
+  object-fit: contain;
+}
+.received-document-empty {
+  min-height: 440px;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  text-align: center;
+  border: 1px dashed #b7c5df;
+  border-radius: 10px;
+  color: #5f6e85;
+}
+.received-document-empty small,
+.received-document-form small { color: #77869d; }
+.received-document-form textarea { min-height: 92px; resize: vertical; }
+@media (max-width: 900px) {
+  .received-document-modal { padding: 18px; }
+  .received-document-layout { grid-template-columns: 1fr; }
+  .received-document-preview { grid-template-rows: auto minmax(300px, 1fr); }
+  .received-document-preview iframe,
+  .received-document-preview img,
+  .received-document-empty { min-height: 300px; }
+}
 .supplier-directory-toolbar {
   display: flex;
   align-items: end;

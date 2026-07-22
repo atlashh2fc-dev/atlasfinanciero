@@ -11,6 +11,27 @@ function yearFrom(value: string | null) {
   return Number.isInteger(year) && year >= 2000 && year <= 2100 ? year : null;
 }
 
+function optionalText(value: unknown, maxLength: number) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length <= maxLength ? trimmed || null : undefined;
+}
+
+function optionalDate(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? value
+    : undefined;
+}
+
+function nonNegativeAmount(value: unknown) {
+  const amount = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(amount) && amount >= 0 && amount <= 1_000_000_000_000
+    ? amount
+    : undefined;
+}
+
 export async function GET(request: NextRequest) {
   const organizationId = request.nextUrl.searchParams.get("organizationId");
   const requestedYear = request.nextUrl.searchParams.get("year");
@@ -71,6 +92,65 @@ export async function PATCH(request: NextRequest) {
   const referenceId = body?.referenceId;
   if (!isUuid(organizationId)) {
     return NextResponse.json({ error: "invalid_payment_registration" }, { status: 400 });
+  }
+  if (body?.action === "update_received_document" && isUuid(body?.documentId)) {
+    const supplierName = optionalText(body.supplierName, 300);
+    const supplierTaxId = optionalText(body.supplierTaxId, 30);
+    const documentNumber = optionalText(body.documentNumber, 80);
+    const documentType = optionalText(body.documentType, 80);
+    const issueDate = optionalDate(body.issueDate);
+    const dueDate = optionalDate(body.dueDate);
+    const notes = optionalText(body.notes, 2_000);
+    const paymentTermDays = body.paymentTermDays === null || body.paymentTermDays === undefined || body.paymentTermDays === ""
+      ? null
+      : Number.isInteger(Number(body.paymentTermDays)) && Number(body.paymentTermDays) >= 0 && Number(body.paymentTermDays) <= 3_650
+        ? Number(body.paymentTermDays)
+        : undefined;
+    const netAmount = nonNegativeAmount(body.netAmount);
+    const vatAmount = nonNegativeAmount(body.vatAmount);
+    const additionalTaxAmount = nonNegativeAmount(body.additionalTaxAmount);
+    if (
+      supplierName === undefined || !supplierName ||
+      supplierTaxId === undefined ||
+      documentNumber === undefined ||
+      documentType === undefined || !documentType ||
+      issueDate === undefined || !issueDate ||
+      dueDate === undefined ||
+      notes === undefined ||
+      paymentTermDays === undefined ||
+      netAmount === undefined || vatAmount === undefined || additionalTaxAmount === undefined
+    ) return NextResponse.json({ error: "invalid_received_document" }, { status: 400 });
+
+    const context = await requireOrganizationFinanceAccess(organizationId);
+    if (context.error || !context.supabase)
+      return NextResponse.json({ error: context.error }, { status: context.status });
+    const dueMonth = dueDate
+      ? new Intl.DateTimeFormat("es-CL", { month: "long" }).format(new Date(`${dueDate}T12:00:00`)).replace(/^./, (letter) => letter.toUpperCase())
+      : null;
+    const { data, error } = await context.supabase
+      .from("received_documents")
+      .update({
+        supplier_name: supplierName,
+        supplier_tax_id: supplierTaxId,
+        document_number: documentNumber,
+        document_type: documentType,
+        issue_date: issueDate,
+        net_amount: netAmount,
+        vat_amount: vatAmount,
+        additional_tax_amount: additionalTaxAmount,
+        total_amount: netAmount + vatAmount + additionalTaxAmount,
+        notes,
+        payment_term_days: paymentTermDays,
+        due_date: dueDate,
+        due_month: dueMonth,
+      })
+      .eq("id", body.documentId)
+      .eq("organization_id", organizationId)
+      .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, due_date, payment_status, payment_method, payment_bank, payment_reference, payment_date, attachment_path, attachment_name, attachment_mime_type, attachment_size")
+      .maybeSingle();
+    if (error || !data)
+      return NextResponse.json({ error: "unable_to_update_received_document" }, { status: 409 });
+    return NextResponse.json({ document: data });
   }
   if (body?.action === "settle_factoring_reference" && isUuid(referenceId)) {
     const settledAt = typeof body?.settledAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.settledAt)
