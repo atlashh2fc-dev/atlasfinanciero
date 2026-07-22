@@ -115,3 +115,30 @@ export async function POST(request: NextRequest) {
     },
   }, { status: 201 });
 }
+
+export async function PATCH(request: NextRequest) {
+  const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+  const organizationId = body?.organizationId;
+  const payableId = body?.payableId;
+  const invoiceNumber = typeof body?.invoiceNumber === "string" ? body.invoiceNumber.trim() : null;
+  if (
+    !isUuid(organizationId) ||
+    !isUuid(payableId) ||
+    invoiceNumber === null ||
+    invoiceNumber.length > 80
+  ) return NextResponse.json({ error: "invalid_payable_invoice" }, { status: 400 });
+
+  const context = await requireOrganizationFinanceAccess(organizationId);
+  if (context.error || !context.supabase)
+    return NextResponse.json({ error: context.error }, { status: context.status });
+  const { data, error } = await context.supabase
+    .from("direct_payables")
+    .update({ invoice_number: invoiceNumber || null })
+    .eq("id", payableId)
+    .eq("organization_id", organizationId)
+    .select("id, invoice_number")
+    .maybeSingle();
+  if (error || !data)
+    return NextResponse.json({ error: "unable_to_update_payable_invoice" }, { status: 409 });
+  return NextResponse.json({ payable: data });
+}

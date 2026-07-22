@@ -1696,6 +1696,21 @@ td small {
 .received-document-empty small,
 .received-document-form small { color: #77869d; }
 .received-document-form textarea { min-height: 92px; resize: vertical; }
+.direct-payable-files {
+  display: grid;
+  gap: 7px;
+  max-height: 140px;
+  overflow: auto;
+}
+.direct-payable-files a,
+.direct-payable-files span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #465bc1;
+  font-size: 12px;
+  font-weight: 700;
+}
 @media (max-width: 900px) {
   .received-document-modal { padding: 18px; }
   .received-document-layout { grid-template-columns: 1fr; }
