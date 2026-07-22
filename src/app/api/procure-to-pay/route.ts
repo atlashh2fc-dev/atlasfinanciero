@@ -1741,7 +1741,10 @@ export async function POST(request: NextRequest) {
         .eq("id", batch.id)
         .eq("organization_id", organizationId);
       return NextResponse.json(
-        { error: "unable_to_create_payment_proposal_items" },
+        {
+          error: "unable_to_create_payment_proposal_items",
+          detail: itemsError.message,
+        },
         { status: 409 },
       );
     }
