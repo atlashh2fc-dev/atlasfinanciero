@@ -16,6 +16,10 @@ import {
   isPurchaseOrderDocument,
   recognizedNetAmount,
 } from "@/lib/document-revenue";
+import {
+  DocumentNormalizer,
+  type NormalizationTarget,
+} from "@/components/document-normalizer";
 
 type FollowupStatus = "open" | "committed" | "resolved";
 type CollectionFollowup = {
@@ -73,12 +77,14 @@ export function AccountsReceivable({
   canManage,
   isPersisted,
   onEditDocument,
+  onDocumentNormalized,
 }: {
   records: InvoiceRecord[];
   organizationId: string | null;
   canManage: boolean;
   isPersisted: boolean;
   onEditDocument?: (record: InvoiceRecord) => void;
+  onDocumentNormalized?: (recordId: string, invoiceNumber: string) => void;
 }) {
   const [followups, setFollowups] = useState<CollectionFollowup[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -90,6 +96,8 @@ export function AccountsReceivable({
   const [nextActionOn, setNextActionOn] = useState("");
   const [promisedPaymentDate, setPromisedPaymentDate] = useState("");
   const [note, setNote] = useState("");
+  const [normalizationTarget, setNormalizationTarget] =
+    useState<NormalizationTarget | null>(null);
   const [year, setYear] = useState(String(new Date().getFullYear()));
 
   async function loadFollowups() {
@@ -522,6 +530,22 @@ export function AccountsReceivable({
                               Editar pago
                             </button>
                           )}
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() =>
+                              setNormalizationTarget({
+                                id: record.id,
+                                kind: "issued",
+                                title: `${record.client ?? "Cliente no informado"} · ${record.documentType ?? "Documento emitido"}`,
+                                invoiceNumber: record.invoiceNumber,
+                              })
+                            }
+                          >
+                            {record.invoiceNumber
+                              ? "Adjuntar factura"
+                              : "Ingresar factura"}
+                          </button>
                         </div>
                       ) : (
                         "—"
@@ -640,6 +664,16 @@ export function AccountsReceivable({
           </section>
         </div>
       )}
+      <DocumentNormalizer
+        organizationId={organizationId}
+        target={normalizationTarget}
+        onClose={() => setNormalizationTarget(null)}
+        onSaved={(invoiceNumber) => {
+          if (normalizationTarget)
+            onDocumentNormalized?.(normalizationTarget.id, invoiceNumber);
+          setMessage("Factura adjuntada y folio normalizado correctamente.");
+        }}
+      />
     </main>
   );
 }

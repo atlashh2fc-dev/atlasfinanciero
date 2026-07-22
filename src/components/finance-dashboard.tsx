@@ -2723,6 +2723,21 @@ export function FinanceDashboard() {
               setActiveModule("Facturas");
               startDocumentEdit(record);
             }}
+            onDocumentNormalized={(recordId, invoiceNumber) => {
+              setDatabaseRecords((current) =>
+                current
+                  ? current.map((record) =>
+                      record.id === recordId
+                        ? { ...record, invoiceNumber }
+                        : record,
+                    )
+                  : current,
+              );
+              setAttachmentByDocument((current) => ({
+                ...current,
+                [recordId]: true,
+              }));
+            }}
           />
         ) : activeModule === "Recurrentes" ? (
           <BillingOperations organizationId={access?.membership.organizationId ?? null} />
