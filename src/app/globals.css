@@ -89,6 +89,8 @@ button {
 .navigation-group {
   display: grid;
   gap: 2px;
+  --navigation-group-accent: #80d9b8;
+  --navigation-group-accent-soft: #203a40;
 }
 .navigation-label,
 .navigation-group-toggle {
@@ -108,16 +110,40 @@ button {
   text-align: left;
   transition: color 0.14s ease, background 0.14s ease;
 }
+.navigation-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.navigation-group-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-grid;
+  place-items: center;
+  color: #8291a9;
+  transition: color 0.14s ease, transform 0.14s ease;
+}
+.navigation-group-icon svg {
+  display: block;
+}
 .navigation-group-toggle:hover,
 .navigation-group-toggle.is-active-group {
-  color: #d1dbea;
+  color: var(--navigation-group-accent);
 }
 .navigation-group-toggle:hover {
-  background: #1c2a40;
+  background: var(--navigation-group-accent-soft);
   border-radius: 6px;
 }
+.navigation-group-toggle:hover .navigation-group-icon,
+.navigation-group-toggle.is-active-group .navigation-group-icon {
+  color: var(--navigation-group-accent);
+}
+.navigation-group-toggle:hover .navigation-group-icon {
+  transform: translateY(-1px);
+}
 .navigation-group-chevron {
-  color: #8595ad;
+  color: currentColor;
+  opacity: 0.72;
   font-size: 15px;
   font-weight: 400;
   line-height: 0.7;
@@ -156,15 +182,16 @@ button {
     transform 0.14s ease;
 }
 .nav-item:hover {
-  background: #202d42;
+  background: var(--navigation-group-accent-soft);
   color: #fff;
   transform: translateX(2px);
+  box-shadow: inset 2px 0 0 var(--navigation-group-accent);
 }
 .nav-item.active {
-  background: #2d3c59;
+  background: var(--navigation-group-accent-soft);
   color: #fff;
   font-weight: 600;
-  box-shadow: inset 2px 0 0 #76dbb7;
+  box-shadow: inset 3px 0 0 var(--navigation-group-accent);
 }
 .nav-icon {
   width: 15px;
@@ -172,7 +199,10 @@ button {
   color: #91a2ba;
 }
 .nav-item.active .nav-icon {
-  color: #80d9b8;
+  color: var(--navigation-group-accent);
+}
+.nav-item:hover .nav-icon {
+  color: var(--navigation-group-accent);
 }
 .nav-count {
   margin-left: auto;
@@ -184,6 +214,11 @@ button {
   place-items: center;
   border-radius: 99px;
   font-size: 11px;
+}
+.nav-item.active .nav-count,
+.nav-item:hover .nav-count {
+  background: var(--navigation-group-accent);
+  color: #172237;
 }
 .nav-preview {
   pointer-events: none;

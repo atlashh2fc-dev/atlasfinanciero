@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, type CSSProperties, useEffect, useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -147,8 +147,20 @@ type Module =
   | "Administración"
   | "Bitácora de actividad"
   | "Control SaaS";
-const navigationGroups: Array<{ label: string; items: Module[] }> = [
-  { label: "RESUMEN", items: ["Gestión 360", "Inicio"] },
+type NavigationGroup = {
+  label: string;
+  items: Module[];
+  accent: string;
+  accentSoft: string;
+};
+
+const navigationGroups: NavigationGroup[] = [
+  {
+    label: "RESUMEN",
+    items: ["Gestión 360", "Inicio"],
+    accent: "#7eb8ff",
+    accentSoft: "#203858",
+  },
   {
     label: "INGRESOS",
     items: [
@@ -160,20 +172,48 @@ const navigationGroups: Array<{ label: string; items: Module[] }> = [
       "Cuentas por cobrar",
       "OC de clientes",
     ],
+    accent: "#79e6bd",
+    accentSoft: "#1d3b42",
   },
   {
     label: "COMPRAS Y CAJA",
     items: ["Compras, obligaciones y pagos", "Cuentas por pagar", "Proveedores", "Tesorería"],
+    accent: "#f4c56b",
+    accentSoft: "#403621",
   },
   {
     label: "PLANIFICACIÓN Y ANÁLISIS",
     items: ["Contabilidad", "Proyecciones", "Planificación financiera", "Centros de costo", "Imputaciones pendientes", "Reportes"],
+    accent: "#b7a6ff",
+    accentSoft: "#352d55",
   },
   {
     label: "PERSONAS Y CONTROL",
     items: ["Remuneraciones", "Aprobaciones", "Cierre financiero", "Administración", "Bitácora de actividad", "Control SaaS"],
+    accent: "#f4a7bd",
+    accentSoft: "#472b3b",
   },
 ];
+
+function NavigationGroupIcon({ label }: { label: NavigationGroup["label"] }) {
+  const iconProps = {
+    width: 16,
+    height: 16,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.9,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  if (label === "RESUMEN") return <svg {...iconProps}><path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z" /></svg>;
+  if (label === "INGRESOS") return <svg {...iconProps}><path d="M4 18V9m6 9V5m6 13v-7" /><path d="m3 8 6-5 5 4 7-5" /></svg>;
+  if (label === "COMPRAS Y CAJA") return <svg {...iconProps}><path d="M3 7h18v11H3z" /><path d="M7 7V5h10v2m-7 5h4m-2-2v4" /></svg>;
+  if (label === "PLANIFICACIÓN Y ANÁLISIS") return <svg {...iconProps}><path d="M4 19V5m0 14h16" /><path d="m7 15 4-4 3 2 5-6" /></svg>;
+  return <svg {...iconProps}><circle cx="9" cy="8" r="3" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0m5-11v6m3-3h-6" /></svg>;
+}
 type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
 type AccessProfile = {
   user: { email: string | null };
@@ -2861,6 +2901,10 @@ export function FinanceDashboard() {
               className="navigation-group"
               key={group.label}
               aria-label={group.label}
+              style={{
+                "--navigation-group-accent": group.accent,
+                "--navigation-group-accent-soft": group.accentSoft,
+              } as CSSProperties}
             >
               <button
                 className={`navigation-group-toggle ${group.label === activeNavigationGroup ? "is-active-group" : ""}`}
@@ -2869,7 +2913,10 @@ export function FinanceDashboard() {
                 aria-expanded={expandedNavigationGroups.includes(group.label) || group.label === activeNavigationGroup}
                 aria-controls={`navigation-group-${group.label.replaceAll(" ", "-")}`}
               >
-                <span>{group.label}</span>
+                <span className="navigation-group-heading">
+                  <span className="navigation-group-icon"><NavigationGroupIcon label={group.label} /></span>
+                  {group.label}
+                </span>
                 <span className="navigation-group-chevron" aria-hidden="true">⌄</span>
               </button>
               <div
