@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { isUuid } from "@/lib/admin-access";
+import { isUuid, requirePlatformAdministrator } from "@/lib/admin-access";
 
 function readText(value: unknown, maximum: number, required = false) {
   if (typeof value !== "string") return required ? null : undefined;
@@ -77,4 +77,27 @@ export async function PATCH(request: NextRequest) {
     .single();
   if (updateError) return NextResponse.json({ error: "unable_to_update_organization" }, { status: 403 });
   return NextResponse.json({ organization: data });
+}
+
+export async function DELETE(request: NextRequest) {
+  const context = await requirePlatformAdministrator();
+  if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
+
+  const body: unknown = await request.json().catch(() => null);
+  const organizationId = body && typeof body === "object" ? (body as { organizationId?: unknown }).organizationId : null;
+  const confirmationName = body && typeof body === "object" ? (body as { confirmationName?: unknown }).confirmationName : null;
+  if (!isUuid(organizationId) || typeof confirmationName !== "string") return NextResponse.json({ error: "invalid_organization_deletion" }, { status: 400 });
+
+  const { data: organization, error: organizationError } = await context.supabase
+    .from("organizations")
+    .select("id, legal_name")
+    .eq("id", organizationId)
+    .maybeSingle();
+  if (organizationError) return NextResponse.json({ error: "unable_to_read_organization" }, { status: 500 });
+  if (!organization) return NextResponse.json({ error: "organization_not_found" }, { status: 404 });
+  if (confirmationName.trim() !== organization.legal_name) return NextResponse.json({ error: "organization_name_confirmation_required" }, { status: 409 });
+
+  const { error } = await context.supabase.from("organizations").delete().eq("id", organizationId);
+  if (error) return NextResponse.json({ error: "unable_to_delete_organization" }, { status: 500 });
+  return NextResponse.json({ deleted: true });
 }

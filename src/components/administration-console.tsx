@@ -27,7 +27,7 @@ function PasswordVisibilityButton({ visible, onClick }: { visible: boolean; onCl
   </button>;
 }
 
-export function AdministrationConsole({ activeOrganizationId }: { activeOrganizationId: string }) {
+export function AdministrationConsole({ activeOrganizationId, isSuperAdmin }: { activeOrganizationId: string; isSuperAdmin: boolean }) {
   const [organizations, setOrganizations] = useState<AdminOrganization[]>([]);
   const [organizationId, setOrganizationId] = useState(activeOrganizationId);
   const [members, setMembers] = useState<Member[]>([]);
@@ -123,6 +123,17 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
     setNewLegalName("");
     setNewTaxId("");
     setOrganizationId(payload.organization.id);
+    window.location.assign("/");
+  }
+
+  async function deleteOrganization() {
+    if (!current || !isSuperAdmin) return;
+    const confirmationName = window.prompt(`Esta acción elimina definitivamente ${current.legal_name}, sus usuarios asignados y todos sus datos.\n\nEscribe el nombre exacto de la empresa para confirmar:`);
+    if (confirmationName === null) return;
+    setIsSaving(true);
+    const response = await fetch("/api/admin/organizations", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, confirmationName }) });
+    setIsSaving(false);
+    if (!response.ok) return setMessage("No se eliminó la empresa. Debes escribir su nombre exacto y confirmar que quieres borrar todos sus datos.");
     window.location.assign("/");
   }
 
@@ -271,7 +282,7 @@ export function AdministrationConsole({ activeOrganizationId }: { activeOrganiza
               <label>Organización<select value={organizationId} onChange={(event) => setOrganizationId(event.target.value)}>{organizations.map((item) => <option value={item.id} key={item.id}>{item.organization.legal_name}</option>)}</select></label>
               <label>Razón social<input value={legalName} maxLength={180} onChange={(event) => setLegalName(event.target.value)} required /></label>
               <label>RUT<input value={taxId} maxLength={40} onChange={(event) => setTaxId(event.target.value)} /></label>
-              <button type="submit" className="primary-button" disabled={isSaving || !organizationId}>Guardar cambios</button>
+              <div className="admin-form-actions"><button type="submit" className="primary-button" disabled={isSaving || !organizationId}>Guardar cambios</button>{isSuperAdmin && <button type="button" className="text-button danger-button" disabled={isSaving || !organizationId} onClick={() => void deleteOrganization()}>Eliminar empresa</button>}</div>
             </form>
           </article>
           <article className="panel">

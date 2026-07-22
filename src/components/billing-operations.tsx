@@ -46,7 +46,7 @@ function monthName(value: string) {
   return new Intl.DateTimeFormat("es-CL", { month: "long", year: "numeric" }).format(new Date(`${value}T00:00:00`));
 }
 
-export function BillingOperations() {
+export function BillingOperations({ organizationId: activeOrganizationId }: { organizationId: string | null }) {
   const [data, setData] = useState<BillingPayload | null>(null);
   const [alerts, setAlerts] = useState<BillingAlert[]>([]);
   const [organizationId, setOrganizationId] = useState("");
@@ -59,10 +59,11 @@ export function BillingOperations() {
   const [isSaving, setIsSaving] = useState(false);
 
   async function load() {
+    if (!activeOrganizationId) return;
     setIsLoading(true);
     const [response, alertsResponse] = await Promise.all([
-      fetch("/api/billing/recurrences", { cache: "no-store" }),
-      fetch("/api/billing/alerts", { cache: "no-store" }),
+      fetch(`/api/billing/recurrences?organizationId=${encodeURIComponent(activeOrganizationId)}`, { cache: "no-store" }),
+      fetch(`/api/billing/alerts?organizationId=${encodeURIComponent(activeOrganizationId)}`, { cache: "no-store" }),
     ]);
     if (!response.ok) {
       setData(null);
@@ -75,12 +76,12 @@ export function BillingOperations() {
     const alertsPayload = alertsResponse.ok ? await alertsResponse.json() as { alerts?: BillingAlert[] } : null;
     setData(payload);
     setAlerts(alertsPayload?.alerts ?? []);
-    setOrganizationId((current) => current || payload.organizations[0]?.id || "");
+    setOrganizationId(activeOrganizationId);
     setMessage(null);
     setIsLoading(false);
   }
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(); }, [activeOrganizationId]);
 
   const counterparties = useMemo(() => data?.counterparties.filter((item) => item.organization_id === organizationId) ?? [], [data, organizationId]);
   const rules = useMemo(() => data?.rules.filter((item) => item.organization_id === organizationId) ?? [], [data, organizationId]);
@@ -146,7 +147,6 @@ export function BillingOperations() {
         <section className="billing-form-panel panel">
           <div className="panel-heading"><div><span className="panel-label">NUEVA RECURRENCIA</span><h2>Control mensual de facturación</h2></div><span className="unit">Límite día 2</span></div>
           <form className="billing-form" onSubmit={createRecurrence}>
-            <label>Empresa<select value={organizationId} onChange={(event) => setOrganizationId(event.target.value)}>{data.organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.legal_name}</option>)}</select></label>
             <label>Cliente<select value={counterpartyId} onChange={(event) => setCounterpartyId(event.target.value)} disabled={!counterparties.length}><option value="">Selecciona cliente</option>{counterparties.map((counterparty) => <option key={counterparty.id} value={counterparty.id}>{counterparty.legal_name}</option>)}</select></label>
             <label>Servicio o concepto<input value={name} maxLength={180} onChange={(event) => setName(event.target.value)} placeholder="Ej. Servicio mensual" /></label>
             <label>Monto neto esperado<input value={expectedNetAmount} min="0" step="1" type="number" onChange={(event) => setExpectedNetAmount(event.target.value)} placeholder="Opcional" /></label>

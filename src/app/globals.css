@@ -2257,6 +2257,14 @@ td small {
 .admin-form .secondary-button {
   justify-self: start;
 }
+.admin-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.danger-button {
+  color: #b24b5a !important;
+}
 .admin-invite-panel {
   margin-bottom: 18px;
 }

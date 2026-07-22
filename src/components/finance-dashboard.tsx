@@ -16,10 +16,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import {
-  facturasEmitidas2026,
-  type InvoiceRecord,
-} from "@/data/facturas-emitidas-2026";
+import { type InvoiceRecord } from "@/data/facturas-emitidas-2026";
 import { forecastMonthly2026 } from "@/data/forecast-2026";
 import { BillingOperations } from "@/components/billing-operations";
 import { AccountsReceivable } from "@/components/accounts-receivable";
@@ -447,7 +444,9 @@ function ExecutiveDashboard({ records }: { records: InvoiceRecord[] }) {
     [records, selectedYear],
   );
   const isCurrentYear = selectedYear === asOf.getFullYear();
-  const hasForecastPlan = selectedYear === 2026;
+  // El forecast histórico del prototipo no pertenece a los tenants nuevos.
+  // Las proyecciones reales se consultan desde Planificación financiera.
+  const hasForecastPlan = false;
   const periodRecords = recordsForYear.filter(
     (record) =>
       !isCurrentYear || !record.issueDate || record.issueDate <= currentDate,
@@ -1939,13 +1938,14 @@ export function FinanceDashboard() {
   const [attachmentByDocument, setAttachmentByDocument] = useState<Record<string, boolean>>({});
   const [formError, setFormError] = useState("");
   const [sessionRecords, setSessionRecords] = useState<InvoiceRecord[]>([]);
-  const [databaseRecords, setDatabaseRecords] = useState<
-    InvoiceRecord[] | null
-  >(null);
+  const [databaseRecords, setDatabaseRecords] = useState<InvoiceRecord[]>([]);
   const [access, setAccess] = useState<AccessProfile | null>(null);
 
   useEffect(() => {
+    if (!access?.membership.organizationId) return;
     let active = true;
+    setDatabaseRecords([]);
+    setAttachmentByDocument({});
     fetch("/api/issued-documents", { cache: "no-store" })
       .then((response) =>
         response.ok
@@ -1962,7 +1962,7 @@ export function FinanceDashboard() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [access?.membership.organizationId]);
 
   useEffect(() => {
     const organizationId = access?.membership.organizationId;
@@ -2018,10 +2018,7 @@ export function FinanceDashboard() {
     };
   }, []);
 
-  const records = useMemo(
-    () => databaseRecords ?? [...facturasEmitidas2026, ...sessionRecords],
-    [databaseRecords, sessionRecords],
-  );
+  const records = useMemo(() => [...databaseRecords, ...sessionRecords], [databaseRecords, sessionRecords]);
   const contactsForDraftCustomer = useMemo(() => (documentContacts ?? []).filter((contact) => contact.counterparty_id === draft.clientId), [documentContacts, draft.clientId]);
   const selectedDraftCustomer = useMemo(() => (documentCustomers ?? []).find((customer) => customer.id === draft.clientId) ?? null, [documentCustomers, draft.clientId]);
   const entryNetAmount = Number(draft.netAmount || 0);
@@ -2649,7 +2646,7 @@ export function FinanceDashboard() {
             }}
           />
         ) : activeModule === "Recurrentes" ? (
-          <BillingOperations />
+          <BillingOperations organizationId={access?.membership.organizationId ?? null} />
         ) : activeModule === "Prefacturación" ? (
           <PreinvoiceWorkbench
             organizationId={access?.membership.organizationId ?? null}
@@ -2717,6 +2714,7 @@ export function FinanceDashboard() {
           access?.membership.role === "administrator" ? (
             <AdministrationConsole
               activeOrganizationId={access.membership.organizationId}
+              isSuperAdmin={access.isSuperAdmin}
             />
           ) : null
         ) : activeModule === "Bitácora de actividad" ? (

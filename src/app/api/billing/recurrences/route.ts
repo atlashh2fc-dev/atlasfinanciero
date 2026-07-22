@@ -20,10 +20,13 @@ function readAmount(value: unknown) {
   return Number.isFinite(amount) && amount >= 0 ? amount : undefined;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "authentication_required" }, { status: 401 });
+
+  const organizationId = request.nextUrl.searchParams.get("organizationId");
+  if (!isUuid(organizationId)) return NextResponse.json({ error: "invalid_organization" }, { status: 400 });
 
   const { data: memberships, error: membershipsError } = await supabase
     .from("organization_memberships")
@@ -31,14 +34,14 @@ export async function GET() {
     .eq("user_id", user.id);
   if (membershipsError) return NextResponse.json({ error: "unable_to_load_memberships" }, { status: 500 });
 
-  const organizationIds = (memberships ?? []).map((membership) => membership.organization_id);
-  if (!organizationIds.length) return NextResponse.json({ memberships: [], organizations: [], counterparties: [], rules: [], cycles: [] });
+  const membership = (memberships ?? []).find((item) => item.organization_id === organizationId);
+  if (!membership) return NextResponse.json({ error: "organization_membership_required" }, { status: 403 });
 
   const [organizations, counterparties, rules, cycles] = await Promise.all([
-    supabase.from("organizations").select("id, legal_name").in("id", organizationIds).order("legal_name"),
-    supabase.from("counterparties").select("id, organization_id, legal_name").in("organization_id", organizationIds).in("kind", ["customer", "both"]).eq("is_active", true).order("legal_name"),
-    supabase.from("billing_recurrence_rules").select("id, organization_id, counterparty_id, name, expected_net_amount, currency_code, deadline_day, reminder_days_before, status").in("organization_id", organizationIds).order("name"),
-    supabase.from("billing_cycles").select("id, organization_id, recurrence_rule_id, period_month, due_date, expected_net_amount, currency_code, status, issued_document_id").in("organization_id", organizationIds).order("due_date"),
+    supabase.from("organizations").select("id, legal_name").eq("id", organizationId).order("legal_name"),
+    supabase.from("counterparties").select("id, organization_id, legal_name").eq("organization_id", organizationId).in("kind", ["customer", "both"]).eq("is_active", true).order("legal_name"),
+    supabase.from("billing_recurrence_rules").select("id, organization_id, counterparty_id, name, expected_net_amount, currency_code, deadline_day, reminder_days_before, status").eq("organization_id", organizationId).order("name"),
+    supabase.from("billing_cycles").select("id, organization_id, recurrence_rule_id, period_month, due_date, expected_net_amount, currency_code, status, issued_document_id").eq("organization_id", organizationId).order("due_date"),
   ]);
 
   if (organizations.error || counterparties.error || rules.error || cycles.error) {
@@ -46,7 +49,7 @@ export async function GET() {
   }
 
   return NextResponse.json({
-    memberships: memberships ?? [],
+    memberships: membership ? [membership] : [],
     organizations: organizations.data ?? [],
     counterparties: counterparties.data ?? [],
     rules: rules.data ?? [],
