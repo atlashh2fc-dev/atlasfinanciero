@@ -348,6 +348,132 @@ function sumRecognizedNet(records: InvoiceRecord[]) {
   );
 }
 
+type RevenueBreakdown = { net: number; vat: number; total: number };
+
+function revenueBreakdown(records: InvoiceRecord[]): RevenueBreakdown {
+  return records.reduce<RevenueBreakdown>(
+    (total, record) => {
+      if (isPurchaseOrderDocument(record)) return total;
+      const net = recognizedNetAmount(record);
+      const vat = Number(record.vatAmount ?? 0);
+      const signedVat = isCreditNoteDocument(record) ? -Math.abs(vat) : vat;
+      return {
+        net: total.net + net,
+        vat: total.vat + (Number.isFinite(signedVat) ? signedVat : 0),
+        total: total.total + net + (Number.isFinite(signedVat) ? signedVat : 0),
+      };
+    },
+    { net: 0, vat: 0, total: 0 },
+  );
+}
+
+function outstandingBreakdown(
+  records: InvoiceRecord[],
+  paidAmountByDocument: Map<string, number>,
+): RevenueBreakdown {
+  return records.reduce<RevenueBreakdown>((total, record) => {
+    const net = Math.abs(recognizedNetAmount(record));
+    const vat = Math.abs(Number(record.vatAmount ?? 0));
+    const documentTotal = net + vat;
+    const outstanding = outstandingDocumentBalance(
+      record,
+      paidAmountByDocument.get(record.id),
+    );
+    const ratio = documentTotal > 0 ? outstanding / documentTotal : 0;
+    const outstandingNet = net * ratio;
+    const outstandingVat = vat * ratio;
+    return {
+      net: total.net + outstandingNet,
+      vat: total.vat + outstandingVat,
+      total: total.total + outstanding,
+    };
+  }, { net: 0, vat: 0, total: 0 });
+}
+
+function KpiRevenueBreakdown({ values }: { values: RevenueBreakdown }) {
+  return (
+    <div className="kpi-revenue-breakdown" aria-label="Desglose del monto">
+      <span>
+        Neto <b>{formatMoney(values.net)}</b>
+      </span>
+      <span>
+        IVA <b>{formatMoney(values.vat)}</b>
+      </span>
+    </div>
+  );
+}
+
+function MarketReferencePanel({
+  marketData,
+  marketError,
+  indicators,
+}: {
+  marketData: MarketIndicatorsPayload | null;
+  marketError: boolean;
+  indicators: MarketIndicator[];
+}) {
+  return (
+    <section className="market-panel executive-market-panel">
+      <div className="panel-heading">
+        <div>
+          <span className="panel-label">REFERENCIAS DE MERCADO</span>
+          <h2>Indicadores públicos</h2>
+          <p>
+            Se actualizan desde una fuente pública; cada tarjeta muestra su
+            propia fecha de referencia.
+          </p>
+        </div>
+        {marketData && (
+          <a
+            className="market-source"
+            href={marketData.source.url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Ver fuente ↗
+          </a>
+        )}
+      </div>
+      {marketError ? (
+        <p className="market-unavailable">
+          Indicadores temporalmente no disponibles.
+        </p>
+      ) : (
+        <div className="market-cards">
+          {indicators.length
+            ? indicators.map((indicator) => (
+                <article key={indicator.code}>
+                  <span>{indicator.code.toUpperCase()}</span>
+                  <strong>{formatIndicator(indicator)}</strong>
+                  <small>{formatDate(indicator.date.slice(0, 10))}</small>
+                </article>
+              ))
+            : Array.from({ length: 6 }, (_, index) => (
+                <article className="market-loading" key={index}>
+                  <span>Actualizando</span>
+                  <strong>—</strong>
+                  <small>Fuente pública</small>
+                </article>
+              ))}
+        </div>
+      )}
+      {marketData && (
+        <p className="market-references">
+          Referencias oficiales: {" "}
+          {marketData.references.map((reference, index) => (
+            <span key={reference.url}>
+              {index ? " · " : ""}
+              <a href={reference.url} target="_blank" rel="noreferrer">
+                {reference.name}
+              </a>
+            </span>
+          ))}
+        </p>
+      )}
+    </section>
+  );
+}
+
 function statusClass(status: string | null) {
   const normalized = status?.toLowerCase() ?? "";
   if (normalized.includes("pagada")) return "status paid";
@@ -517,7 +643,12 @@ function ExecutiveDashboard({
       !record.status?.toLocaleLowerCase("es-CL").includes("anulad") &&
       recognizedNetAmount(record) > 0,
   );
-  const pendingToInvoiceAmount = sumRecognizedNet(pendingToInvoiceRecords);
+  const registeredRevenue = revenueBreakdown(periodRecords);
+  const invoicedRevenue = revenueBreakdown(
+    periodRecords.filter(isActiveIssuedInvoice),
+  );
+  const pendingToInvoiceRevenue = revenueBreakdown(pendingToInvoiceRecords);
+  const pendingToInvoiceAmount = pendingToInvoiceRevenue.net;
   const pendingToInvoiceCount = pendingToInvoiceRecords.length;
   const netDocumentedClosedMonths = sumRecognizedNet(closedMonthRecords);
   const paidAmountByDocument = useMemo(() => {
@@ -553,6 +684,7 @@ function ExecutiveDashboard({
       outstandingDocumentBalance(record, paidAmountByDocument.get(record.id)),
     0,
   );
+  const overdueRevenue = outstandingBreakdown(overdue, paidAmountByDocument);
   const paymentObserved = periodRecords.filter(
     (record) => record.issueDate && record.paymentDate,
   );
@@ -648,13 +780,23 @@ function ExecutiveDashboard({
         </div>
       </section>
 
+      <MarketReferencePanel
+        marketData={marketData}
+        marketError={marketError}
+        indicators={visibleIndicators}
+      />
+
       <section className="kpis kpis-five" aria-label="Indicadores ejecutivos">
         <article
           className="kpi-card"
           data-help="Suma neta de ingresos registrados hasta la fecha de corte, tengan o no folio emitido. Incluye facturas y exentos, menos notas de crédito; no considera órdenes de compra."
         >
           <span>Ingreso total acumulado</span>
-          <strong>{formatMoney(netDocumentedYtd)}</strong>
+          <div className="kpi-total-amount">
+            <span>Total bruto</span>
+            <strong>{formatMoney(registeredRevenue.total)}</strong>
+          </div>
+          <KpiRevenueBreakdown values={registeredRevenue} />
           <small>
             Registrado, con y sin folio de factura. OCs excluidas.
           </small>
@@ -664,7 +806,11 @@ function ExecutiveDashboard({
           data-help="Facturas vigentes con folio válido. Excluye registros XX/XXXX, documentos sin tipo Factura y facturas anuladas; éstas no son facturación vigente."
         >
           <span>Facturación vigente acumulada</span>
-          <strong>{formatMoney(netInvoicedYtd)}</strong>
+          <div className="kpi-total-amount">
+            <span>Total bruto</span>
+            <strong>{formatMoney(invoicedRevenue.total)}</strong>
+          </div>
+          <KpiRevenueBreakdown values={invoicedRevenue} />
           <small>
             Sólo facturas vigentes; anuladas y XX/XXXX fuera.
           </small>
@@ -676,7 +822,11 @@ function ExecutiveDashboard({
           onClick={onOpenPreinvoices}
         >
           <span>Pendiente de facturar</span>
-          <strong>{formatMoney(pendingToInvoiceAmount)}</strong>
+          <div className="kpi-total-amount">
+            <span>Total bruto</span>
+            <strong>{formatMoney(pendingToInvoiceRevenue.total)}</strong>
+          </div>
+          <KpiRevenueBreakdown values={pendingToInvoiceRevenue} />
           <small>
             {pendingToInvoiceCount} ingreso(s) sin factura vigente: exige prefactura · Gestionar
           </small>
@@ -684,11 +834,15 @@ function ExecutiveDashboard({
         <button
           type="button"
           className="kpi-card kpi-card-button accent"
-          data-help="Mismo saldo vencido que Cuentas por cobrar: sólo documentos con folio, saldo pendiente después de abonos y vencimiento superado."
+          data-help="Saldo vencido pendiente de cobro en facturas vigentes, después de abonos. Se muestra abierto en neto, IVA y total bruto."
           onClick={onOpenReceivables}
         >
           <span>Cartera vencida</span>
-          <strong>{formatMoney(overdueAmount)}</strong>
+          <div className="kpi-total-amount">
+            <span>Total bruto</span>
+            <strong>{formatMoney(overdueRevenue.total)}</strong>
+          </div>
+          <KpiRevenueBreakdown values={overdueRevenue} />
           <small>
             {pendingAmount
               ? new Intl.NumberFormat("es-CL", {
@@ -905,64 +1059,6 @@ function ExecutiveDashboard({
         </div>
       </section>
 
-      <section className="market-panel">
-        <div className="panel-heading">
-          <div>
-            <span className="panel-label">REFERENCIAS DE MERCADO</span>
-            <h2>Indicadores públicos</h2>
-            <p>
-              Se actualizan desde una fuente pública; cada tarjeta muestra su
-              propia fecha de referencia.
-            </p>
-          </div>
-          {marketData && (
-            <a
-              className="market-source"
-              href={marketData.source.url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Ver fuente ↗
-            </a>
-          )}
-        </div>
-        {marketError ? (
-          <p className="market-unavailable">
-            Indicadores temporalmente no disponibles.
-          </p>
-        ) : (
-          <div className="market-cards">
-            {visibleIndicators.length
-              ? visibleIndicators.map((indicator) => (
-                  <article key={indicator.code}>
-                    <span>{indicator.code.toUpperCase()}</span>
-                    <strong>{formatIndicator(indicator)}</strong>
-                    <small>{formatDate(indicator.date.slice(0, 10))}</small>
-                  </article>
-                ))
-              : Array.from({ length: 6 }, (_, index) => (
-                  <article className="market-loading" key={index}>
-                    <span>Actualizando</span>
-                    <strong>—</strong>
-                    <small>Fuente pública</small>
-                  </article>
-                ))}
-          </div>
-        )}
-        {marketData && (
-          <p className="market-references">
-            Referencias oficiales:{" "}
-            {marketData.references.map((reference, index) => (
-              <span key={reference.url}>
-                {index ? " · " : ""}
-                <a href={reference.url} target="_blank" rel="noreferrer">
-                  {reference.name}
-                </a>
-              </span>
-            ))}
-          </p>
-        )}
-      </section>
     </main>
   );
 }

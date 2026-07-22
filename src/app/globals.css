@@ -451,6 +451,38 @@ button {
   letter-spacing: -0.55px;
   color: #1b2941;
 }
+.kpi-total-amount {
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
+}
+.kpi-total-amount span {
+  color: #9aa5b5;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.35px;
+  text-transform: uppercase;
+}
+.kpi-total-amount strong {
+  margin: 2px 0 5px;
+}
+.kpi-revenue-breakdown {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 5px;
+}
+.kpi-revenue-breakdown span {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  color: #8794a6;
+  font-size: 9px;
+}
+.kpi-revenue-breakdown b {
+  color: #53627a;
+  font-size: 10px;
+  font-weight: 750;
+}
 .kpi-card small {
   margin-top: auto;
   color: #92a0b2;
@@ -742,6 +774,9 @@ button {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 19px 20px;
+}
+.executive-market-panel {
+  margin-bottom: 18px;
 }
 .market-panel .panel-heading p {
   color: #8692a5;
