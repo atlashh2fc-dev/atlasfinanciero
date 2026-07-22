@@ -363,7 +363,7 @@ export async function GET(request: NextRequest) {
     context.supabase
       .from("payment_batches")
       .select(
-        "id, batch_number, bank_account_id, scheduled_for, currency_code, total_amount, status, notes, submitted_at, approved_at, processed_at, paid_at, payment_reference, cancellation_reason, cash_flow_classification",
+        "id, batch_number, bank_account_id, scheduled_for, currency_code, total_amount, status, notes, submitted_at, approved_at, processed_at, paid_at, payment_reference, payment_proof_path, payment_proof_name, payment_proof_mime_type, payment_proof_size, cancellation_reason, cash_flow_classification",
       )
       .eq("organization_id", organizationId)
       .order("scheduled_for", { ascending: false })
@@ -548,7 +548,19 @@ export async function GET(request: NextRequest) {
       ...(itemsByBatch.get(item.payment_batch_id) ?? []),
       item,
     ]);
-  const paymentBatches = (batches.data ?? []).map((batch) => {
+  const documentsById = new Map((documents.data ?? []).map((document) => [document.id, document]));
+  const payablesById = new Map((directPayables.data ?? []).map((payable) => [payable.id, payable]));
+  const paymentBatchItems = (batchItems.data ?? []).map((item) => {
+    const document = item.received_document_id ? documentsById.get(item.received_document_id) : null;
+    const payable = item.direct_payable_id ? payablesById.get(item.direct_payable_id) : null;
+    return {
+      ...item,
+      supplier_name_current: document?.supplier_name ?? payable?.supplier_name ?? null,
+      document_number_current: document?.document_number ?? payable?.invoice_number ?? payable?.payable_number ?? null,
+      due_date_current: document?.due_date ?? payable?.due_date ?? null,
+    };
+  });
+  const paymentBatches = await Promise.all((batches.data ?? []).map(async (batch) => {
     const batchExecutions = executionsByBatch.get(batch.id) ?? [];
     const reconciled = batchExecutions.filter(
       (execution) => execution.status === "reconciled",
@@ -564,8 +576,14 @@ export async function GET(request: NextRequest) {
     const ias7Summary = [...cashFlowSummary.entries()].map(
       ([category, amount]) => ({ category, amount }),
     );
+    const signedProof = batch.payment_proof_path
+      ? await context.supabase.storage
+          .from("direct-payable-files")
+          .createSignedUrl(batch.payment_proof_path, 60)
+      : null;
     return {
       ...batch,
+      payment_proof_signed_url: signedProof?.data?.signedUrl ?? null,
       ias7Classification:
         ias7Summary.length === 1 ? ias7Summary[0].category : null,
       ias7Summary,
@@ -579,7 +597,7 @@ export async function GET(request: NextRequest) {
           ? "reconciled"
           : "pending_reconciliation",
     };
-  });
+  }));
   const paymentProposals = paymentBatches.map((batch) => ({
     id: batch.id,
     proposalNumber: batch.proposalNumber,
@@ -619,7 +637,7 @@ export async function GET(request: NextRequest) {
     purchaseOrderReceipts: receipts.data ?? [],
     purchaseOrderReceiptLines: receiptLines.data ?? [],
     paymentBatches,
-    paymentBatchItems: batchItems.data ?? [],
+    paymentBatchItems,
     paymentProposals,
     paymentOrders,
     paymentExecutions: executions.data ?? [],

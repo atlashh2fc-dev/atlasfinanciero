@@ -59,6 +59,8 @@ type PaymentBatch = {
   total_amount: number | string;
   status: string;
   payment_reference: string | null;
+  payment_proof_name?: string | null;
+  payment_proof_signed_url?: string | null;
 };
 type PaymentItem = {
   id: string;
@@ -68,6 +70,9 @@ type PaymentItem = {
   supplier_name_snapshot: string;
   document_number_snapshot: string | null;
   due_date_snapshot: string | null;
+  supplier_name_current?: string | null;
+  document_number_current?: string | null;
+  due_date_current?: string | null;
   amount: number | string;
   cash_flow_category: "operating" | "investing" | "financing";
 };
@@ -384,6 +389,12 @@ export function ProcureToPayWorkbench({
   const [cashFlowCategories, setCashFlowCategories] = useState<
     Record<string, "operating" | "investing" | "financing">
   >({});
+  const [paymentConfirmation, setPaymentConfirmation] = useState<{
+    batch: PaymentBatch;
+    paidOn: string;
+    paymentReference: string;
+    file: File | null;
+  } | null>(null);
   async function load() {
     if (!organizationId) {
       setData(null);
@@ -410,6 +421,11 @@ export function ProcureToPayWorkbench({
     void load();
   }, [organizationId]);
   useEffect(() => {
+    const refreshAfterPayableUpdate = () => { void load(); };
+    window.addEventListener("payable-updated", refreshAfterPayableUpdate);
+    return () => window.removeEventListener("payable-updated", refreshAfterPayableUpdate);
+  }, [organizationId]);
+  useEffect(() => {
     setPayableBeneficiaryDraft(
       detail?.kind === "payable"
         ? ((detail.item as DirectPayable).beneficiary_name ?? "")
@@ -423,6 +439,7 @@ export function ProcureToPayWorkbench({
       setShowDirectPayableForm(false);
       setShowFinancingForm(false);
       setShowBatchForm(false);
+      setPaymentConfirmation(null);
       setOrderDraft((current) => ({ ...current, requestId: "" }));
       setDetail(null);
       setReceiptDraft((current) => ({ ...current, purchaseOrderId: "" }));
@@ -719,6 +736,35 @@ export function ProcureToPayWorkbench({
         : "No fue posible avanzar: el flujo exige la aprobación o condición previa correspondiente.",
     );
     if (response.ok) await load();
+  }
+  async function confirmPayment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!organizationId || !paymentConfirmation?.file) {
+      setMessage("Adjunta el comprobante para registrar el pago.");
+      return;
+    }
+    setSaving(true);
+    const form = new FormData();
+    form.set("organizationId", organizationId);
+    form.set("batchId", paymentConfirmation.batch.id);
+    form.set("paidOn", paymentConfirmation.paidOn);
+    form.set("paymentReference", paymentConfirmation.paymentReference);
+    form.set("file", paymentConfirmation.file);
+    try {
+      const response = await fetch("/api/payment-batch-proof", { method: "POST", body: form });
+      if (!response.ok) {
+        setMessage("No fue posible registrar el pago. Verifica el comprobante y el estado de la orden.");
+        return;
+      }
+      setPaymentConfirmation(null);
+      setDetail(null);
+      await load();
+      setMessage("Pago registrado con comprobante. La cuenta quedó marcada como pagada y pendiente de conciliación bancaria.");
+    } catch {
+      setMessage("No fue posible registrar el pago por un problema de conexión.");
+    } finally {
+      setSaving(false);
+    }
   }
   async function createRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2875,12 +2921,12 @@ export function ProcureToPayWorkbench({
                         .map((line) => (
                           <tr key={line.id}>
                             <td>
-                              <strong>{line.supplier_name_snapshot}</strong>
+                              <strong>{line.supplier_name_current || line.supplier_name_snapshot}</strong>
                               <small>
-                                {line.document_number_snapshot || "Sin folio"}
+                                {line.document_number_current || line.document_number_snapshot || "Sin folio"}
                               </small>
                             </td>
-                            <td>{displayDate(line.due_date_snapshot)}</td>
+                            <td>{displayDate(line.due_date_current || line.due_date_snapshot)}</td>
                             <td>{cashFlowLabel(line.cash_flow_category)}</td>
                             <td className="money-col">
                               {money.format(amount(line.amount))}
@@ -2890,6 +2936,19 @@ export function ProcureToPayWorkbench({
                     </tbody>
                   </table>
                 </div>
+                {(detail.item as PaymentBatch).payment_proof_signed_url && (
+                  <p>
+                    <strong>Comprobante:</strong>{" "}
+                    <a
+                      className="text-button"
+                      href={(detail.item as PaymentBatch).payment_proof_signed_url!}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Ver {(detail.item as PaymentBatch).payment_proof_name || "comprobante de pago"}
+                    </a>
+                  </p>
+                )}
               </div>
             )}
             {detail.kind === "payable" && (
@@ -3038,10 +3097,15 @@ export function ProcureToPayWorkbench({
                     className="primary-button"
                     disabled={saving}
                     onClick={() =>
-                      void transition(detail.item.id, "mark_payment_batch_paid")
+                      setPaymentConfirmation({
+                        batch: detail.item as PaymentBatch,
+                        paidOn: today(),
+                        paymentReference: (detail.item as PaymentBatch).payment_reference ?? "",
+                        file: null,
+                      })
                     }
                   >
-                    Confirmar orden de pago
+                    Registrar pago y comprobante
                   </button>
                 )}
               {detail.kind === "financing" &&
@@ -3067,6 +3131,84 @@ export function ProcureToPayWorkbench({
                 Cerrar
               </button>
             </div>
+          </section>
+        </div>
+      )}
+      {paymentConfirmation && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setPaymentConfirmation(null);
+          }}
+        >
+          <section
+            className="entry-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Registrar pago con comprobante"
+          >
+            <div className="modal-heading">
+              <div>
+                <span className="eyebrow">EJECUCIÓN DE PAGO</span>
+                <h2>{paymentConfirmation.batch.batch_number}</h2>
+                <p>
+                  Adjunta el comprobante bancario para ejecutar la orden y actualizar sus cuentas por pagar.
+                </p>
+              </div>
+              <button
+                className="modal-close"
+                type="button"
+                aria-label="Cerrar"
+                onClick={() => setPaymentConfirmation(null)}
+              >
+                ×
+              </button>
+            </div>
+            <form className="admin-form" onSubmit={confirmPayment}>
+              <label>
+                Fecha de pago *
+                <input
+                  required
+                  type="date"
+                  value={paymentConfirmation.paidOn}
+                  onChange={(event) =>
+                    setPaymentConfirmation((current) => current ? { ...current, paidOn: event.target.value } : current)
+                  }
+                />
+              </label>
+              <label>
+                Referencia bancaria
+                <input
+                  maxLength={180}
+                  value={paymentConfirmation.paymentReference}
+                  placeholder="Ej. transferencia 123456"
+                  onChange={(event) =>
+                    setPaymentConfirmation((current) => current ? { ...current, paymentReference: event.target.value } : current)
+                  }
+                />
+              </label>
+              <label className="p2p-form-wide">
+                Comprobante de pago *
+                <input
+                  required
+                  type="file"
+                  accept="application/pdf,image/jpeg,image/png"
+                  onChange={(event) =>
+                    setPaymentConfirmation((current) => current ? { ...current, file: event.target.files?.[0] ?? null } : current)
+                  }
+                />
+                <small>{paymentConfirmation.file ? paymentConfirmation.file.name : "PDF, JPG o PNG · máximo 50 MB"}</small>
+              </label>
+              <div className="modal-actions p2p-form-wide">
+                <button type="button" className="secondary-button" disabled={saving} onClick={() => setPaymentConfirmation(null)}>
+                  Cancelar
+                </button>
+                <button className="primary-button" type="submit" disabled={saving || !paymentConfirmation.file}>
+                  {saving ? "Registrando…" : "Registrar pago"}
+                </button>
+              </div>
+            </form>
           </section>
         </div>
       )}

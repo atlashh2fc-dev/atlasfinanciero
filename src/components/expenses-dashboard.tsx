@@ -44,6 +44,7 @@ export function ExpensesDashboard({ organizationId, canManage }: { organizationI
   const [savingDocument, setSavingDocument] = useState(false);
   const [directPayableDetail, setDirectPayableDetail] = useState<Payable | null>(null);
   const [directAttachments, setDirectAttachments] = useState<DirectAttachment[]>([]);
+  const [directSupplierName, setDirectSupplierName] = useState("");
   const [directInvoiceNumber, setDirectInvoiceNumber] = useState("");
   const [directAttachmentFile, setDirectAttachmentFile] = useState<File | null>(null);
   const [loadingDirectAttachments, setLoadingDirectAttachments] = useState(false);
@@ -190,11 +191,13 @@ export function ExpensesDashboard({ organizationId, canManage }: { organizationI
     setDirectAttachments([]);
     setDirectAttachmentFile(null);
     setDirectInvoiceNumber("");
+    setDirectSupplierName("");
   }
 
   function openDirectPayableDetail(item: Payable) {
     if (item.source !== "direct") return;
     setDirectPayableDetail(item);
+    setDirectSupplierName(item.supplier_name);
     setDirectInvoiceNumber(item.document_number ?? "");
     setDirectAttachmentFile(null);
     setDirectAttachments([]);
@@ -205,33 +208,54 @@ export function ExpensesDashboard({ organizationId, canManage }: { organizationI
     if (!organizationId || !directPayableDetail || !canManage) return;
     setSavingDirectPayable(true);
     setMessage("");
-    const invoiceResponse = await fetch("/api/direct-payable-attachments", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ organizationId, payableId: directPayableDetail.id, invoiceNumber: directInvoiceNumber }),
-    });
-    if (!invoiceResponse.ok) {
-      setSavingDirectPayable(false);
-      setMessage("No fue posible actualizar el folio de la cuenta directa.");
-      return;
-    }
-    if (directAttachmentFile) {
-      const form = new FormData();
-      form.set("organizationId", organizationId);
-      form.set("payableId", directPayableDetail.id);
-      form.set("file", directAttachmentFile);
-      const attachmentResponse = await fetch("/api/direct-payable-attachments", { method: "POST", body: form });
-      if (!attachmentResponse.ok) {
-        setSavingDirectPayable(false);
-        setMessage("El folio se actualizó, pero no fue posible cargar el respaldo.");
+    try {
+      const invoiceChanged = directInvoiceNumber.trim() !== (directPayableDetail.document_number ?? "");
+      const supplierChanged = directSupplierName.trim() !== directPayableDetail.supplier_name;
+      if (invoiceChanged || supplierChanged) {
+        const updateResponse = await fetch("/api/direct-payable-attachments", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            organizationId,
+            payableId: directPayableDetail.id,
+            invoiceNumber: directInvoiceNumber,
+            supplierName: directSupplierName,
+          }),
+        });
+        if (!updateResponse.ok) {
+          setMessage("No fue posible actualizar el proveedor o folio de la cuenta directa.");
+          return;
+        }
+      }
+      if (directAttachmentFile) {
+        const form = new FormData();
+        form.set("organizationId", organizationId);
+        form.set("payableId", directPayableDetail.id);
+        form.set("file", directAttachmentFile);
+        const attachmentResponse = await fetch("/api/direct-payable-attachments", { method: "POST", body: form });
+        if (!attachmentResponse.ok) {
+          setMessage("Los datos se guardaron, pero no fue posible cargar el respaldo.");
+          return;
+        }
+      }
+      const refreshedResponse = await fetch(`/api/received-documents?organizationId=${encodeURIComponent(organizationId)}`, { cache: "no-store" });
+      const refreshedPayload = await refreshedResponse.json().catch(() => null) as { documents?: ReceivedDocument[]; directPayables?: DirectPayable[] } | null;
+      if (!refreshedResponse.ok || !refreshedPayload?.directPayables) {
+        closeDirectPayableDetail();
+        window.dispatchEvent(new CustomEvent("payable-updated"));
+        setMessage("Cuenta actualizada. No fue posible refrescar la lista automáticamente.");
         return;
       }
+      setDocuments(refreshedPayload.documents ?? []);
+      setDirectPayables(refreshedPayload.directPayables);
+      closeDirectPayableDetail();
+      window.dispatchEvent(new CustomEvent("payable-updated"));
+      setMessage("Cuenta directa actualizada correctamente.");
+    } catch {
+      setMessage("No fue posible guardar los cambios de la cuenta directa.");
+    } finally {
+      setSavingDirectPayable(false);
     }
-    setDirectPayables((current) => current.map((item) => item.id === directPayableDetail.id ? { ...item, invoice_number: directInvoiceNumber || null } : item));
-    setSavingDirectPayable(false);
-    setDirectAttachmentFile(null);
-    await loadDirectAttachments(directPayableDetail.id);
-    setMessage("Cuenta directa actualizada correctamente.");
   }
 
   async function saveReferenceControl() {
@@ -286,7 +310,7 @@ export function ExpensesDashboard({ organizationId, canManage }: { organizationI
     </section>
     <section className="table-section"><div className="table-heading"><div><span className="panel-label">PROVEEDORES</span><h2>Concentración de gasto registrado</h2><p>Incluye documentos y cuentas directas aprobadas; las pendientes de aprobación se exhiben arriba, pero aún no alteran el gasto.</p></div></div><div className="table-scroll"><table><thead><tr><th>Proveedor</th><th>RUT</th><th className="money-col">Registros</th><th className="money-col">Gasto registrado</th></tr></thead><tbody>{supplierSummary.sort((a, b) => b.total - a.total).slice(0, 20).map((item) => <tr key={item.taxId || item.name}><td><strong>{item.name}</strong></td><td>{item.taxId || "—"}</td><td className="money-col">{item.documents}</td><td className={`money-col ${item.total < 0 ? "is-negative" : ""}`}>{money.format(item.total)}</td></tr>)}</tbody></table></div></section>
     {selectedDocument && documentDraft && <div className="modal-backdrop received-document-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) closeDocumentDetail(); }}><section className="entry-modal received-document-modal" role="dialog" aria-modal="true" aria-labelledby="received-document-title"><div className="modal-header"><div><span className="eyebrow">FACTURA RECIBIDA · {selectedDocument.document_number || "SIN FOLIO"}</span><h2 id="received-document-title">{selectedDocument.supplier_name}</h2><p>{selectedDocument.attachment_name ? `Respaldo: ${selectedDocument.attachment_name}` : "Sin respaldo cargado todavía. Puedes adjuntarlo desde esta ficha."}</p></div><button type="button" className="close-button" onClick={closeDocumentDetail} aria-label="Cerrar detalle">×</button></div><div className="received-document-layout"><section className="received-document-preview"><div className="received-document-preview-heading"><span className="panel-label">RESPALDO</span>{documentUrl && <a className="text-button" href={documentUrl} target="_blank" rel="noreferrer">Abrir en pestaña</a>}</div>{openingDocumentId === selectedDocument.id ? <p className="billing-empty">Cargando respaldo…</p> : documentUrl ? selectedDocument.attachment_mime_type?.startsWith("image/") ? <img src={documentUrl} alt={`Respaldo ${selectedDocument.document_number || "factura"}`} /> : <iframe src={documentUrl} title={`Respaldo ${selectedDocument.document_number || "factura"}`} /> : <div className="received-document-empty"><strong>{selectedDocument.attachment_path ? "No fue posible previsualizar el archivo" : "Esta factura aún no tiene respaldo"}</strong><small>{canManage ? "Carga un PDF o imagen desde el formulario." : "Solicita a Finanzas que adjunte el respaldo."}</small></div>}</section><form className="received-document-form" onSubmit={(event) => { event.preventDefault(); void saveDocumentDetail(); }}><div className="received-document-form-heading"><span className="panel-label">DATOS DE LA FACTURA</span><span className={statusClass(selectedDocument.payment_status)}>{selectedDocument.payment_status || "Sin estado"}</span></div><div className="form-grid"><label>Proveedor *<input required disabled={!canManage} value={documentDraft.supplierName} maxLength={300} onChange={(event) => setDocumentDraft((current) => current ? { ...current, supplierName: event.target.value } : current)} /></label><label>RUT proveedor<input disabled={!canManage} value={documentDraft.supplierTaxId} maxLength={30} onChange={(event) => setDocumentDraft((current) => current ? { ...current, supplierTaxId: event.target.value } : current)} /></label><label>Tipo *<select disabled={!canManage} value={documentDraft.documentType} onChange={(event) => setDocumentDraft((current) => current ? { ...current, documentType: event.target.value } : current)}><option>Factura</option><option>Factura Exenta</option><option>Nota de credito</option><option>Guia de despacho</option></select></label><label>Folio<input disabled={!canManage} value={documentDraft.documentNumber} maxLength={80} onChange={(event) => setDocumentDraft((current) => current ? { ...current, documentNumber: event.target.value } : current)} /></label><label>Fecha emisión *<input required disabled={!canManage} type="date" value={documentDraft.issueDate} onChange={(event) => setDocumentDraft((current) => current ? { ...current, issueDate: event.target.value } : current)} /></label><label>Vencimiento<input disabled={!canManage} type="date" value={documentDraft.dueDate} onChange={(event) => setDocumentDraft((current) => current ? { ...current, dueDate: event.target.value } : current)} /></label><label>Plazo de pago (días)<input disabled={!canManage} type="number" min="0" max="3650" value={documentDraft.paymentTermDays} onChange={(event) => setDocumentDraft((current) => current ? { ...current, paymentTermDays: event.target.value } : current)} /></label><label>Adjuntar / reemplazar respaldo<input disabled={!canManage} type="file" accept="application/pdf,image/jpeg,image/png" onChange={(event) => setAttachmentFile(event.target.files?.[0] ?? null)} /><small>{attachmentFile ? attachmentFile.name : "PDF, JPG o PNG · máximo 50 MB"}</small></label><label>Monto neto *<input required disabled={!canManage} type="number" min="0" step="0.01" value={documentDraft.netAmount} onChange={(event) => setDocumentDraft((current) => current ? { ...current, netAmount: event.target.value } : current)} /></label><label>IVA *<input required disabled={!canManage} type="number" min="0" step="0.01" value={documentDraft.vatAmount} onChange={(event) => setDocumentDraft((current) => current ? { ...current, vatAmount: event.target.value } : current)} /></label><label>Impuesto adicional *<input required disabled={!canManage} type="number" min="0" step="0.01" value={documentDraft.additionalTaxAmount} onChange={(event) => setDocumentDraft((current) => current ? { ...current, additionalTaxAmount: event.target.value } : current)} /></label><label>Total calculado<input readOnly value={money.format(documentDraftTotal)} /></label><label className="form-wide">Observación<textarea disabled={!canManage} value={documentDraft.notes} maxLength={2000} onChange={(event) => setDocumentDraft((current) => current ? { ...current, notes: event.target.value } : current)} /></label></div><div className="form-actions"><button type="button" className="secondary-button" onClick={closeDocumentDetail}>Cerrar</button>{canManage && <button type="submit" className="primary-button" disabled={savingDocument}>{savingDocument ? "Guardando…" : "Guardar cambios"}</button>}</div></form></div></section></div>}
-    {directPayableDetail && <div className="modal-backdrop received-document-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) closeDirectPayableDetail(); }}><section className="entry-modal received-document-modal" role="dialog" aria-modal="true" aria-labelledby="direct-payable-title"><div className="modal-header"><div><span className="eyebrow">CUENTA POR PAGAR DIRECTA</span><h2 id="direct-payable-title">{directPayableDetail.supplier_name}</h2><p>{directPayableDetail.notes || "Cuenta directa sin observación adicional."}</p></div><button type="button" className="close-button" onClick={closeDirectPayableDetail} aria-label="Cerrar detalle">×</button></div><div className="received-document-layout"><section className="received-document-preview"><div className="received-document-preview-heading"><span className="panel-label">RESPALDOS</span><span>{directAttachments.length} archivo(s)</span></div>{loadingDirectAttachments ? <p className="billing-empty">Cargando respaldos…</p> : directAttachments[0]?.signedUrl ? directAttachments[0].mimeType.startsWith("image/") ? <img src={directAttachments[0].signedUrl} alt={directAttachments[0].fileName} /> : <iframe src={directAttachments[0].signedUrl} title={directAttachments[0].fileName} /> : <div className="received-document-empty"><strong>No hay respaldos cargados</strong><small>{canManage ? "Adjunta el documento desde esta ficha." : "Solicita a Finanzas que adjunte el documento."}</small></div>}<div className="direct-payable-files">{directAttachments.map((file) => file.signedUrl ? <a key={file.id} href={file.signedUrl} target="_blank" rel="noreferrer">{file.fileName}</a> : <span key={file.id}>{file.fileName}</span>)}</div></section><form className="received-document-form" onSubmit={(event) => { event.preventDefault(); void saveDirectPayableDetail(); }}><div className="received-document-form-heading"><span className="panel-label">DATOS DE LA CUENTA</span><span className={statusClass(directPayableDetail.payment_status)}>{directPayableDetail.payment_status}</span></div><div className="form-grid"><label>Proveedor<input readOnly value={directPayableDetail.supplier_name} /></label><label>Monto aprobado<input readOnly value={displayAmount(directPayableDetail.total_amount, directPayableDetail.currency_code)} /></label><label>Fecha emisión<input readOnly value={displayDate(directPayableDetail.issue_date)} /></label><label>Vencimiento<input readOnly value={displayDate(directPayableDetail.due_date)} /></label><label>Folio de factura<input disabled={!canManage} value={directInvoiceNumber} maxLength={80} placeholder="Ingresa el folio del respaldo" onChange={(event) => setDirectInvoiceNumber(event.target.value)} /></label><label>Agregar respaldo<input disabled={!canManage} type="file" accept="application/pdf,image/jpeg,image/png" onChange={(event) => setDirectAttachmentFile(event.target.files?.[0] ?? null)} /><small>{directAttachmentFile ? directAttachmentFile.name : "PDF, JPG o PNG · máximo 50 MB"}</small></label><label className="form-wide">Detalle<input readOnly value={directPayableDetail.notes || "Sin detalle"} /></label></div><p className="form-note">Después de aprobación sólo se puede corregir el folio y adjuntar respaldos; el proveedor, monto y vencimiento conservan la aprobación vigente.</p><div className="form-actions"><button type="button" className="secondary-button" onClick={closeDirectPayableDetail}>Cerrar</button>{canManage && <button type="submit" className="primary-button" disabled={savingDirectPayable}>{savingDirectPayable ? "Guardando…" : "Guardar respaldo"}</button>}</div></form></div></section></div>}
+    {directPayableDetail && <div className="modal-backdrop received-document-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) closeDirectPayableDetail(); }}><section className="entry-modal received-document-modal" role="dialog" aria-modal="true" aria-labelledby="direct-payable-title"><div className="modal-header"><div><span className="eyebrow">CUENTA POR PAGAR DIRECTA</span><h2 id="direct-payable-title">{directPayableDetail.supplier_name}</h2><p>{directPayableDetail.notes || "Cuenta directa sin observación adicional."}</p></div><button type="button" className="close-button" onClick={closeDirectPayableDetail} aria-label="Cerrar detalle">×</button></div><div className="received-document-layout"><section className="received-document-preview"><div className="received-document-preview-heading"><span className="panel-label">RESPALDOS</span><span>{directAttachments.length} archivo(s)</span></div>{loadingDirectAttachments ? <p className="billing-empty">Cargando respaldos…</p> : directAttachments[0]?.signedUrl ? directAttachments[0].mimeType.startsWith("image/") ? <img src={directAttachments[0].signedUrl} alt={directAttachments[0].fileName} /> : <iframe src={directAttachments[0].signedUrl} title={directAttachments[0].fileName} /> : <div className="received-document-empty"><strong>No hay respaldos cargados</strong><small>{canManage ? "Adjunta el documento desde esta ficha." : "Solicita a Finanzas que adjunte el documento."}</small></div>}<div className="direct-payable-files">{directAttachments.map((file) => file.signedUrl ? <a key={file.id} href={file.signedUrl} target="_blank" rel="noreferrer">{file.fileName}</a> : <span key={file.id}>{file.fileName}</span>)}</div></section><form className="received-document-form" onSubmit={(event) => { event.preventDefault(); void saveDirectPayableDetail(); }}><div className="received-document-form-heading"><span className="panel-label">DATOS DE LA CUENTA</span><span className={statusClass(directPayableDetail.payment_status)}>{directPayableDetail.payment_status}</span></div><div className="form-grid"><label>Proveedor<input required disabled={!canManage} value={directSupplierName} maxLength={300} onChange={(event) => setDirectSupplierName(event.target.value)} /></label><label>Monto aprobado<input readOnly value={displayAmount(directPayableDetail.total_amount, directPayableDetail.currency_code)} /></label><label>Fecha emisión<input readOnly value={displayDate(directPayableDetail.issue_date)} /></label><label>Vencimiento<input readOnly value={displayDate(directPayableDetail.due_date)} /></label><label>Folio de factura<input disabled={!canManage} value={directInvoiceNumber} maxLength={80} placeholder="Ingresa el folio del respaldo" onChange={(event) => setDirectInvoiceNumber(event.target.value)} /></label><label>Agregar respaldo<input disabled={!canManage} type="file" accept="application/pdf,image/jpeg,image/png" onChange={(event) => setDirectAttachmentFile(event.target.files?.[0] ?? null)} /><small>{directAttachmentFile ? directAttachmentFile.name : "PDF, JPG o PNG · máximo 50 MB"}</small></label><label className="form-wide">Detalle<input readOnly value={directPayableDetail.notes || "Sin detalle"} /></label></div><p className="form-note">Después de aprobación puedes corregir proveedor y folio, y adjuntar respaldos. El monto, fechas y aprobación se mantienen protegidos.</p><div className="form-actions"><button type="button" className="secondary-button" onClick={closeDirectPayableDetail}>Cerrar</button>{canManage && <button type="submit" className="primary-button" disabled={savingDirectPayable}>{savingDirectPayable ? "Guardando…" : "Guardar cambios"}</button>}</div></form></div></section></div>}
     {referenceToSettle && <div className="modal-backdrop" role="presentation"><section className="entry-modal" role="dialog" aria-modal="true" aria-labelledby="factoring-reference-title"><div className="modal-header"><div><span className="eyebrow">CONTROL REFERENCIAL · FACTORING</span><h2 id="factoring-reference-title">Liquidar referencia</h2><p>{referenceToSettle.supplier_name} · {referenceToSettle.document_number || "Sin folio"}. Este control no genera gasto, pago ni movimiento en Tesorería.</p></div><button type="button" className="close-button" onClick={() => setReferenceToSettle(null)} aria-label="Cerrar">×</button></div><div className="form-grid"><label>Fecha de liquidación *<input required type="date" value={referenceDate} onChange={(event) => setReferenceDate(event.target.value)} /></label><label className="p2p-form-wide">Referencia / observación<input maxLength={2000} value={referenceNote} onChange={(event) => setReferenceNote(event.target.value)} placeholder="Ej. Liquidación informada por factoring" /></label></div><div className="form-actions"><button type="button" className="secondary-button" onClick={() => setReferenceToSettle(null)}>Cancelar</button><button type="button" className="primary-button" disabled={savingReference || !referenceDate} onClick={() => void saveReferenceControl()}>{savingReference ? "Guardando…" : "Guardar control"}</button></div></section></div>}
   </main>;
 }

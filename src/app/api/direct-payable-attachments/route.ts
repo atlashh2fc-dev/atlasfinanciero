@@ -121,11 +121,15 @@ export async function PATCH(request: NextRequest) {
   const organizationId = body?.organizationId;
   const payableId = body?.payableId;
   const invoiceNumber = typeof body?.invoiceNumber === "string" ? body.invoiceNumber.trim() : null;
+  const supplierName = typeof body?.supplierName === "string" ? body.supplierName.trim() : null;
   if (
     !isUuid(organizationId) ||
     !isUuid(payableId) ||
     invoiceNumber === null ||
-    invoiceNumber.length > 80
+    invoiceNumber.length > 80 ||
+    supplierName === null ||
+    supplierName.length === 0 ||
+    supplierName.length > 300
   ) return NextResponse.json({ error: "invalid_payable_invoice" }, { status: 400 });
 
   const context = await requireOrganizationFinanceAccess(organizationId);
@@ -133,12 +137,46 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: context.error }, { status: context.status });
   const { data, error } = await context.supabase
     .from("direct_payables")
-    .update({ invoice_number: invoiceNumber || null })
+    .update({ invoice_number: invoiceNumber || null, supplier_name: supplierName })
     .eq("id", payableId)
     .eq("organization_id", organizationId)
-    .select("id, invoice_number")
+    .select("id, invoice_number, supplier_name")
     .maybeSingle();
   if (error || !data)
     return NextResponse.json({ error: "unable_to_update_payable_invoice" }, { status: 409 });
+  const { data: activeItems, error: activeItemsError } = await context.supabase
+    .from("payment_batch_items")
+    .select("id, payment_batch_id")
+    .eq("organization_id", organizationId)
+    .eq("direct_payable_id", payableId);
+  if (activeItemsError)
+    return NextResponse.json({ error: "unable_to_sync_payable_payment_items" }, { status: 409 });
+  const itemBatchIds = [...new Set((activeItems ?? []).map((item) => item.payment_batch_id))];
+  const batchesResult = itemBatchIds.length
+    ? await context.supabase
+        .from("payment_batches")
+        .select("id")
+        .eq("organization_id", organizationId)
+        .in("id", itemBatchIds)
+        .in("status", ["draft", "review"])
+    : { data: [], error: null };
+  if (batchesResult.error)
+    return NextResponse.json({ error: "unable_to_sync_payable_payment_items" }, { status: 409 });
+  const activeBatchIds = (batchesResult.data ?? []).map((item) => item.id);
+  const activeItemIds = (activeItems ?? [])
+    .filter((item) => activeBatchIds.includes(item.payment_batch_id))
+    .map((item) => item.id);
+  if (activeItemIds.length) {
+    const { error: syncError } = await context.supabase
+      .from("payment_batch_items")
+      .update({
+        supplier_name_snapshot: data.supplier_name,
+        document_number_snapshot: data.invoice_number,
+      })
+      .eq("organization_id", organizationId)
+      .in("id", activeItemIds);
+    if (syncError)
+      return NextResponse.json({ error: "unable_to_sync_payable_payment_items" }, { status: 409 });
+  }
   return NextResponse.json({ payable: data });
 }
