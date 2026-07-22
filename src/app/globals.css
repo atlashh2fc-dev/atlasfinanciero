@@ -3335,25 +3335,6 @@ td small {
   display: flex;
   flex-direction: column;
 }
-.infobusiness-reconciliation-panel {
-  margin-bottom: 18px;
-}
-.infobusiness-reconciliation-panel .panel-heading p {
-  margin: 4px 0 0;
-  color: #7c899d;
-  font-size: 11px;
-}
-.infobusiness-reconciliation-table {
-  min-width: 880px;
-  margin-top: 16px;
-}
-.infobusiness-reconciliation-table th {
-  background: #f5f8ff;
-}
-.infobusiness-reconciliation-table th:last-child,
-.infobusiness-reconciliation-table td:last-child {
-  background: #fff7e8;
-}
 .receivables-priority > strong {
   color: #2e3c55;
   font-size: 21px;

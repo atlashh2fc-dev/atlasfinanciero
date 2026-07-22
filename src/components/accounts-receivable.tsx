@@ -12,14 +12,10 @@ import {
 } from "recharts";
 import type { InvoiceRecord } from "@/data/facturas-emitidas-2026";
 import {
-  reconciledBalanceBreakdown,
-  reconciledPaidAmount,
-  reconciledReceivablesForYear,
-} from "@/data/infobusiness-reconciliation-2026";
-import {
   isActiveIssuedInvoice,
   isCreditNoteDocument,
   isPurchaseOrderDocument,
+  outstandingBalanceBreakdown,
   outstandingDocumentBalance,
   recognizedNetAmount,
 } from "@/lib/document-revenue";
@@ -176,14 +172,7 @@ export function AccountsReceivable({
         : records.filter((record) => record.year === Number(year)),
     [records, year],
   );
-  const recordsForYear = useMemo(
-    () =>
-      reconciledReceivablesForYear(
-        sourceRecordsForYear,
-        year === "Todos" ? null : Number(year),
-      ),
-    [sourceRecordsForYear, year],
-  );
+  const recordsForYear = sourceRecordsForYear;
   const paidAmountByDocument = useMemo(() => {
     const amounts = new Map<string, number>();
     payments.forEach((payment) =>
@@ -192,12 +181,8 @@ export function AccountsReceivable({
         (amounts.get(payment.issued_document_id) ?? 0) + Number(payment.amount),
       ),
     );
-    recordsForYear.forEach((record) => {
-      const reconciledPaid = reconciledPaidAmount(record.id);
-      if (reconciledPaid) amounts.set(record.id, reconciledPaid);
-    });
     return amounts;
-  }, [payments, recordsForYear]);
+  }, [payments]);
   const outstandingBalance = (record: InvoiceRecord) =>
     outstandingDocumentBalance(record, paidAmountByDocument.get(record.id));
   const hasOpenBalanceStatus = (status: string | null) => {
@@ -353,14 +338,6 @@ export function AccountsReceivable({
       ),
     [regularizationReceivables],
   );
-  const infobusinessReconciliationRows = useMemo(
-    () =>
-      recordsForYear.filter((record) =>
-        record.id.startsWith("infobusiness-reconciliation-"),
-      ),
-    [recordsForYear],
-  );
-
   function openFollowup(record: InvoiceRecord) {
     const current = followupsByDocument.get(record.id);
     setSelected(record);
@@ -412,7 +389,10 @@ export function AccountsReceivable({
     const bucket = agingBucket(days);
     const greenAlert =
       bucket === "Vence en 7 días" || bucket === "Vence en 2 días";
-    const reconciliation = reconciledBalanceBreakdown(record.id);
+    const reconciliation = outstandingBalanceBreakdown(
+      record,
+      paidAmountByDocument.get(record.id),
+    );
 
     return (
       <tr key={record.id}>
@@ -428,7 +408,7 @@ export function AccountsReceivable({
               Sin factura vigente · Regularizar
             </span>
           )}
-          {reconciliation && (
+          {!isActiveIssuedInvoice(record) && outstandingBalance(record) > 0 && (
             <small className="reconciled-balance-detail">
               Neto pendiente {money.format(reconciliation.net)} · IVA pendiente {money.format(reconciliation.vat)}
             </small>
@@ -603,61 +583,6 @@ export function AccountsReceivable({
           </small>
         </article>
       </section>
-
-      {infobusinessReconciliationRows.length > 0 && (
-        <section className="panel infobusiness-reconciliation-panel">
-          <div className="panel-heading">
-            <div>
-              <span className="panel-label">CONCILIACIÓN DE COBRANZA</span>
-              <h2>Infobusiness · saldo pendiente de regularización</h2>
-              <p>
-                El saldo exigible es la diferencia neta por abonar más el IVA
-                pendiente de cada período. Los abonos se mantienen en bruto.
-              </p>
-            </div>
-            <span className="unit">CLP</span>
-          </div>
-          <div className="table-scroll">
-            <table className="infobusiness-reconciliation-table">
-              <thead>
-                <tr>
-                  <th>Período</th>
-                  <th className="money-col">Neto a facturar</th>
-                  <th className="money-col">Abonado</th>
-                  <th className="money-col">Neto por abonar</th>
-                  <th className="money-col">IVA pendiente</th>
-                  <th className="money-col">Saldo por cobrar</th>
-                </tr>
-              </thead>
-              <tbody>
-                {infobusinessReconciliationRows.map((record) => {
-                  const breakdown = reconciledBalanceBreakdown(record.id);
-                  return (
-                    <tr key={record.id}>
-                      <td>{formatDate(record.issueDate)}</td>
-                      <td className="money-col">
-                        {money.format(Number(record.netAmount ?? 0))}
-                      </td>
-                      <td className="money-col">
-                        {money.format(reconciledPaidAmount(record.id))}
-                      </td>
-                      <td className="money-col">
-                        {money.format(breakdown?.net ?? 0)}
-                      </td>
-                      <td className="money-col">
-                        {money.format(breakdown?.vat ?? 0)}
-                      </td>
-                      <td className="money-col">
-                        <strong>{money.format(outstandingBalance(record))}</strong>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
 
       <section className="executive-grid">
         <article className="panel executive-chart">

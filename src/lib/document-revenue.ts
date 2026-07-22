@@ -3,6 +3,7 @@ export type RevenueDocument = {
   invoiceNumber?: string | null;
   status?: string | null;
   netAmount?: number | null;
+  vatAmount?: number | null;
   totalAmount?: number | null;
 };
 
@@ -61,4 +62,30 @@ export function outstandingDocumentBalance(
     (Number.isFinite(documentAmount) ? documentAmount : 0) -
       (Number.isFinite(paid) ? paid : 0),
   );
+}
+
+/**
+ * The workbook's regularization entries apply recorded abonos to the net
+ * amount first. This leaves the VAT fully pending until the net is covered.
+ */
+export function outstandingBalanceBreakdown(
+  document: RevenueDocument,
+  paidAmount = 0,
+) {
+  const balance = outstandingDocumentBalance(document, paidAmount);
+  const netAmount = Number(document.netAmount ?? 0);
+  const paid = Number(paidAmount);
+  const netPending = Math.min(
+    balance,
+    Math.max(
+      0,
+      (Number.isFinite(netAmount) ? netAmount : 0) -
+        (Number.isFinite(paid) ? paid : 0),
+    ),
+  );
+
+  return {
+    net: netPending,
+    vat: Math.max(0, balance - netPending),
+  };
 }
