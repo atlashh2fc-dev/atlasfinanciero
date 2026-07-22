@@ -1853,6 +1853,23 @@ type StoredDocument = {
   source_row: number | null;
 };
 
+function normalizeDocumentType(value: string | null) {
+  const normalized = value
+    ?.normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLocaleLowerCase("es-CL");
+  return (
+    ({
+      factura: "Factura afecta",
+      "factura afecta": "Factura afecta",
+      "factura exenta": "Factura exenta",
+      "nota de credito": "Nota de crédito",
+      "nota de debito": "Nota de débito",
+    } as Record<string, string>)[normalized ?? ""] ?? value
+  );
+}
+
 function mapStoredDocument(document: StoredDocument): InvoiceRecord {
   return {
     id: document.id,
@@ -1860,7 +1877,7 @@ function mapStoredDocument(document: StoredDocument): InvoiceRecord {
     year: document.issue_date ? Number(document.issue_date.slice(0, 4)) : null,
     month: document.issue_date ? monthFromDate(document.issue_date) : null,
     issueDate: document.issue_date,
-    documentType: document.document_type,
+    documentType: normalizeDocumentType(document.document_type),
     issuer: document.issuer_name,
     issuerRut: document.issuer_tax_id,
     client: document.client_name,
@@ -2196,7 +2213,7 @@ export function FinanceDashboard() {
   function startDocumentEdit(record: InvoiceRecord) {
     setEditingRecord(record);
     setEditDraft({
-      documentType: record.documentType ?? "Factura afecta",
+      documentType: normalizeDocumentType(record.documentType) ?? "Factura afecta",
       status: record.status ?? "",
       paymentDate: record.paymentDate ?? "",
       paymentMethod: record.paymentMethod ?? "",
@@ -2235,7 +2252,11 @@ export function FinanceDashboard() {
       setFormError(
         payload?.error === "invalid_document_attachment"
           ? "El adjunto debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
-          : "No fue posible actualizar el documento. Revisa tu sesión, permisos y datos.",
+          : payload?.error === "invalid_document_update"
+            ? "Revisa el tipo de documento, estado y fecha de pago antes de guardar."
+            : payload?.error === "unable_to_upload_document_attachment"
+              ? "No fue posible subir el respaldo. Intenta nuevamente con el mismo archivo."
+              : "No fue posible actualizar el documento. Revisa tu sesión, permisos y datos.",
       );
       return;
     }

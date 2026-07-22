@@ -48,6 +48,25 @@ function readPaymentCondition(value: unknown) {
     : null;
 }
 
+function readDocumentType(value: unknown, required = false) {
+  const raw = readText(value, 100, required);
+  if (!raw) return null;
+  const normalized = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLocaleLowerCase("es-CL");
+  return (
+    ({
+      factura: "Factura afecta",
+      "factura afecta": "Factura afecta",
+      "factura exenta": "Factura exenta",
+      "nota de credito": "Nota de crédito",
+      "nota de debito": "Nota de débito",
+    } as Record<string, string>)[normalized] ?? null
+  );
+}
+
 function isUuid(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -73,7 +92,7 @@ export async function POST(request: NextRequest) {
   const form = await request.formData();
   const issueDate = readDate(form.get("issueDate"));
   const dueDate = readDate(form.get("dueDate"));
-  const documentType = readText(form.get("documentType"), 100, true);
+  const documentType = readDocumentType(form.get("documentType"), true);
   const issuerName = readText(form.get("issuerName"), 250, true);
   const issuerTaxId = readText(form.get("issuerTaxId"), 40);
   const status = readText(form.get("status"), 80, true);
@@ -219,7 +238,7 @@ export async function PATCH(request: NextRequest) {
   const documentType =
     body?.documentType === undefined
       ? undefined
-      : readText(body.documentType, 100, true);
+      : readDocumentType(body.documentType, true);
   const status = readText(body?.status, 80, true);
   const paymentDateValue = body?.paymentDate;
   const paymentDate =
