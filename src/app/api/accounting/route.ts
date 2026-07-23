@@ -147,6 +147,34 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ account: data }, { status: 201 });
   }
 
+  if (body.action === "install_chilean_ifrs_standard") {
+    const { data, error } = await context.supabase.rpc("seed_chilean_ifrs_chart_of_accounts", {
+      p_organization_id: organizationId,
+    });
+    if (error) return NextResponse.json({ error: "unable_to_install_ifrs_standard", detail: error.message }, { status: 409 });
+    return NextResponse.json({ insertedAccounts: Number(data ?? 0) });
+  }
+
+  if (body.action === "generate_ifrs_source_entries") {
+    const periodId = body.periodId;
+    if (!isUuid(periodId)) return NextResponse.json({ error: "invalid_period" }, { status: 400 });
+    const { data: period, error: periodError } = await context.supabase
+      .from("financial_periods")
+      .select("period_end, status")
+      .eq("id", periodId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+    if (periodError || !period) return NextResponse.json({ error: "period_not_found" }, { status: 404 });
+    if (["closed", "locked"].includes(period.status)) return NextResponse.json({ error: "closed_period" }, { status: 409 });
+    const { data, error } = await context.supabase.rpc("generate_ifrs_source_entries", {
+      p_organization_id: organizationId,
+      p_cutoff_date: period.period_end,
+    });
+    if (error) return NextResponse.json({ error: "unable_to_generate_ifrs_entries", detail: error.message }, { status: 409 });
+    const result = Array.isArray(data) ? data[0] : data;
+    return NextResponse.json({ generatedEntries: Number(result?.generated_entries ?? 0), skippedClosedPeriods: Number(result?.skipped_closed_periods ?? 0) });
+  }
+
   if (body.action === "post_manual_entry") {
     const lines = Array.isArray(body.lines) ? body.lines : [];
     const periodId = body.periodId;
