@@ -8,7 +8,7 @@ type Adjustment = { id: string; expected_on: string; direction: "inflow" | "outf
 type IssuedDocument = { id: string; counterparty_id: string | null; document_number: string | null; issue_date: string | null; due_date: string | null; payment_term_days: number | null; document_type: string | null; net_amount: number | string | null; total_amount: number | string | null; payment_status: string | null; client_name: string | null };
 type IssuedPayment = { issued_document_id: string; amount: number | string };
 type ReceivedDocument = { id: string; supplier_counterparty_id: string | null; supplier_name: string; document_number: string | null; issue_date: string; due_date: string | null; payment_term_days: number | null; document_type: string; net_amount: number | string; total_amount: number | string; payment_status: string | null };
-type DirectPayable = { id: string; payable_number: string; supplier_name: string; due_date: string | null; total_amount: number | string; currency_code: "CLP" | "UF"; status: string };
+type DirectPayable = { id: string; payable_number: string; supplier_name: string; due_date: string | null; total_amount: number | string; outstanding_amount?: number | string; currency_code: "CLP" | "UF"; status: string };
 type AmortizationSchedule = { id: string; plan_id: string; period_month: string; amortization_amount_clp: number | string; asset_financing_plans: { asset_name: string; status: string } | null };
 type FinancingPlan = { id: string; plan_kind: "credit"; status: string; currency_code: "CLP" | "UF"; disbursement_date: string | null; disbursement_amount: number | string | null };
 type BankAccount = { id: string; name: string; opening_balance: number | string; is_active: boolean };
@@ -24,6 +24,7 @@ type Payload = { year: number; role: string; plans: Plan[]; budgetLines: BudgetL
 
 const money = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 const number = (value: number | string | null | undefined) => Number(value ?? 0);
+const payableBalance = (payable: DirectPayable) => Math.max(0, number(payable.outstanding_amount ?? payable.total_amount));
 const today = () => new Date().toISOString().slice(0, 10);
 const monthStart = (year: number, index: number) => `${year}-${String(index + 1).padStart(2, "0")}-01`;
 const isPaid = (status: string | null) => status?.trim().toLocaleLowerCase().includes("pagada") ?? false;
@@ -118,8 +119,8 @@ export function FinancialPlanningDashboard({ organizationId }: { organizationId:
     const actualRevenue = (data?.issuedDocuments ?? []).filter((document) => document.issue_date?.startsWith(period.slice(0, 7))).reduce((sum, document) => sum + signedAmount(document), 0);
     const actualExpense = (data?.receivedDocuments ?? []).filter((document) => document.issue_date.startsWith(period.slice(0, 7))).reduce((sum, document) => sum + signedAmount(document), 0);
     const assetAmortization = (data?.amortizationSchedules ?? []).filter((schedule) => schedule.period_month === period && schedule.asset_financing_plans?.status === "approved").reduce((sum, schedule) => sum + number(schedule.amortization_amount_clp), 0);
-    const financedCash = (data?.directPayables ?? []).filter((payable) => payable.currency_code === "CLP" && payable.due_date?.startsWith(period.slice(0, 7)) && payable.status !== "paid").reduce((sum, payable) => sum + number(payable.total_amount), 0);
-    const financedCashUf = (data?.directPayables ?? []).filter((payable) => payable.currency_code === "UF" && payable.due_date?.startsWith(period.slice(0, 7)) && payable.status !== "paid").reduce((sum, payable) => sum + number(payable.total_amount), 0);
+    const financedCash = (data?.directPayables ?? []).filter((payable) => payable.currency_code === "CLP" && payable.due_date?.startsWith(period.slice(0, 7)) && payable.status !== "paid").reduce((sum, payable) => sum + payableBalance(payable), 0);
+    const financedCashUf = (data?.directPayables ?? []).filter((payable) => payable.currency_code === "UF" && payable.due_date?.startsWith(period.slice(0, 7)) && payable.status !== "paid").reduce((sum, payable) => sum + payableBalance(payable), 0);
     const budgetRevenue = activeBudgetLines.filter((line) => line.period_month === period && line.kind === "revenue").reduce((sum, line) => sum + number(line.amount), 0);
     const budgetExpense = activeBudgetLines.filter((line) => line.period_month === period && line.kind === "expense").reduce((sum, line) => sum + number(line.amount), 0);
     return { period, actualRevenue, actualExpense, budgetRevenue, budgetExpense, assetAmortization, financedCash, financedCashUf };
@@ -147,7 +148,7 @@ export function FinancialPlanningDashboard({ organizationId }: { organizationId:
         + data.financingPlans.filter((plan) => plan.currency_code === "CLP" && plan.disbursement_date && belongs(plan.disbursement_date)).reduce((sum, plan) => sum + number(plan.disbursement_amount), 0)
         + data.adjustments.filter((item) => item.direction === "inflow" && belongs(item.expected_on)).reduce((sum, item) => sum + number(item.amount), 0);
       const outflows = data.receivedDocuments.filter((document) => !isPaid(document.payment_status) && belongs(dueDate(document))).reduce((sum, document) => sum + Math.max(0, number(document.total_amount)), 0)
-        + data.directPayables.filter((payable) => payable.currency_code === "CLP" && payable.status === "approved" && payable.due_date && belongs(payable.due_date)).reduce((sum, payable) => sum + number(payable.total_amount), 0)
+        + data.directPayables.filter((payable) => payable.currency_code === "CLP" && payable.status === "approved" && payable.due_date && belongs(payable.due_date)).reduce((sum, payable) => sum + payableBalance(payable), 0)
         + data.adjustments.filter((item) => item.direction === "outflow" && belongs(item.expected_on)).reduce((sum, item) => sum + number(item.amount), 0);
       closing += inflows - outflows;
       return { start: dateText(week), inflows, outflows, closing };

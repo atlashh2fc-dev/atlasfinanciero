@@ -71,21 +71,31 @@ export async function GET(request: NextRequest) {
 
   if (supplierId) {
     if (!isUuid(supplierId)) return NextResponse.json({ error: "invalid_supplier" }, { status: 400 });
-    const [supplier, contacts, documents, payables, purchaseOrders, financingPlans, files] = await Promise.all([
+    const [supplier, contacts, documents, payables, payableExecutions, purchaseOrders, financingPlans, files] = await Promise.all([
       context.supabase.from("counterparties").select("id, legal_name, trade_name, tax_id, business_activity, address_line1, commune, city, website, email, phone, payment_term_days, billing_email, billing_phone, legal_representative_name, legal_representative_tax_id, legal_representative_phone, legal_representative_email").eq("id", supplierId).eq("organization_id", organizationId).in("kind", ["supplier", "both"]).eq("is_active", true).is("merged_into_counterparty_id", null).maybeSingle(),
       context.supabase.from("counterparty_contacts").select("id, contact_area, job_title, full_name, phone, email, is_primary").eq("organization_id", organizationId).eq("counterparty_id", supplierId).order("is_primary", { ascending: false }).order("contact_area").order("full_name"),
       context.supabase.from("received_documents").select("id, document_number, document_type, issue_date, due_date, total_amount, payment_status, payment_date, notes, source_file_name").eq("organization_id", organizationId).eq("supplier_counterparty_id", supplierId).order("issue_date", { ascending: false }).limit(100),
       context.supabase.from("direct_payables").select("id, payable_number, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, status, paid_at, notes, is_reference, reference_settled_at").eq("organization_id", organizationId).eq("supplier_counterparty_id", supplierId).neq("status", "cancelled").order("issue_date", { ascending: false }).limit(100),
+      context.supabase.from("payment_executions").select("direct_payable_id, amount").eq("organization_id", organizationId).not("direct_payable_id", "is", null),
       context.supabase.from("vendor_purchase_orders").select("id, purchase_order_number, ordered_on, expected_on, total_amount, currency_code, status, notes").eq("organization_id", organizationId).eq("supplier_counterparty_id", supplierId).neq("status", "cancelled").order("ordered_on", { ascending: false }).limit(50),
       context.supabase.from("asset_financing_plans").select("id, plan_number, plan_kind, asset_name, contract_reference, first_due_date, financing_total_amount, currency_code, status, notes").eq("organization_id", organizationId).eq("supplier_counterparty_id", supplierId).neq("status", "cancelled").order("created_at", { ascending: false }).limit(50),
       context.supabase.from("customer_files").select("id, file_name, document_type, notes, created_at").eq("organization_id", organizationId).eq("counterparty_id", supplierId).order("created_at", { ascending: false }),
     ]);
-    if ([supplier, contacts, documents, payables, purchaseOrders, financingPlans, files].some((result) => result.error)) return NextResponse.json({ error: "unable_to_load_supplier_profile" }, { status: 500 });
+    if ([supplier, contacts, documents, payables, payableExecutions, purchaseOrders, financingPlans, files].some((result) => result.error)) return NextResponse.json({ error: "unable_to_load_supplier_profile" }, { status: 500 });
     if (!supplier.data) return NextResponse.json({ error: "supplier_not_found" }, { status: 404 });
 
     const today = new Date().toISOString().slice(0, 10);
     const openDocuments = (documents.data ?? []).filter((document) => !paymentIsSettled(document.payment_status));
-    const openPayables = (payables.data ?? []).filter((payable) => !payable.is_reference && payable.status !== "paid" && payable.status !== "rejected");
+    const paidByPayable = new Map<string, number>();
+    for (const execution of payableExecutions.data ?? []) {
+      if (!execution.direct_payable_id) continue;
+      paidByPayable.set(execution.direct_payable_id, (paidByPayable.get(execution.direct_payable_id) ?? 0) + asAmount(execution.amount));
+    }
+    const payableRows = (payables.data ?? []).map((payable) => ({
+      ...payable,
+      outstanding_amount: Math.max(0, asAmount(payable.total_amount) - (paidByPayable.get(payable.id) ?? 0)),
+    }));
+    const openPayables = payableRows.filter((payable) => !payable.is_reference && payable.status !== "paid" && payable.status !== "rejected" && payable.outstanding_amount > 0.01);
     const overdueDocuments = openDocuments.filter((document) => document.due_date && document.due_date < today);
     const overduePayables = openPayables.filter((payable) => payable.due_date && payable.due_date < today);
     const alerts = [
@@ -97,12 +107,12 @@ export async function GET(request: NextRequest) {
     ];
     return NextResponse.json({
       supplier: { ...supplier.data, name: displayName(supplier.data), taxId: supplier.data.tax_id },
-      contacts: contacts.data ?? [], documents: documents.data ?? [], payables: payables.data ?? [], purchaseOrders: purchaseOrders.data ?? [], financingPlans: financingPlans.data ?? [], files: files.data ?? [], alerts,
+      contacts: contacts.data ?? [], documents: documents.data ?? [], payables: payableRows, purchaseOrders: purchaseOrders.data ?? [], financingPlans: financingPlans.data ?? [], files: files.data ?? [], alerts,
       summary: {
         documentCount: (documents.data ?? []).length,
-        payableCount: (payables.data ?? []).length,
-        openAmount: openDocuments.reduce((total, document) => total + asAmount(document.total_amount), 0) + openPayables.reduce((total, payable) => total + asAmount(payable.total_amount), 0),
-        overdueAmount: overdueDocuments.reduce((total, document) => total + asAmount(document.total_amount), 0) + overduePayables.reduce((total, payable) => total + asAmount(payable.total_amount), 0),
+        payableCount: payableRows.length,
+        openAmount: openDocuments.reduce((total, document) => total + asAmount(document.total_amount), 0) + openPayables.reduce((total, payable) => total + payable.outstanding_amount, 0),
+        overdueAmount: overdueDocuments.reduce((total, document) => total + asAmount(document.total_amount), 0) + overduePayables.reduce((total, payable) => total + payable.outstanding_amount, 0),
       },
     });
   }

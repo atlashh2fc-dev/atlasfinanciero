@@ -88,6 +88,17 @@ function positive(value: unknown) {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
+function paymentAmounts(value: unknown) {
+  if (value === undefined) return new Map<string, number>();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const amounts = new Map<string, number>();
+  for (const [id, amount] of Object.entries(value as Record<string, unknown>)) {
+    const parsed = positive(amount);
+    if (!isUuid(id) || !parsed || parsed > 1_000_000_000_000) return null;
+    amounts.set(id, parsed);
+  }
+  return amounts;
+}
 function isPaid(status: string | null) {
   return status?.toLocaleLowerCase().includes("pagada") ?? false;
 }
@@ -377,7 +388,7 @@ export async function GET(request: NextRequest) {
     context.supabase
       .from("payment_executions")
       .select(
-        "id, payment_batch_id, status, amount, executed_on, bank_transaction_id, reconciled_at, cash_flow_classification",
+        "id, payment_batch_id, direct_payable_id, status, amount, executed_on, bank_transaction_id, reconciled_at, cash_flow_classification",
       )
       .eq("organization_id", organizationId)
       .order("executed_on", { ascending: false })
@@ -550,6 +561,14 @@ export async function GET(request: NextRequest) {
     ]);
   const documentsById = new Map((documents.data ?? []).map((document) => [document.id, document]));
   const payablesById = new Map((directPayables.data ?? []).map((payable) => [payable.id, payable]));
+  const paidByDirectPayable = new Map<string, number>();
+  for (const execution of executions.data ?? []) {
+    if (!execution.direct_payable_id) continue;
+    paidByDirectPayable.set(
+      execution.direct_payable_id,
+      (paidByDirectPayable.get(execution.direct_payable_id) ?? 0) + Number(execution.amount ?? 0),
+    );
+  }
   const paymentBatchItems = (batchItems.data ?? []).map((item) => {
     const document = item.received_document_id ? documentsById.get(item.received_document_id) : null;
     const payable = item.direct_payable_id ? payablesById.get(item.direct_payable_id) : null;
@@ -642,24 +661,40 @@ export async function GET(request: NextRequest) {
     paymentOrders,
     paymentExecutions: executions.data ?? [],
     receivedDocuments: availableDocuments,
-    directPayables: (directPayables.data ?? []).map((payable) => ({
-      ...payable,
-      payment_eligible:
+    directPayables: (directPayables.data ?? []).map((payable) => {
+      const paidAmount = Math.min(
+        Math.max(0, paidByDirectPayable.get(payable.id) ?? 0),
+        Math.max(0, Number(payable.total_amount ?? 0)),
+      );
+      const outstandingAmount = Math.max(0, Number(payable.total_amount ?? 0) - paidAmount);
+      const paymentEligible =
         !payable.is_reference &&
         payable.status === "approved" &&
-        !reservedDirectPayableIds.has(payable.id),
-      payment_block_reason: payable.is_reference
+        outstandingAmount > 0.01 &&
+        !reservedDirectPayableIds.has(payable.id);
+      return {
+      ...payable,
+      paid_amount: paidAmount,
+      outstanding_amount: outstandingAmount,
+      payment_eligible:
+        paymentEligible,
+      payment_block_reason: paymentEligible
+        ? null
+        : payable.is_reference
         ? "reference_only"
         : payable.status === "review"
           ? "awaiting_approval"
           : payable.status === "draft"
             ? "not_submitted"
             : payable.status === "approved"
-              ? "already_in_payment_batch"
+              ? outstandingAmount <= 0.01
+                ? "already_paid"
+                : "already_in_payment_batch"
               : payable.status === "paid"
                 ? "already_paid"
                 : "not_approved",
-    })),
+    };
+    }),
     financingPlans: financingPlans.data ?? [],
     suppliers: suppliers.data ?? [],
     bankAccounts: bankAccounts.data ?? [],
@@ -1460,11 +1495,13 @@ export async function POST(request: NextRequest) {
       body.directPayableIds.every(isUuid)
         ? (body.directPayableIds as string[])
         : null;
+    const directPayableAmounts = paymentAmounts(body?.directPayableAmounts);
     if (
       !scheduledFor ||
       !itemCategories ||
       !documentIds ||
       !directPayableIds ||
+      !directPayableAmounts ||
       (!documentIds.length && !directPayableIds.length) ||
       documentIds.length + directPayableIds.length > 250 ||
       (body?.bankAccountId && !bankAccountId)
@@ -1597,6 +1634,51 @@ export async function POST(request: NextRequest) {
         { error: "direct_payables_not_available" },
         { status: 409 },
       );
+    if (
+      [...directPayableAmounts.keys()].some(
+        (id) => !directPayableIds.includes(id),
+      )
+    )
+      return NextResponse.json(
+        { error: "invalid_direct_payable_payment_amount" },
+        { status: 400 },
+      );
+    const { data: directPayableExecutions, error: directPayableExecutionsError } =
+      await context.supabase
+        .from("payment_executions")
+        .select("direct_payable_id, amount")
+        .eq("organization_id", organizationId)
+        .in("direct_payable_id", queryIds(directPayableIds));
+    if (directPayableExecutionsError)
+      return NextResponse.json(
+        { error: "unable_to_validate_payment_documents" },
+        { status: 500 },
+      );
+    const paidByPayable = new Map<string, number>();
+    for (const execution of directPayableExecutions ?? []) {
+      if (!execution.direct_payable_id) continue;
+      paidByPayable.set(
+        execution.direct_payable_id,
+        (paidByPayable.get(execution.direct_payable_id) ?? 0) + Number(execution.amount ?? 0),
+      );
+    }
+    const payableAmountById = new Map(
+      directPayables.map((payable) => [
+        payable.id,
+        directPayableAmounts.get(payable.id) ?? Number(payable.total_amount ?? 0),
+      ]),
+    );
+    if (
+      directPayables.some((payable) => {
+        const outstanding = Number(payable.total_amount ?? 0) - (paidByPayable.get(payable.id) ?? 0);
+        const proposed = payableAmountById.get(payable.id) ?? 0;
+        return proposed <= 0 || proposed > outstanding + 0.01;
+      })
+    )
+      return NextResponse.json(
+        { error: "direct_payable_payment_exceeds_outstanding" },
+        { status: 409 },
+      );
     const ordersById = new Map(
       purchaseOrders.map((order) => [order.id, order]),
     );
@@ -1669,7 +1751,7 @@ export async function POST(request: NextRequest) {
       })),
       ...directPayables.map((payable) => ({
         category: itemCashFlowCategory(itemCategories, "payable", payable.id),
-        amount: Number(payable.total_amount ?? 0),
+        amount: payableAmountById.get(payable.id) ?? 0,
       })),
     ];
     const selectedCategories = selectedEntries.map((entry) => entry.category);
@@ -1726,7 +1808,7 @@ export async function POST(request: NextRequest) {
           document_number_snapshot:
             payable.invoice_number ?? payable.payable_number,
           due_date_snapshot: payable.due_date,
-          amount: payable.total_amount,
+          amount: payableAmountById.get(payable.id) ?? 0,
           cash_flow_category: itemCashFlowCategory(
             itemCategories,
             "payable",

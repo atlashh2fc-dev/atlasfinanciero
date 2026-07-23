@@ -104,6 +104,8 @@ type DirectPayable = {
   issue_date: string;
   due_date: string | null;
   total_amount: number | string;
+  paid_amount?: number | string;
+  outstanding_amount?: number | string;
   currency_code: string;
   cost_center_id: string | null;
   status: string;
@@ -269,6 +271,10 @@ function paymentProposalErrorMessage(code: string | null) {
           "La propuesta contiene un documento con OC que aún no cumple sus validaciones. Los documentos sin OC se procesan como pago directo.",
         direct_payables_not_available:
           "Una cuenta directa ya no está aprobada o disponible para pago. Actualizamos la lista para que puedas revisar la selección.",
+        direct_payable_payment_exceeds_outstanding:
+          "El abono supera el saldo pendiente de una cuenta. Actualizamos la lista para que ingreses el saldo vigente.",
+        invalid_direct_payable_payment_amount:
+          "Revisa el monto de cada abono: debe ser mayor que cero y corresponder a una cuenta seleccionada.",
         unable_to_create_payment_proposal_items:
           "No se pudieron vincular los documentos a la propuesta. No se creó ningún pago; vuelve a intentar con la lista actualizada.",
         unable_to_create_payment_proposal:
@@ -399,6 +405,7 @@ export function ProcureToPayWorkbench({
     notes: "",
     documentIds: [] as string[],
     directPayableIds: [] as string[],
+    directPayableAmounts: {} as Record<string, string>,
   });
   const [cashFlowCategories, setCashFlowCategories] = useState<
     Record<string, "operating" | "investing" | "financing">
@@ -483,6 +490,19 @@ export function ProcureToPayWorkbench({
       ),
     [data],
   );
+  const payableOutstandingAmount = (payable: DirectPayable) =>
+    Math.max(
+      0,
+      payable.outstanding_amount === undefined
+        ? amount(payable.total_amount)
+        : amount(payable.outstanding_amount),
+    );
+  const payablePaymentAmount = (payable: DirectPayable) => {
+    const draft = batch.directPayableAmounts[payable.id];
+    if (draft === undefined) return payableOutstandingAmount(payable);
+    const parsed = Number(draft);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  };
   const totalPending = useMemo(
     () =>
       dueDocuments.reduce(
@@ -490,7 +510,7 @@ export function ProcureToPayWorkbench({
         0,
       ) +
       openDirectPayables.reduce(
-        (sum, payable) => sum + amount(payable.total_amount),
+        (sum, payable) => sum + payableOutstandingAmount(payable),
         0,
       ),
     [dueDocuments, openDirectPayables],
@@ -543,12 +563,13 @@ export function ProcureToPayWorkbench({
         .reduce((sum, document) => sum + amount(document.total_amount), 0) +
       paymentEligibleDirectPayables
         .filter((payable) => batch.directPayableIds.includes(payable.id))
-        .reduce((sum, payable) => sum + amount(payable.total_amount), 0),
+        .reduce((sum, payable) => sum + payablePaymentAmount(payable), 0),
     [
       batch.documentIds,
       batch.directPayableIds,
       paymentEligibleDocuments,
       paymentEligibleDirectPayables,
+      batch.directPayableAmounts,
     ],
   );
   const requestsNeedingAction = useMemo(
@@ -1112,6 +1133,7 @@ export function ProcureToPayWorkbench({
       notes: batch.notes,
       documentIds: batch.documentIds,
       directPayableIds: batch.directPayableIds,
+      directPayableAmounts: batch.directPayableAmounts,
       cashFlowCategories,
     });
     if (!result.ok) {
@@ -1150,6 +1172,7 @@ export function ProcureToPayWorkbench({
         notes: "",
         documentIds: [],
         directPayableIds: [],
+        directPayableAmounts: {},
       });
       setCashFlowCategories({});
       setShowBatchForm(false);
@@ -1183,6 +1206,22 @@ export function ProcureToPayWorkbench({
       directPayableIds: current.directPayableIds.includes(id)
         ? current.directPayableIds.filter((item) => item !== id)
         : [...current.directPayableIds, id],
+      directPayableAmounts: current.directPayableIds.includes(id)
+        ? Object.fromEntries(
+            Object.entries(current.directPayableAmounts).filter(
+              ([payableId]) => payableId !== id,
+            ),
+          )
+        : {
+            ...current.directPayableAmounts,
+            [id]: String(
+              payableOutstandingAmount(
+                paymentEligibleDirectPayables.find(
+                  (payable) => payable.id === id,
+                )!,
+              ),
+            ),
+          },
     }));
   }
   function prepareSelectedPayments() {
@@ -1596,7 +1635,7 @@ export function ProcureToPayWorkbench({
                       <th>Documento / obligación</th>
                       <th>Proveedor</th>
                       <th>Vencimiento</th>
-                      <th className="money-col">Monto</th>
+                      <th className="money-col">Monto / saldo</th>
                       <th>Estado</th>
                     </tr>
                   </thead>
@@ -1658,6 +1697,9 @@ export function ProcureToPayWorkbench({
                           <td>{displayDate(item.due_date)}</td>
                           <td className="money-col">
                             {money.format(amount(item.total_amount))}
+                            {!isDocument && payableOutstandingAmount(item) < amount(item.total_amount) && (
+                              <small>Saldo: {money.format(payableOutstandingAmount(item))}</small>
+                            )}
                           </td>
                           <td>
                             <span
@@ -1692,7 +1734,7 @@ export function ProcureToPayWorkbench({
                 <div className="p2p-selection-bar">
                   <span>
                     {batch.documentIds.length + batch.directPayableIds.length}{" "}
-                    seleccionado(s) · {money.format(selectedTotal)}
+                    seleccionado(s) · Abono total: {money.format(selectedTotal)}
                   </span>
                   <button
                     className="primary-button"
@@ -1719,7 +1761,7 @@ export function ProcureToPayWorkbench({
                     <th>Programada</th>
                     <th>Documentos</th>
                     <th>Flujo IAS 7</th>
-                    <th className="money-col">Monto</th>
+                    <th className="money-col">Monto / abono</th>
                     <th>Estado</th>
                   </tr>
                 </thead>
@@ -2766,7 +2808,7 @@ export function ProcureToPayWorkbench({
                     <th>Proveedor / documento</th>
                     <th>Vencimiento</th>
                     <th>Clasificación IAS 7</th>
-                    <th className="money-col">Monto</th>
+                    <th className="money-col">Monto / abono</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2863,6 +2905,27 @@ export function ProcureToPayWorkbench({
                       </td>
                       <td className="money-col">
                         {money.format(amount(payable.total_amount))}
+                        <small>Saldo: {money.format(payableOutstandingAmount(payable))}</small>
+                        <label className="p2p-payment-amount">
+                          Abono a pagar
+                          <input
+                            aria-label={`Abono para ${payable.supplier_name}`}
+                            type="number"
+                            min="0.01"
+                            max={payableOutstandingAmount(payable)}
+                            step="0.01"
+                            value={batch.directPayableAmounts[payable.id] ?? String(payableOutstandingAmount(payable))}
+                            onChange={(event) =>
+                              setBatch((current) => ({
+                                ...current,
+                                directPayableAmounts: {
+                                  ...current.directPayableAmounts,
+                                  [payable.id]: event.target.value,
+                                },
+                              }))
+                            }
+                          />
+                        </label>
                       </td>
                     </tr>
                   ))}

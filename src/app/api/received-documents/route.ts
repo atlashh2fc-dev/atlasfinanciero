@@ -81,9 +81,38 @@ export async function GET(request: NextRequest) {
     directPayablesQuery = directPayablesQuery.gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`);
   }
 
-  const [documents, directPayables] = await Promise.all([documentsQuery, directPayablesQuery]);
-  if (documents.error || directPayables.error) return NextResponse.json({ error: "unable_to_load_accounts_payable" }, { status: 500 });
-  return NextResponse.json({ documents: documents.data ?? [], directPayables: directPayables.data ?? [] });
+  const [documents, directPayables, directPayableExecutions] = await Promise.all([
+    documentsQuery,
+    directPayablesQuery,
+    context.supabase
+      .from("payment_executions")
+      .select("direct_payable_id, amount")
+      .eq("organization_id", organizationId)
+      .not("direct_payable_id", "is", null),
+  ]);
+  if (documents.error || directPayables.error || directPayableExecutions.error) return NextResponse.json({ error: "unable_to_load_accounts_payable" }, { status: 500 });
+  const paidByDirectPayable = new Map<string, number>();
+  for (const execution of directPayableExecutions.data ?? []) {
+    if (!execution.direct_payable_id) continue;
+    paidByDirectPayable.set(
+      execution.direct_payable_id,
+      (paidByDirectPayable.get(execution.direct_payable_id) ?? 0) + Number(execution.amount ?? 0),
+    );
+  }
+  return NextResponse.json({
+    documents: documents.data ?? [],
+    directPayables: (directPayables.data ?? []).map((payable) => {
+      const paidAmount = Math.min(
+        Math.max(0, paidByDirectPayable.get(payable.id) ?? 0),
+        Math.max(0, Number(payable.total_amount ?? 0)),
+      );
+      return {
+        ...payable,
+        paid_amount: paidAmount,
+        outstanding_amount: Math.max(0, Number(payable.total_amount ?? 0) - paidAmount),
+      };
+    }),
+  });
 }
 
 export async function PATCH(request: NextRequest) {

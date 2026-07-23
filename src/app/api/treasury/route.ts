@@ -161,7 +161,8 @@ export async function GET(request: NextRequest) {
         .from("direct_payables")
         .select("id, payable_number, invoice_number, issue_date, supplier_name, total_amount, currency_code, status")
         .eq("organization_id", organizationId)
-        .eq("status", "paid")
+        .in("status", ["approved", "paid"])
+        .eq("is_reference", false)
         .order("issue_date", { ascending: false })
         .limit(250),
       context.supabase
@@ -172,7 +173,7 @@ export async function GET(request: NextRequest) {
         .limit(12),
       context.supabase
         .from("payment_executions")
-        .select("id, direction, status, amount, executed_on, source, payment_method, payment_reference, notes")
+        .select("id, direction, status, amount, executed_on, source, payment_method, payment_reference, notes, direct_payable_id")
         .eq("organization_id", organizationId)
         .order("executed_on", { ascending: false })
         .limit(500),
@@ -200,7 +201,16 @@ export async function GET(request: NextRequest) {
     receivedDocuments: (receivedResult.data ?? []).filter(
       (document) => !isPaid(document.payment_status),
     ),
-    directPayables: directPayablesResult.data ?? [],
+    directPayables: (directPayablesResult.data ?? []).map((payable) => ({
+      ...payable,
+      available_to_reconcile: (executionsResult.data ?? [])
+        .filter(
+          (execution) =>
+            execution.direct_payable_id === payable.id &&
+            execution.status !== "reconciled",
+        )
+        .reduce((sum, execution) => sum + Number(execution.amount ?? 0), 0),
+    })),
     statementImports: importsResult.data ?? [],
     paymentExecutions: executionsResult.data ?? [],
   });
@@ -405,7 +415,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "document_not_found" }, { status: 404 });
   const directDocument = document as { status?: string | null };
   const invoiceDocument = document as { payment_status?: string | null };
-  if ((documentType === "direct" && directDocument.status !== "paid") || (documentType !== "direct" && isPaid(invoiceDocument.payment_status ?? null)))
+  if (
+    (documentType === "direct" && !["approved", "paid"].includes(directDocument.status ?? "")) ||
+    (documentType !== "direct" && isPaid(invoiceDocument.payment_status ?? null))
+  )
     return NextResponse.json({ error: "document_already_paid" }, { status: 409 });
 
   const matchPayload = {

@@ -2620,6 +2620,8 @@ td small {
   font-size: 11px;
 }
 .p2p-payment-blocked p { margin: 0; color: #8b7656; }
+.p2p-payment-amount { display:grid; gap:4px; margin-top:8px; color:#5c6573; font-size:0.72rem; font-weight:700; text-align:left; }
+.p2p-payment-amount input { width:100%; min-width:120px; }
 .admin-form {
   display: grid;
   gap: 13px;

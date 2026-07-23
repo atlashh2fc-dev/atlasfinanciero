@@ -63,6 +63,7 @@ type DirectPayable = {
   total_amount: number | string;
   currency_code: string;
   status: string;
+  available_to_reconcile?: number | string;
 };
 
 type StatementImport = {
@@ -85,6 +86,7 @@ type PaymentExecution = {
   payment_method: string | null;
   payment_reference: string | null;
   notes: string | null;
+  direct_payable_id?: string | null;
 };
 
 type StatementPreview = {
@@ -294,14 +296,19 @@ export function TreasuryDashboard({
             ...data.directPayables.filter((payable) => payable.currency_code === "CLP").map((payable) => ({ ...payable, document_number: payable.invoice_number || payable.payable_number, kind: "direct" as const, name: payable.supplier_name })),
           ];
     return documents
-      .map((document) => ({
-        ...document,
-        remaining: Math.max(
-          0,
-          Math.abs(amount(document.total_amount)) -
-            (matchedByDocument.get(document.id) ?? 0),
-        ),
-      }))
+      .map((document) => {
+        const available =
+          document.kind === "direct"
+            ? amount(document.available_to_reconcile ?? 0)
+            : Math.abs(amount(document.total_amount));
+        return {
+          ...document,
+          remaining: Math.max(
+            0,
+            available - (matchedByDocument.get(document.id) ?? 0),
+          ),
+        };
+      })
       .filter((document) => document.remaining > 0);
   }, [data, matchedByDocument, selectedTransaction]);
 

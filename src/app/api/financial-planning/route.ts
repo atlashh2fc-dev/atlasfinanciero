@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: context.error }, { status: context.status });
 
   const range = dateRangeForYear(year);
-  const [membership, plans, budgetLines, settings, adjustments, issued, issuedPayments, received, directPayables, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations] = await Promise.all([
+  const [membership, plans, budgetLines, settings, adjustments, issued, issuedPayments, received, directPayables, directPayableExecutions, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations] = await Promise.all([
     context.supabase
       .from("organization_memberships")
       .select("role")
@@ -120,6 +120,11 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId)
       .neq("status", "cancelled")
       .order("due_date", { ascending: true }),
+    context.supabase
+      .from("payment_executions")
+      .select("direct_payable_id, amount")
+      .eq("organization_id", organizationId)
+      .not("direct_payable_id", "is", null),
     context.supabase
       .from("asset_amortization_schedules")
       .select("id, plan_id, period_month, amortization_amount_clp, asset_financing_plans!inner(asset_name, status)")
@@ -177,7 +182,7 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId),
   ]);
 
-  const results = [plans, budgetLines, settings, adjustments, issued, issuedPayments, received, directPayables, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations];
+  const results = [plans, budgetLines, settings, adjustments, issued, issuedPayments, received, directPayables, directPayableExecutions, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations];
   if (results.some((result) => result.error))
     return NextResponse.json({ error: "unable_to_load_financial_planning" }, { status: 500 });
 
@@ -191,7 +196,15 @@ export async function GET(request: NextRequest) {
     issuedDocuments: issued.data ?? [],
     issuedPayments: issuedPayments.data ?? [],
     receivedDocuments: received.data ?? [],
-    directPayables: directPayables.data ?? [],
+    directPayables: (directPayables.data ?? []).map((payable) => {
+      const paidAmount = (directPayableExecutions.data ?? [])
+        .filter((execution) => execution.direct_payable_id === payable.id)
+        .reduce((sum, execution) => sum + Number(execution.amount ?? 0), 0);
+      return {
+        ...payable,
+        outstanding_amount: Math.max(0, Number(payable.total_amount ?? 0) - paidAmount),
+      };
+    }),
     amortizationSchedules: amortizationSchedules.data ?? [],
     financingPlans: financingPlans.data ?? [],
     bankAccounts: accounts.data ?? [],
