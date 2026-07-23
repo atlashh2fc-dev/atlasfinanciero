@@ -119,9 +119,21 @@ const directPayableDocumentNumber = (payable: Pick<DirectPayable, "invoice_numbe
 type PostResult =
   | {
       ok: true;
-      payload: { proposal?: { proposalNumber?: string } } | null;
+      payload: { proposal?: { id?: string; proposalNumber?: string } } | null;
     }
   | { ok: false; error: string | null };
+type PaymentApproval = {
+  id: string;
+  target_type: string;
+  target_id: string;
+  status: string;
+  metadata: { kind?: string };
+  approval_steps: {
+    id: string;
+    status: string;
+  }[];
+};
+type ApprovalPayload = { requests: PaymentApproval[] };
 type FinancingPlan = {
   id: string;
   plan_number: string;
@@ -397,10 +409,10 @@ export function ProcureToPayWorkbench({
     paymentReference: string;
     file: File | null;
   } | null>(null);
-  async function load() {
+  async function load(): Promise<Payload | null> {
     if (!organizationId) {
       setData(null);
-      return;
+      return null;
     }
     try {
       const response = await fetch(
@@ -410,13 +422,16 @@ export function ProcureToPayWorkbench({
       if (!response.ok) {
         setData(null);
         setMessage("No fue posible cargar compras y pagos.");
-        return;
+        return null;
       }
-      setData((await response.json()) as Payload);
+      const payload = (await response.json()) as Payload;
+      setData(payload);
       setMessage(null);
+      return payload;
     } catch {
       setData(null);
       setMessage("No fue posible cargar compras y pagos.");
+      return null;
     }
   }
   useEffect(() => {
@@ -618,15 +633,41 @@ export function ProcureToPayWorkbench({
     [dueDocuments, openDirectPayables, year, search, stateFilter],
   );
   const visibleBatches = useMemo(
-    () =>
-      (data?.paymentBatches ?? []).filter(
-        (item) =>
+    () => {
+      const itemsByBatch = new Map<string, PaymentItem[]>();
+      for (const item of data?.paymentBatchItems ?? []) {
+        itemsByBatch.set(item.payment_batch_id, [
+          ...(itemsByBatch.get(item.payment_batch_id) ?? []),
+          item,
+        ]);
+      }
+      return (data?.paymentBatches ?? []).filter((item) => {
+        const suppliers = (itemsByBatch.get(item.id) ?? [])
+          .map((line) => line.supplier_name_current || line.supplier_name_snapshot)
+          .join(" ");
+        return (
           inYear(item.scheduled_for) &&
-          matches(`${item.batch_number} ${item.payment_reference ?? ""}`) &&
-          (stateFilter === "all" || item.status === stateFilter),
-      ),
-    [data?.paymentBatches, year, search, stateFilter],
+          matches(`${item.batch_number} ${item.payment_reference ?? ""} ${suppliers}`) &&
+          // Los pagos ejecutados siguen disponibles en el filtro de historial,
+          // pero no distraen de la bandeja operativa diaria.
+          (stateFilter === "all"
+            ? item.status !== "paid"
+            : item.status === stateFilter)
+        );
+      });
+    },
+    [data?.paymentBatches, data?.paymentBatchItems, year, search, stateFilter],
   );
+  const batchSuppliers = useMemo(() => {
+    const suppliers = new Map<string, string[]>();
+    for (const item of data?.paymentBatchItems ?? []) {
+      const supplier = item.supplier_name_current || item.supplier_name_snapshot;
+      if (!supplier) continue;
+      const current = suppliers.get(item.payment_batch_id) ?? [];
+      if (!current.includes(supplier)) suppliers.set(item.payment_batch_id, [...current, supplier]);
+    }
+    return suppliers;
+  }, [data?.paymentBatchItems]);
   const visibleFinancing = useMemo(
     () =>
       (data?.financingPlans ?? []).filter(
@@ -694,7 +735,7 @@ export function ProcureToPayWorkbench({
       });
       const payload = (await response.json().catch(() => null)) as {
         error?: string;
-        proposal?: { proposalNumber?: string };
+        proposal?: { id?: string; proposalNumber?: string };
       } | null;
       if (!response.ok) {
         await load();
@@ -741,6 +782,59 @@ export function ProcureToPayWorkbench({
       setMessage("Estado actualizado.");
     } catch {
       setMessage("No fue posible avanzar por un problema de conexión.");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function approvePaymentProposal(batchId: string) {
+    if (!organizationId) return;
+    setSaving(true);
+    try {
+      const approvalsResponse = await fetch(
+        `/api/approvals?organizationId=${encodeURIComponent(organizationId)}`,
+        { cache: "no-store" },
+      );
+      const approvals = (await approvalsResponse
+        .json()
+        .catch(() => null)) as ApprovalPayload | null;
+      const approval = approvals?.requests.find(
+        (item) =>
+          item.target_type === "payment" &&
+          item.target_id === batchId &&
+          item.status === "submitted" &&
+          item.metadata?.kind === "payment_batch",
+      );
+      const pendingStep = approval?.approval_steps.find(
+        (step) => step.status === "pending");
+      if (!approval || !pendingStep) {
+        setMessage("Esta propuesta no tiene una aprobación disponible para resolver.");
+        return;
+      }
+      const decisionResponse = await fetch("/api/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "decide",
+          organizationId,
+          stepId: pendingStep.id,
+          decision: "approved",
+          comment: "",
+        }),
+      });
+      if (!decisionResponse.ok) {
+        setMessage("Tu rol no puede aprobar esta propuesta o requiere la decisión de otra persona.");
+        return;
+      }
+      const next = await load();
+      const updatedBatch = next?.paymentBatches.find((item) => item.id === batchId);
+      if (updatedBatch) setDetail({ kind: "batch", item: updatedBatch });
+      setMessage(
+        updatedBatch?.status === "approved"
+          ? "Propuesta autorizada. Ya puedes registrar el pago y adjuntar el comprobante."
+          : "Aprobación registrada. La propuesta sigue esperando el siguiente paso de aprobación.",
+      );
+    } catch {
+      setMessage("No fue posible registrar la aprobación por un problema de conexión.");
     } finally {
       setSaving(false);
     }
@@ -1026,6 +1120,30 @@ export function ProcureToPayWorkbench({
     }
     {
       const proposalNumber = result.payload?.proposal?.proposalNumber;
+      const proposalId = result.payload?.proposal?.id;
+      let sentForApproval = false;
+      let createdBatch: PaymentBatch | undefined;
+      if (proposalId && organizationId) {
+        setSaving(true);
+        try {
+          const response = await fetch("/api/procure-to-pay", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              organizationId,
+              id: proposalId,
+              action: "submit_payment_batch",
+            }),
+          });
+          sentForApproval = response.ok;
+        } finally {
+          setSaving(false);
+        }
+        const next = await load();
+        createdBatch = next?.paymentBatches.find(
+          (item) => item.id === proposalId,
+        );
+      }
       setBatch({
         bankAccountId: "",
         scheduledFor: today(),
@@ -1039,10 +1157,15 @@ export function ProcureToPayWorkbench({
       setTab("proposals");
       setSearch("");
       setStateFilter("all");
+      if (createdBatch) setDetail({ kind: "batch", item: createdBatch });
       setMessage(
-        proposalNumber
-          ? `Propuesta ${proposalNumber} creada como borrador. Ya puedes abrirla para enviarla a aprobación.`
-          : "Propuesta de pago creada como borrador. Ya puedes abrirla para enviarla a aprobación.",
+        sentForApproval
+          ? proposalNumber
+            ? `Propuesta ${proposalNumber} creada y enviada a aprobación. Cuando quede autorizada, carga el comprobante desde esta misma bandeja.`
+            : "Propuesta creada y enviada a aprobación. Cuando quede autorizada, carga el comprobante desde esta misma bandeja."
+          : proposalNumber
+            ? `Propuesta ${proposalNumber} creada como borrador. No fue posible enviarla a aprobación automáticamente; ábrela para reintentar.`
+            : "Propuesta creada como borrador. No fue posible enviarla a aprobación automáticamente; ábrela para reintentar.",
       );
     }
   }
@@ -1186,7 +1309,9 @@ export function ProcureToPayWorkbench({
                   value={stateFilter}
                   onChange={(event) => setStateFilter(event.target.value)}
                 >
-                  <option value="all">Todos</option>
+                  <option value="all">
+                    {tab === "proposals" ? "Pendientes de ejecución" : "Todos"}
+                  </option>
                   <option value="draft">Borrador</option>
                   <option value="review">En aprobación</option>
                   <option value="approved">Aprobada</option>
@@ -1197,7 +1322,9 @@ export function ProcureToPayWorkbench({
                   <option value="blocked">Bloqueada</option>
                   <option value="overdue">Vencida</option>
                   <option value="processing">En ejecución</option>
-                  <option value="paid">Pagada</option>
+                  <option value="paid">
+                    {tab === "proposals" ? "Ejecutadas (historial)" : "Pagada"}
+                  </option>
                 </select>
               </label>
             </>
@@ -1588,6 +1715,7 @@ export function ProcureToPayWorkbench({
                 <thead>
                   <tr>
                     <th>Propuesta / orden de pago</th>
+                    <th>Proveedor</th>
                     <th>Programada</th>
                     <th>Documentos</th>
                     <th>Flujo IAS 7</th>
@@ -1622,6 +1750,16 @@ export function ProcureToPayWorkbench({
                                   : "Propuesta de pago"}
                           </small>
                         </td>
+                        <td>
+                          <strong>
+                            {(batchSuppliers.get(item.id) ?? ["Proveedor no informado"])[0]}
+                          </strong>
+                          {(batchSuppliers.get(item.id)?.length ?? 0) > 1 && (
+                            <small>
+                              + {(batchSuppliers.get(item.id)?.length ?? 1) - 1} proveedor(es)
+                            </small>
+                          )}
+                        </td>
                         <td>{displayDate(item.scheduled_for)}</td>
                         <td>
                           {
@@ -1648,7 +1786,7 @@ export function ProcureToPayWorkbench({
                   })}
                   {!visibleBatches.length && (
                     <tr>
-                      <td colSpan={6}>
+                      <td colSpan={7}>
                         No hay propuestas de pago para los filtros
                         seleccionados.
                       </td>
@@ -2550,7 +2688,7 @@ export function ProcureToPayWorkbench({
               <p>
                 {isPreparingSelectedPayments
                   ? "Revisa los documentos que seleccionaste. Para cambiar la selección, vuelve a la bandeja de cuentas por pagar."
-                  : "Incluye documentos elegibles y cuentas directas que ya fueron aprobadas."} El número de propuesta se asignará automáticamente al crearla.
+                  : "Incluye documentos elegibles y cuentas directas que ya fueron aprobadas."} La propuesta se enviará a aprobación al crearla; el número se asigna automáticamente.
               </p>
             </div>
             <span className="unit">{money.format(selectedTotal)}</span>
@@ -2751,7 +2889,7 @@ export function ProcureToPayWorkbench({
               }
               type="submit"
             >
-              Crear propuesta de pago
+              Crear y enviar a aprobación
             </button>
           </form>
         </section>
@@ -2803,6 +2941,11 @@ export function ProcureToPayWorkbench({
                 ×
               </button>
             </div>
+            {message && (
+              <p className="operation-message p2p-modal-message" role="status">
+                {message}
+              </p>
+            )}
             <div className="p2p-detail-grid">
               <article>
                 <span>Estado</span>
@@ -3086,15 +3229,31 @@ export function ProcureToPayWorkbench({
                 )}
               {detail.kind === "batch" &&
                 canManagePayments &&
+                detail.item.status === "review" && (
+                  <button
+                    className="primary-button"
+                    disabled={saving}
+                    onClick={() => void approvePaymentProposal(detail.item.id)}
+                  >
+                    Aprobar propuesta
+                  </button>
+                )}
+              {detail.kind === "batch" &&
+                canManagePayments &&
                 detail.item.status === "approved" && (
                   <button
                     className="primary-button"
                     disabled={saving}
                     onClick={() =>
-                      void transition(detail.item.id, "start_payment_batch")
+                      setPaymentConfirmation({
+                        batch: detail.item as PaymentBatch,
+                        paidOn: today(),
+                        paymentReference: (detail.item as PaymentBatch).payment_reference ?? "",
+                        file: null,
+                      })
                     }
                   >
-                    Emitir instrucción bancaria
+                    Registrar pago y comprobante
                   </button>
                 )}
               {detail.kind === "batch" &&
@@ -3160,7 +3319,7 @@ export function ProcureToPayWorkbench({
                 <span className="eyebrow">EJECUCIÓN DE PAGO</span>
                 <h2>{paymentConfirmation.batch.batch_number}</h2>
                 <p>
-                  Adjunta el comprobante bancario para ejecutar la orden y actualizar sus cuentas por pagar.
+                  Esta orden ya fue autorizada. Adjunta el comprobante bancario para registrar el pago y actualizar sus cuentas por pagar.
                 </p>
               </div>
               <button

@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
   if (batchError || !batch)
     return NextResponse.json({ error: "payment_batch_not_found" }, { status: 404 });
-  if (batch.status !== "processing")
+  if (!["approved", "processing"].includes(batch.status))
     return NextResponse.json({ error: "payment_batch_not_ready" }, { status: 409 });
 
   const storagePath = `${organizationId}/payment-batches/${batchId}/${crypto.randomUUID()}-${safeFileName(file.name)}`;
@@ -62,6 +62,7 @@ export async function POST(request: NextRequest) {
     .from("payment_batches")
     .update({
       status: "paid",
+      processed_at: batch.status === "approved" ? paidAt : undefined,
       paid_at: paidAt,
       payment_reference: reference || null,
       payment_proof_path: storagePath,
@@ -71,7 +72,7 @@ export async function POST(request: NextRequest) {
     })
     .eq("id", batchId)
     .eq("organization_id", organizationId)
-    .eq("status", "processing")
+    .in("status", ["approved", "processing"])
     .select("id, status, paid_at, payment_reference")
     .maybeSingle();
   if (error || !data) {

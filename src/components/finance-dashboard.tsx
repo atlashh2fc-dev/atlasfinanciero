@@ -2413,39 +2413,29 @@ export function FinanceDashboard() {
         ? "ascending"
         : "descending";
 
-  const monthly = useMemo(
-    () =>
-      months.map((item) => {
-        const matching = yearFilteredRecords.filter(
-          (record) => record.month === item,
+  const revenueEvolution = useMemo(() => {
+    const years = (year === "Todos" ? availableYears : [Number(year)])
+      .slice()
+      .sort((first, second) => first - second);
+    return years.flatMap((currentYear) =>
+      calendarMonths.map((monthName, monthIndex) => {
+        const matching = records.filter(
+          (record) =>
+            record.year === currentYear && record.month === monthName,
         );
         return {
-          month: item.slice(0, 3),
+          period: `${monthName.slice(0, 3)} ${currentYear}`,
+          year: String(currentYear),
+          month: monthName.slice(0, 3),
+          monthIndex,
           montoNeto: sumRecognizedNet(matching),
           documentos: matching.filter(
             (record) => !isPurchaseOrderDocument(record),
           ).length,
         };
       }),
-    [months, yearFilteredRecords],
-  );
-  const annual = useMemo(
-    () =>
-      availableYears
-        .slice()
-        .sort((first, second) => first - second)
-        .map((item) => {
-          const matching = records.filter((record) => record.year === item);
-          return {
-            year: String(item),
-            montoNeto: sumRecognizedNet(matching),
-            documentos: matching.filter(
-              (record) => !isPurchaseOrderDocument(record),
-            ).length,
-          };
-        }),
-    [availableYears, records],
-  );
+    );
+  }, [availableYears, records, year]);
   const statusesChart = useMemo(
     () =>
       statuses.map((item) => ({
@@ -3305,88 +3295,46 @@ export function FinanceDashboard() {
                     <span className="panel-label">EVOLUCIÓN</span>
                     <h2>
                       {year === "Todos"
-                        ? "Facturación neta por año"
-                        : "Facturación neta por mes"}
+                        ? "Crecimiento anual, mes a mes"
+                        : `Crecimiento mensual · ${year}`}
                     </h2>
                   </div>
                   <span className="unit">CLP neto/exento</span>
                 </div>
                 <div className="chart-wrap">
                   <ResponsiveContainer width="100%" height="100%">
-                    {year === "Todos" ? (
-                      <BarChart
-                        data={annual}
-                        margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
-                      >
-                        <XAxis
-                          dataKey="year"
-                          tickLine={false}
-                          axisLine={false}
-                          tick={{ fill: "#7e8ba0", fontSize: 12 }}
-                        />
-                        <YAxis hide />
-                        <Tooltip
-                          formatter={(value) => formatMoney(Number(value))}
-                          contentStyle={{
-                            borderRadius: 12,
-                            border: "1px solid #e6e9ef",
-                          }}
-                        />
-                        <Bar
-                          dataKey="montoNeto"
-                          name="Facturación neta"
-                          fill="#5968df"
-                          radius={[6, 6, 0, 0]}
-                        />
-                      </BarChart>
-                    ) : (
-                      <AreaChart
-                        data={monthly}
-                        margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
-                      >
-                        <defs>
-                          <linearGradient
-                            id="netFill"
-                            x1="0"
-                            x2="0"
-                            y1="0"
-                            y2="1"
-                          >
-                            <stop
-                              offset="0%"
-                              stopColor="#5968df"
-                              stopOpacity={0.26}
-                            />
-                            <stop
-                              offset="100%"
-                              stopColor="#5968df"
-                              stopOpacity={0.01}
-                            />
-                          </linearGradient>
-                        </defs>
-                        <XAxis
-                          dataKey="month"
-                          tickLine={false}
-                          axisLine={false}
-                          tick={{ fill: "#7e8ba0", fontSize: 12 }}
-                        />
-                        <YAxis hide />
-                        <Tooltip
-                          formatter={(value) => formatMoney(Number(value))}
-                          contentStyle={{
-                            borderRadius: 12,
-                            border: "1px solid #e6e9ef",
-                          }}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="montoNeto"
-                          stroke="#5968df"
-                          strokeWidth={2.5}
-                          fill="url(#netFill)"
-                        />
-                      </AreaChart>
-                    )}
+                    <LineChart
+                      data={revenueEvolution}
+                      margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                    >
+                      <XAxis
+                        dataKey={year === "Todos" ? "period" : "month"}
+                        tickLine={false}
+                        axisLine={false}
+                        minTickGap={24}
+                        tick={{ fill: "#7e8ba0", fontSize: 12 }}
+                      />
+                      <YAxis hide />
+                      <Tooltip
+                        labelFormatter={(_, payload) =>
+                          payload[0]?.payload?.period ?? ""
+                        }
+                        formatter={(value) => formatMoney(Number(value))}
+                        contentStyle={{
+                          borderRadius: 12,
+                          border: "1px solid #e6e9ef",
+                        }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="montoNeto"
+                        name="Facturación neta"
+                        stroke="#5968df"
+                        strokeWidth={2.5}
+                        dot={{ r: 2.5, fill: "#5968df" }}
+                        activeDot={{ r: 5 }}
+                      />
+                    </LineChart>
                   </ResponsiveContainer>
                 </div>
               </article>
