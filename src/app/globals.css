@@ -3121,20 +3121,14 @@ td small {
 .crm-pipeline-toolbar p strong { color: #3a4961; }
 .crm-kanban {
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(250px, 1fr);
-  gap: 11px;
-  height: min(590px, 61vh);
-  min-height: 420px;
-  padding: 2px 2px 12px;
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
-  scrollbar-color: #b8c2d7 transparent;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  padding: 2px;
 }
 .crm-kanban-column {
   --stage-color: #8290a6;
-  min-width: 250px;
-  height: 100%;
+  min-width: 0;
+  height: min(500px, 58vh);
   box-sizing: border-box;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -3171,10 +3165,12 @@ td small {
 .crm-kanban-cards {
   display: grid;
   align-content: start;
-  gap: 9px;
-  padding: 9px;
+  gap: 8px;
+  padding: 10px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #c8d1df transparent;
 }
 .crm-opportunity-card {
   overflow: hidden;
@@ -3191,30 +3187,21 @@ td small {
 .crm-opportunity-open {
   width: 100%;
   display: grid;
-  gap: 5px;
-  padding: 12px;
+  gap: 4px;
+  padding: 12px 13px;
   border: 0;
   color: inherit;
   background: transparent;
   text-align: left;
   cursor: pointer;
 }
-.crm-opportunity-open > strong { color: #30405a; font-size: 11px; line-height: 1.35; }
-.crm-opportunity-open > small { color: #768399; font-size: 9px; }
-.crm-opportunity-open > b { margin-top: 3px; color: #26364f; font-size: 12px; }
-.crm-opportunity-source {
-  max-width: 100%;
-  overflow: hidden;
-  color: #6777bd;
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: .55px;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-.crm-opportunity-meta { display: flex; align-items: center; justify-content: space-between; gap: 7px; margin-top: 3px; color: #8490a2; font-size: 8px; }
-.crm-opportunity-meta em { border-radius: 99px; padding: 3px 6px; color: #5163ac; background: #eef1ff; font-style: normal; font-weight: 800; }
+.crm-opportunity-open > strong { color: #30405a; font-size: 12px; line-height: 1.35; }
+.crm-opportunity-open > small { color: #768399; font-size: 10px; }
+.crm-opportunity-metrics { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 5px; }
+.crm-opportunity-metrics b { color: #26364f; font-size: 13px; }
+.crm-opportunity-metrics em { flex: 0 0 auto; border-radius: 99px; padding: 3px 7px; color: #5163ac; background: #eef1ff; font-size: 9px; font-style: normal; font-weight: 800; }
+.crm-opportunity-next { overflow: hidden; color: #718096; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.crm-opportunity-next.is-empty { color: #a0a9b7; }
 .crm-stage-control {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -3317,6 +3304,10 @@ td small {
 @media (max-width: 1100px) {
   .crm-modal-backdrop { left: 0; }
   .customer-workspace-overview-grid { grid-template-columns: 1fr; }
+  .crm-kanban { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 920px) {
+  .crm-kanban { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
   .customer-workspace-navigation { top: 4px; margin-inline: -4px; }
@@ -3331,8 +3322,8 @@ td small {
   .crm-opportunity-detail-head,
   .crm-dossier-heading { align-items: stretch; flex-direction: column; }
   .crm-pipeline-toolbar label { min-width: 0; width: 100%; }
-  .crm-kanban { height: min(570px, 65vh); grid-auto-columns: minmax(235px, 82vw); }
-  .crm-kanban-column { min-width: 235px; }
+  .crm-kanban { grid-template-columns: 1fr; }
+  .crm-kanban-column { height: min(500px, 62vh); }
   .crm-modal-backdrop { padding: 12px; }
   .crm-modal { max-height: calc(100vh - 24px); padding: 18px; }
   .customer-evolution-search { min-width: 100%; width: 100%; }

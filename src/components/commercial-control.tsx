@@ -274,7 +274,7 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
     {loading ? <p className="billing-empty">Cargando gestión comercial…</p> : view === "pipeline" ? <>
       <div className="crm-pipeline-toolbar">
         <label>Buscar en el pipeline<input type="search" value={pipelineSearch} onChange={(event) => setPipelineSearch(event.target.value)} placeholder="Cliente, oportunidad, origen o detalle" /></label>
-        <p>{canManage && <span>Arrastra las tarjetas entre etapas · </span>}<strong>{filteredOpportunities.length}</strong> oportunidad(es) visibles</p>
+        <p>{canManage && <span>Arrastra para cambiar de etapa · </span>}<strong>{filteredOpportunities.length}</strong> oportunidad(es) visibles</p>
       </div>
       <div className="crm-kanban" aria-label="Pipeline comercial por etapas">
         {stages.map((stage) => {
@@ -299,13 +299,11 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
                 onDragEnd={finishOpportunityDrag}
               >
                 <button type="button" className="crm-opportunity-open" onClick={() => setSelectedOpportunityId(item.id)}>
-                  <span className="crm-opportunity-source">{item.source || "Ingreso directo"}</span>
                   <strong>{item.title}</strong>
                   <small>{customerName(customers.get(item.counterparty_id))}</small>
-                  <b>{displayAmount(item.expected_amount, item.currency_code)}</b>
-                  <span className="crm-opportunity-meta"><em>{item.probability}%</em><span>Acción {date(item.next_action_on)}</span></span>
+                  <span className="crm-opportunity-metrics"><b>{displayAmount(item.expected_amount, item.currency_code)}</b><em>{item.probability}%</em></span>
+                  <span className={`crm-opportunity-next${item.next_action_on ? "" : " is-empty"}`}>{item.next_action_on ? `Próxima acción · ${date(item.next_action_on)}` : "Sin próxima acción"}</span>
                 </button>
-                {canManage && <label className="crm-stage-control">Mover a<select aria-label={`Cambiar etapa de ${item.title}`} value={item.stage} disabled={saving} onChange={(event) => changeOpportunityStage(item, event.target.value as Stage)}>{stages.map((candidate) => <option key={candidate.key} value={candidate.key}>{candidate.label}</option>)}</select></label>}
               </article>)}
               {!items.length && <p className="crm-kanban-empty">Sin oportunidades en esta etapa.</p>}
             </div>
