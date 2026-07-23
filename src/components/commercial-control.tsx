@@ -318,6 +318,16 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
               </article>)}
               {!items.length && <p className="crm-kanban-empty">Sin oportunidades en esta etapa.</p>}
             </div>
+            {canManage && <div className="crm-stage-control">
+              <span>Mover a esta etapa</span>
+              <select aria-label={`Mover una oportunidad a ${stage.label}`} value="" disabled={saving} onChange={(event) => {
+                const item = data?.opportunities.find((candidate) => candidate.id === event.target.value);
+                if (item) changeOpportunityStage(item, stage.key);
+              }}>
+                <option value="">Seleccionar oportunidad…</option>
+                {filteredOpportunities.filter((item) => item.stage !== stage.key).map((item) => <option key={item.id} value={item.id}>{item.title} · {customerName(customers.get(item.counterparty_id))}</option>)}
+              </select>
+            </div>}
           </section>;
         })}
       </div>
