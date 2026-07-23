@@ -47,6 +47,10 @@ function displayAmount(amount: number | string, currency: Currency) {
   return currency === "CLP" ? money.format(numeric) : `${currency} ${new Intl.NumberFormat("es-CL", { maximumFractionDigits: currency === "UF" ? 2 : 0 }).format(numeric)}`;
 }
 
+function isPriorityOpportunity(item: Opportunity) {
+  return Number(item.expected_amount) > 0 || Boolean(item.next_action_on);
+}
+
 function publicMarketCode(opportunity: Opportunity | null) {
   if (!opportunity?.source?.toLocaleLowerCase("es").includes("mercado público")) return null;
   return opportunity.source.match(/Mercado P[uú]blico\s*·\s*([A-Z0-9-]{3,40})/i)?.[1]?.toUpperCase() ?? opportunity.title.match(/^([A-Z0-9-]{3,40})\s*·/i)?.[1]?.toUpperCase() ?? null;
@@ -277,8 +281,9 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
         <p>{canManage && <span>Arrastra para cambiar de etapa · </span>}<strong>{filteredOpportunities.length}</strong> oportunidad(es) visibles</p>
       </div>
       <div className="crm-kanban" aria-label="Pipeline comercial por etapas">
-        {stages.map((stage) => {
+        {stages.map((stage, stageIndex) => {
           const items = filteredOpportunities.filter((item) => item.stage === stage.key);
+          const orderedItems = [...items].sort((a, b) => Number(isPriorityOpportunity(b)) - Number(isPriorityOpportunity(a)));
           const stageAmount = items.filter((item) => item.currency_code === "CLP").reduce((total, item) => total + Number(item.expected_amount), 0);
           return <section
             className={`crm-kanban-column is-${stageTone[stage.key]}${dragOverStage === stage.key ? " is-drag-over" : ""}`}
@@ -289,10 +294,14 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
             onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOverStage(null); }}
             onDrop={(event) => dropOpportunity(event, stage.key)}
           >
-            <header><div><span>{stage.label}</span><strong>{items.length}</strong></div><small>{money.format(stageAmount)} CLP</small></header>
+            <header>
+              <div className="crm-stage-heading"><div><small>ETAPA {stageIndex + 1}</small><span>{stage.label}</span></div><strong>{items.length}</strong></div>
+              <b>{stageAmount > 0 ? money.format(stageAmount) : "Monto por definir"}</b>
+              <small>{items.length === 1 ? "1 oportunidad" : `${items.length} oportunidades`}</small>
+            </header>
             <div className="crm-kanban-cards">
-              {items.map((item) => <article
-                className={`crm-opportunity-card${draggedOpportunityId === item.id ? " is-dragging" : ""}`}
+              {orderedItems.map((item) => <article
+                className={`crm-opportunity-card ${isPriorityOpportunity(item) ? "is-priority" : "is-compact"}${draggedOpportunityId === item.id ? " is-dragging" : ""}`}
                 key={item.id}
                 draggable={canManage && !saving}
                 onDragStart={(event) => startOpportunityDrag(event, item)}
@@ -301,8 +310,10 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
                 <button type="button" className="crm-opportunity-open" onClick={() => setSelectedOpportunityId(item.id)}>
                   <strong>{item.title}</strong>
                   <small>{customerName(customers.get(item.counterparty_id))}</small>
-                  <span className="crm-opportunity-metrics"><b>{displayAmount(item.expected_amount, item.currency_code)}</b><em>{item.probability}%</em></span>
-                  <span className={`crm-opportunity-next${item.next_action_on ? "" : " is-empty"}`}>{item.next_action_on ? `Próxima acción · ${date(item.next_action_on)}` : "Sin próxima acción"}</span>
+                  {isPriorityOpportunity(item) ? <>
+                    <span className="crm-opportunity-metrics"><b>{displayAmount(item.expected_amount, item.currency_code)}</b><em>{item.probability}%</em></span>
+                    <span className={`crm-opportunity-next${item.next_action_on ? "" : " is-empty"}`}>{item.next_action_on ? `Próxima acción · ${date(item.next_action_on)}` : "Sin próxima acción"}</span>
+                  </> : <span className="crm-opportunity-compact-meta"><em>{item.probability}%</em><span>Sin monto ni próxima acción</span></span>}
                 </button>
               </article>)}
               {!items.length && <p className="crm-kanban-empty">Sin oportunidades en esta etapa.</p>}
