@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
 const writeRoles = new Set(["administrator", "finance", "operations"]);
-const stages = new Set(["lead", "qualified", "proposal", "negotiation", "won", "lost"]);
+const stages = new Set(["exploration", "meeting", "quotation", "proposal", "pilot", "negotiation", "won", "lost"]);
 const contractStatuses = new Set(["draft", "active", "expiring", "closed", "cancelled"]);
 const projectStatuses = new Set(["planning", "active", "on_hold", "completed", "cancelled"]);
 const activityTypes = new Set(["call", "meeting", "email", "task", "note"]);

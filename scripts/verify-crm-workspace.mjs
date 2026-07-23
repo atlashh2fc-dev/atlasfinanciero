@@ -99,15 +99,17 @@ contract("Aislamiento contra scroll eterno", () => {
 
 // 2. Embudo comercial completo y horizontal.
 const expectedStages = [
-  ["lead", "Prospecto"],
-  ["qualified", "Calificada"],
-  ["proposal", "Propuesta"],
-  ["negotiation", "Negociación"],
-  ["won", "Ganada"],
-  ["lost", "Perdida"],
+  ["exploration", "Exploración"],
+  ["meeting", "Reunión / demo"],
+  ["quotation", "Cotización pendiente"],
+  ["proposal", "Propuesta enviada"],
+  ["pilot", "MVP / inicio"],
+  ["negotiation", "Negociación / contrato"],
+  ["won", "Cerrada / ejecución"],
+  ["lost", "Baja propuesta"],
 ];
 
-contract("Pipeline de seis etapas", () => {
+contract("Pipeline de ocho etapas", () => {
   for (const [key, label] of expectedStages) {
     matches(
       components,
@@ -122,7 +124,7 @@ contract("Pipeline de seis etapas", () => {
   matches(
     components,
     /stages\.map\([\s\S]{0,5000}item\.stage\s*===\s*stage\.key/,
-    "El tablero no distribuye oportunidades por las seis etapas declaradas.",
+    "El tablero no distribuye oportunidades por las ocho etapas declaradas.",
   );
   matches(
     styles,

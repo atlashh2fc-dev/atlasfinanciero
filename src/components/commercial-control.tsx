@@ -12,7 +12,7 @@ type Payload = { customers: Customer[]; centers: CostCenter[]; opportunities: Op
 type DossierDocument = { id: string; category: string; title: string; source_url: string; signedUrl: string | null; mime_type: string | null; size_bytes: number | null; download_status: string; error_text: string | null };
 type DossierAward = { id: string; related_tender_code: string; relationship: "current_process" | "probable_predecessor"; similarity_score: number | null; supplier_name: string | null; supplier_tax_id: string | null; awarded_amount: number | null; awarded_quantity: number | null; currency_code: string | null; award_date: string | null; award_document_url: string | null; source_url: string };
 type PublicMarketDossier = { tender: { external_code: string; executive_summary: Record<string, unknown>; enrichment_status: string; fit_score: number; fit_tier: "green" | "yellow" | "red"; capability_matches: string[]; fit_reasons: string[]; fit_gaps: string[]; source_url: string } | null; documents: DossierDocument[]; awards: DossierAward[] };
-type Stage = "lead" | "qualified" | "proposal" | "negotiation" | "won" | "lost";
+type Stage = "exploration" | "meeting" | "quotation" | "proposal" | "pilot" | "negotiation" | "won" | "lost";
 type ContractStatus = "draft" | "active" | "expiring" | "closed" | "cancelled";
 type ProjectStatus = "planning" | "active" | "on_hold" | "completed" | "cancelled";
 type ActivityType = "call" | "meeting" | "email" | "task" | "note";
@@ -21,14 +21,23 @@ type Frequency = "monthly" | "quarterly" | "annual" | "one_time";
 type CommercialView = "pipeline" | "contracts" | "projects";
 type OpportunityDetailTab = "management" | "analysis" | "documents" | "history";
 
-const stages: Array<{ key: Stage; label: string }> = [{ key: "lead", label: "Prospecto" }, { key: "qualified", label: "Calificada" }, { key: "proposal", label: "Propuesta" }, { key: "negotiation", label: "Negociación" }, { key: "won", label: "Ganada" }, { key: "lost", label: "Perdida" }];
-const stageTone: Record<Stage, string> = { lead: "neutral", qualified: "info", proposal: "violet", negotiation: "warning", won: "success", lost: "danger" };
-const stageProbability: Record<Stage, number> = { lead: 10, qualified: 30, proposal: 50, negotiation: 75, won: 100, lost: 0 };
+const stages: Array<{ key: Stage; label: string }> = [
+  { key: "exploration", label: "Exploración" },
+  { key: "meeting", label: "Reunión / demo" },
+  { key: "quotation", label: "Cotización pendiente" },
+  { key: "proposal", label: "Propuesta enviada" },
+  { key: "pilot", label: "MVP / inicio" },
+  { key: "negotiation", label: "Negociación / contrato" },
+  { key: "won", label: "Cerrada / ejecución" },
+  { key: "lost", label: "Baja propuesta" },
+];
+const stageTone: Record<Stage, string> = { exploration: "neutral", meeting: "info", quotation: "info", proposal: "violet", pilot: "warning", negotiation: "warning", won: "success", lost: "danger" };
+const stageProbability: Record<Stage, number> = { exploration: 10, meeting: 25, quotation: 40, proposal: 55, pilot: 70, negotiation: 85, won: 100, lost: 0 };
 const money = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 const date = (value: string | null) => value ? new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${value}T00:00:00`)) : "—";
 const customerName = (customer: Customer | undefined) => customer ? customer.trade_name || customer.legal_name : "Cliente no disponible";
 const asText = (value: string | number | null | undefined) => value === null || value === undefined ? "" : String(value);
-const blankOpportunity = (): Omit<Opportunity, "id" | "updated_at"> => ({ counterparty_id: "", title: "", stage: "lead", expected_amount: 0, currency_code: "CLP", probability: 10, expected_close_on: "", next_action_on: "", source: "", lost_reason: "", description: "" });
+const blankOpportunity = (): Omit<Opportunity, "id" | "updated_at"> => ({ counterparty_id: "", title: "", stage: "exploration", expected_amount: 0, currency_code: "CLP", probability: 10, expected_close_on: "", next_action_on: "", source: "", lost_reason: "", description: "" });
 const blankContract = (): Omit<Contract, "id"> => ({ counterparty_id: "", opportunity_id: null, contract_code: "", name: "", status: "draft", total_amount: 0, currency_code: "CLP", starts_on: "", ends_on: "", renewal_notice_on: "", billing_frequency: "monthly", notes: "" });
 const blankProject = (): Omit<Project, "id"> => ({ counterparty_id: "", contract_id: null, opportunity_id: null, cost_center_id: null, project_code: "", name: "", status: "planning", revenue_budget: 0, expense_budget: 0, currency_code: "CLP", starts_on: "", ends_on: "", notes: "" });
 const blankActivity = (opportunityId = ""): Omit<Activity, "id" | "created_at"> => ({ opportunity_id: opportunityId, activity_type: "task", subject: "", notes: "", due_on: "", completed_on: null });
@@ -234,7 +243,7 @@ export function CommercialControl({ organizationId, canManage, initialView = "pi
       <div>
         <span className="panel-label">{view === "pipeline" ? "CRM · PIPELINE COMERCIAL" : view === "contracts" ? "CRM · CONTRATOS" : "CRM · PROYECTOS"}</span>
         <h2>{view === "pipeline" ? "Oportunidades por etapa" : view === "contracts" ? "Contratos y renovaciones" : "Ejecución y rentabilidad"}</h2>
-        <p>{view === "pipeline" ? "Vista horizontal del ciclo comercial, desde el prospecto hasta el resultado." : "Continuidad comercial conectada con cliente, centro de costo y presupuesto."}</p>
+        <p>{view === "pipeline" ? "Vista horizontal del ciclo comercial: exploración, reuniones, cotización, propuesta, MVP, contrato y resultado." : "Continuidad comercial conectada con cliente, centro de costo y presupuesto."}</p>
       </div>
       <div className="table-actions">
         <button type="button" className="secondary-button" onClick={() => void load()}>Actualizar</button>
