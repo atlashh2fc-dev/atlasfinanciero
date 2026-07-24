@@ -198,6 +198,38 @@ function paymentProofAttachment(contentType: string, filename: string | undefine
   );
 }
 
+function invoiceFileAttachment(contentType: string, filename: string | undefined, size: number) {
+  return paymentProofAttachment(contentType, filename, size);
+}
+
+function matchingInvoiceFile(dte: ParsedDte, attachments: { contentType: string; filename?: string; content: Buffer; size?: number }[]) {
+  const files = attachments.filter((attachment) => invoiceFileAttachment(attachment.contentType, attachment.filename, attachment.size ?? attachment.content.length));
+  if (files.length === 1) return files[0];
+  return files.find((attachment) => {
+    const name = `${attachment.filename ?? ""}`.replace(/\D/g, "");
+    return name.includes(String(dte.folio)) || name.includes(normalizedDigits(dte.supplierTaxId));
+  }) ?? null;
+}
+
+async function attachInvoiceFile(admin: SupabaseClient, organizationId: string, documentId: string, attachment: { contentType: string; filename?: string; content: Buffer; size?: number }) {
+  const fileType = attachment.contentType.toLowerCase();
+  const fileName = attachment.filename?.toLowerCase() ?? "";
+  const mimeType = fileType.includes("pdf") || fileName.endsWith(".pdf")
+    ? "application/pdf"
+    : fileType.includes("png") || fileName.endsWith(".png") ? "image/png" : "image/jpeg";
+  const checksum = createHash("sha256").update(attachment.content).digest("hex");
+  const storagePath = `${organizationId}/sii/pdfs/${checksum}.${attachmentExtension(attachment.filename, mimeType)}`;
+  const { error: uploadError } = await admin.storage.from("received-document-files").upload(storagePath, attachment.content, { contentType: mimeType, upsert: false });
+  if (uploadError && !/already exists/i.test(uploadError.message)) throw new Error("sii_invoice_file_storage_failed");
+  const { error: updateError } = await admin.from("received_documents").update({
+    attachment_path: storagePath,
+    attachment_name: (attachment.filename || `factura-${checksum.slice(0, 12)}.${attachmentExtension(attachment.filename, mimeType)}`).slice(0, 300),
+    attachment_mime_type: mimeType,
+    attachment_size: attachment.size ?? attachment.content.length,
+  }).eq("id", documentId).eq("organization_id", organizationId);
+  if (updateError) throw new Error("sii_invoice_file_attach_failed");
+}
+
 async function importXml(admin: SupabaseClient, organizationId: string, xml: Buffer, messageId: string, attachmentIndex: number) {
   const dte = parseDte(xml);
   const checksum = createHash("sha256").update(xml).digest("hex");
@@ -259,7 +291,7 @@ async function importXml(admin: SupabaseClient, organizationId: string, xml: Buf
     surcharge_amount: line.surchargeAmount,
     line_total: line.lineTotal,
   })));
-  return existingId ? "updated" : "created";
+  return { outcome: existingId ? "updated" as const : "created" as const, documentId: result.data.id, dte };
 }
 
 export async function syncSiiMailbox(admin: SupabaseClient, organizationId: string) {
@@ -274,9 +306,9 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
     stage = "open_inbox";
     const lock = await client.getMailboxLock("INBOX");
     try {
-      stage = "search_unseen";
-      const searched = await client.search({ seen: false }, { uid: true });
-      const uids = Array.isArray(searched) ? searched.slice(-25) : [];
+      stage = "search_recent_messages";
+      const searched = await client.search({ all: true }, { uid: true });
+      const uids = Array.isArray(searched) ? searched.slice(-100) : [];
       stage = "fetch_messages";
       for await (const message of client.fetch(uids, { uid: true, source: true, envelope: true }, { uid: true })) {
         scanned += 1;
@@ -289,9 +321,14 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
           const isXml = attachment.contentType.includes("xml") || attachment.filename?.toLowerCase().endsWith(".xml");
           if (!isXml) continue;
           stage = "import_xml";
-          const outcome = await importXml(admin, organizationId, attachment.content, messageId, index + 1);
-          if (outcome === "created") created += 1;
+          const result = await importXml(admin, organizationId, attachment.content, messageId, index + 1);
+          if (result.outcome === "created") created += 1;
           else updated += 1;
+          const invoiceFile = matchingInvoiceFile(result.dte, (mail.attachments ?? []) as { contentType: string; filename?: string; content: Buffer; size?: number }[]);
+          if (invoiceFile) {
+            stage = "attach_invoice_file";
+            await attachInvoiceFile(admin, organizationId, result.documentId, invoiceFile);
+          }
           imported += 1;
         }
         if (imported) {
