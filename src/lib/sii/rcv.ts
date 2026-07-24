@@ -94,7 +94,9 @@ async function postRcv(method: string, token: string, data: Record<string, unkno
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Accept: "application/json",
+        // El RESTEasy del SII rechaza un Accept estricto de application/json
+        // (RESTEASY001530); el comodín replica lo que envía el navegador.
+        Accept: "application/json, text/plain, */*",
         Referer: "https://www4.sii.cl/consdcvinternetui/",
         Cookie: `TOKEN=${token}; NETSCAPE_LIVEWIRE.locexp=${token}`,
       },
