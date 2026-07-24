@@ -316,9 +316,9 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
     stage = "open_inbox";
     const lock = await client.getMailboxLock("INBOX");
     try {
-      stage = "search_recent_messages";
-      const searched = await client.search({ all: true }, { uid: true });
-      const uids = Array.isArray(searched) ? searched.slice(-100) : [];
+      stage = "search_unseen";
+      const searched = await client.search({ seen: false }, { uid: true });
+      const uids = Array.isArray(searched) ? searched.slice(-25) : [];
       stage = "fetch_messages";
       for await (const message of client.fetch(uids, { uid: true, source: true, envelope: true }, { uid: true })) {
         scanned += 1;
