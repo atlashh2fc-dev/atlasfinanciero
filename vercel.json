@@ -8,6 +8,10 @@
     {
       "path": "/api/integrations/sii/mail",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/integrations/sii/rcv",
+      "schedule": "0 9 * * *"
     }
   ]
 }

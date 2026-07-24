@@ -43,6 +43,12 @@ Cada documento debe tener RUT de emisor, tipo SII y folio. El WS de registro cub
 
 El SII no entrega un webhook de facturas recibidas en estos WS. La entrada debe ser el correo tributario del receptor, un proveedor que entregue el XML, o una carga controlada; en todos los casos se deduplica por RUT emisor + tipo + folio antes de registrar un DTE.
 
+### SII · Registro de Compras y Ventas (fuente maestra)
+
+El descubrimiento de documentos ya no depende del correo: un trabajo diario descarga el Registro de Compras y Ventas oficial del SII (compras y ventas del período actual y anterior) autenticándose con el mismo certificado digital. El RCV usa los endpoints JSON de la interfaz web del SII (`consdcvinternetui`), que no son una API publicada: el parseo es tolerante y cada fila se conserva cruda en `sii_rcv_entries` con su corrida de origen (`sii_rcv_sync_runs`), cumpliendo la regla de staging trazable.
+
+El merge vincula cada entrada del RCV con los documentos operacionales por RUT + tipo + folio: si el documento no existe se crea desde el registro oficial (estado `Pendiente de revisión`); si existe con montos distintos se marca `amount_mismatch` sin sobrescribir nada; la fecha de recepción del SII alimenta la alerta de ocho días. El correo tributario queda como enriquecedor: aporta el XML con líneas de detalle y respaldos, casando contra el mismo identificador. El RCV sólo existe en el ambiente de producción del SII; en certificación la sincronización se rechaza explícitamente.
+
 Las migraciones incluyen organizaciones, perfiles, membresías por rol, terceros, documentos emitidos, lotes de importación, forecast, almacenamiento privado del libro y auditoría. Las políticas RLS impiden lectura y edición fuera de la organización.
 
 Para incorporar el primer usuario, crea o confirma su cuenta en Supabase Auth y asígnala a GEIMSER con el rol `administrator`. No se asigna este permiso automáticamente a una dirección de correo supuesta.

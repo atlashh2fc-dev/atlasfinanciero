@@ -50,6 +50,35 @@ type MailSyncRun = {
   error_detail: string | null;
 };
 
+type RcvSyncRun = {
+  started_at: string;
+  completed_at: string | null;
+  run_status: "completed" | "failed";
+  trigger_source: "cron" | "manual";
+  periods: string[];
+  purchase_entries_fetched: number;
+  sale_entries_fetched: number;
+  purchases_created: number;
+  purchases_linked: number;
+  sales_created: number;
+  sales_linked: number;
+  discrepancies: number;
+  error_detail: string | null;
+};
+
+type RcvPendingEntry = {
+  id: string;
+  operation: "purchase" | "sale";
+  period: string;
+  document_type: number;
+  folio: number | string;
+  counterpart_tax_id: string;
+  counterpart_name: string | null;
+  total_amount: number | string | null;
+  match_status: "unmatched" | "amount_mismatch";
+  match_detail: string | null;
+};
+
 type ConfigDraft = {
   taxpayerRut: string;
   environment: "production" | "certification";
@@ -116,6 +145,9 @@ export function SiiDteIntegration({
   const [integration, setIntegration] = useState<Integration | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
   const [mailSyncRuns, setMailSyncRuns] = useState<MailSyncRun[]>([]);
+  const [rcvSyncRuns, setRcvSyncRuns] = useState<RcvSyncRun[]>([]);
+  const [rcvPendingEntries, setRcvPendingEntries] = useState<RcvPendingEntry[]>([]);
+  const [syncingRcv, setSyncingRcv] = useState(false);
   const [certificateConfigured, setCertificateConfigured] = useState(false);
   const [draft, setDraft] = useState<ConfigDraft>({
     taxpayerRut: "",
@@ -149,6 +181,8 @@ export function SiiDteIntegration({
         integration?: Integration | null;
         events?: Event[];
         mailSyncRuns?: MailSyncRun[];
+        rcvSyncRuns?: RcvSyncRun[];
+        rcvPendingEntries?: RcvPendingEntry[];
         certificateConfigured?: boolean;
       } | null;
       if (!response.ok || !payload) {
@@ -158,6 +192,8 @@ export function SiiDteIntegration({
       setIntegration(payload.integration ?? null);
       setEvents(payload.events ?? []);
       setMailSyncRuns(payload.mailSyncRuns ?? []);
+      setRcvSyncRuns(payload.rcvSyncRuns ?? []);
+      setRcvPendingEntries(payload.rcvPendingEntries ?? []);
       setCertificateConfigured(Boolean(payload.certificateConfigured));
       if (payload.integration) {
         setDraft({
@@ -225,6 +261,37 @@ export function SiiDteIntegration({
       setMessage("No fue posible guardar la configuración SII.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function syncRcvNow() {
+    if (!organizationId) return;
+    setSyncingRcv(true);
+    setMessage("Sincronizando el Registro de Compras y Ventas del SII…");
+    try {
+      const response = await fetch("/api/integrations/sii/rcv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ organizationId }),
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        purchasesFetched?: number;
+        salesFetched?: number;
+        purchasesCreated?: number;
+        salesCreated?: number;
+        discrepancies?: number;
+      } | null;
+      if (!response.ok) {
+        setMessage(payload?.error || "No fue posible sincronizar el RCV.");
+        return;
+      }
+      await Promise.all([load(), onRefreshDocuments()]);
+      setMessage(`RCV sincronizado: ${payload?.purchasesFetched ?? 0} compra(s) y ${payload?.salesFetched ?? 0} venta(s) leídas del SII; ${(payload?.purchasesCreated ?? 0) + (payload?.salesCreated ?? 0)} documento(s) nuevo(s) y ${payload?.discrepancies ?? 0} discrepancia(s) de monto.`);
+    } catch {
+      setMessage("No fue posible sincronizar el RCV. Inténtalo nuevamente.");
+    } finally {
+      setSyncingRcv(false);
     }
   }
 
@@ -301,7 +368,7 @@ export function SiiDteIntegration({
 
   return <>
     <section className="table-section sii-workbench">
-      <div className="table-heading"><div><span className="panel-label">SII · DTE RECIBIDOS</span><h2>Decisiones tributarias</h2><p>El correo tributario se revisa automáticamente cada 30 minutos.</p></div><div className="sii-heading-actions"><span className={`status ${certificateConfigured && integration?.is_enabled ? "paid" : "cancelled"}`}>{certificateConfigured && integration?.is_enabled ? "Automático activo" : "Conexión pendiente"}</span></div></div>
+      <div className="table-heading"><div><span className="panel-label">SII · DTE RECIBIDOS</span><h2>Decisiones tributarias</h2><p>El Registro de Compras y Ventas del SII se sincroniza a diario como fuente oficial; el correo tributario aporta el XML con el detalle.</p></div><div className="sii-heading-actions"><span className={`status ${certificateConfigured && integration?.is_enabled ? "paid" : "cancelled"}`}>{certificateConfigured && integration?.is_enabled ? "Automático activo" : "Conexión pendiente"}</span></div></div>
       {message && <p className="operation-message">{message}</p>}
       <div className="sii-summary-grid">
         <article><strong>{alerts.length}</strong><span>listos para decidir</span></article>
@@ -316,6 +383,20 @@ export function SiiDteIntegration({
         <label>Referencia<input value={draft.inboundAddress} maxLength={254} placeholder="correo o proveedor" onChange={(event) => setDraft((current) => ({ ...current, inboundAddress: event.target.value }))} /></label>
         <button className="secondary-button" disabled={saving || !certificateConfigured}>{saving ? "Guardando…" : "Guardar"}</button>
       </form> : <p className="form-note">Sólo Administrador puede modificar la conexión.</p>}<p className="form-note">Estado: {integration?.is_enabled ? "habilitada" : "deshabilitada"}. El ingreso automático requiere conectar el correo tributario o proveedor XML.</p></details>}
+    </section>
+
+    <section className="table-section">
+      <div className="table-heading"><div><span className="panel-label">SII · REGISTRO DE COMPRAS Y VENTAS</span><h2>Fuente oficial del SII</h2><p>Todo documento emitido o recibido según el SII, aunque nunca llegue el correo. Compras y ventas del período actual y anterior.</p></div><div className="sii-heading-actions"><button type="button" className="secondary-button" disabled={syncingRcv || !integration?.is_enabled || !canConfigure || integration?.environment !== "production"} onClick={() => void syncRcvNow()}>{syncingRcv ? "Sincronizando…" : "Sincronizar RCV ahora"}</button></div></div>
+      {integration?.is_enabled && integration.environment !== "production" && <p className="form-note">El RCV sólo existe en el ambiente de producción del SII. Cambia el ambiente para habilitar la sincronización.</p>}
+      <p className="form-note">{rcvSyncRuns[0]
+        ? rcvSyncRuns[0].run_status === "completed"
+          ? `Última sincronización (${rcvSyncRuns[0].trigger_source === "cron" ? "automática" : "manual"}): ${displayDate(rcvSyncRuns[0].completed_at)} · períodos ${rcvSyncRuns[0].periods.join(", ")} · ${rcvSyncRuns[0].purchase_entries_fetched} compra(s) y ${rcvSyncRuns[0].sale_entries_fetched} venta(s) leídas · ${rcvSyncRuns[0].purchases_created + rcvSyncRuns[0].sales_created} documento(s) creado(s) · ${rcvSyncRuns[0].discrepancies} discrepancia(s).`
+          : `La última sincronización del RCV falló: ${rcvSyncRuns[0].error_detail || "sin detalle"}.`
+        : "Aún no hay sincronizaciones del RCV. La primera corre automáticamente cada mañana, o ejecútala ahora."}</p>
+      {rcvPendingEntries.length > 0 && <>
+        <p className="sii-alert"><strong>Revisión requerida:</strong> {rcvPendingEntries.length} entrada(s) del RCV sin conciliar o con montos distintos a los registrados.</p>
+        <div className="table-scroll"><table><thead><tr><th>Operación</th><th>Documento</th><th>Contraparte</th><th>Total SII</th><th>Situación</th></tr></thead><tbody>{rcvPendingEntries.map((entry) => <tr key={entry.id}><td>{entry.operation === "purchase" ? "Compra" : "Venta"}<small>Período {entry.period}</small></td><td><strong>DTE {entry.document_type}</strong><small>Folio {entry.folio}</small></td><td>{entry.counterpart_name || entry.counterpart_tax_id}<small>{entry.counterpart_tax_id}</small></td><td>{entry.total_amount === null ? "—" : new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP" }).format(Number(entry.total_amount))}</td><td><span className={`status ${entry.match_status === "amount_mismatch" ? "cancelled" : "pending"}`}>{entry.match_status === "amount_mismatch" ? "Montos distintos" : "Sin conciliar"}</span>{entry.match_detail && <small>{entry.match_detail}</small>}</td></tr>)}</tbody></table></div>
+      </>}
     </section>
 
     <section className="table-section">

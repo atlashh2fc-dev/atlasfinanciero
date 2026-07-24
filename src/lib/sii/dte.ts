@@ -99,6 +99,10 @@ function signSeed(seed: string, privateKey: string, certificate: string) {
   return signer.getSignedXml();
 }
 
+export async function getSiiToken(environment: SiiEnvironment) {
+  return token(environment);
+}
+
 async function token(environment: SiiEnvironment) {
   const privateKey = pem(process.env.SII_PRIVATE_KEY_PEM);
   const certificate = pem(process.env.SII_CERTIFICATE_PEM);
