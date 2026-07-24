@@ -131,11 +131,12 @@ function mailConfig() {
 async function importXml(admin: SupabaseClient, organizationId: string, xml: Buffer, messageId: string, attachmentIndex: number) {
   const dte = parseDte(xml);
   const checksum = createHash("sha256").update(xml).digest("hex");
-  const [{ data: byChecksum }, { data: byIdentity }] = await Promise.all([
+  const [{ data: byChecksum }, { data: byIdentity }, { data: byDocumentNumber }] = await Promise.all([
     admin.from("received_documents").select("id").eq("organization_id", organizationId).eq("sii_xml_sha256", checksum).maybeSingle(),
     admin.from("received_documents").select("id").eq("organization_id", organizationId).eq("supplier_tax_id", dte.supplierTaxId).eq("sii_document_type", dte.documentType).eq("sii_folio", dte.folio).maybeSingle(),
+    admin.from("received_documents").select("id").eq("organization_id", organizationId).eq("supplier_tax_id", dte.supplierTaxId).eq("document_number", String(dte.folio)).is("sii_document_type", null).maybeSingle(),
   ]);
-  const existingId = byChecksum?.id ?? byIdentity?.id ?? null;
+  const existingId = byChecksum?.id ?? byIdentity?.id ?? byDocumentNumber?.id ?? null;
   const { data: counterparty } = await admin.from("counterparties").upsert({
     organization_id: organizationId,
     legal_name: dte.supplierName,
