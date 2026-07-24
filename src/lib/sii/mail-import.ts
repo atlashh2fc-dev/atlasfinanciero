@@ -403,7 +403,7 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
   return { scanned, created, updated, skipped, filesAttached };
 }
 
-export async function syncPaymentProofMailbox(admin: SupabaseClient, organizationId: string) {
+export async function syncPaymentProofMailbox(admin: SupabaseClient, organizationId: string, messageLimit = 50) {
   const config = mailConfig();
   const client = new ImapFlow({ host: config.host, port: config.port, secure: true, auth: { user: config.user, pass: config.pass }, logger: false });
   let scanned = 0;
@@ -434,7 +434,7 @@ export async function syncPaymentProofMailbox(admin: SupabaseClient, organizatio
         : { data: [], error: null };
       if (processedError) throw new Error("payment_proof_processed_messages_load_failed");
       const alreadyProcessed = new Set((processed ?? []).map((row) => row.message_id));
-      const uids = headers.filter((header) => !alreadyProcessed.has(header.messageId)).slice(-50).map((header) => header.uid);
+      const uids = headers.filter((header) => !alreadyProcessed.has(header.messageId)).slice(-Math.max(1, Math.min(messageLimit, 50))).map((header) => header.uid);
       stage = "fetch_messages";
       for await (const message of client.fetch(uids, { uid: true, source: true }, { uid: true })) {
         if (!message.source) continue;
