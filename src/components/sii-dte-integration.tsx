@@ -76,6 +76,7 @@ function documentState(document: SiiDocument, events: Event[]) {
   if (document.sii_event_status === "accepted_content") return "Aceptada";
   if (document.sii_event_status === "receipt_acknowledged") return "Acuse registrado";
   if (document.sii_event_status === "claimed") return "Reclamada";
+  if (document.sii_event_status === "decision_window_closed") return "Plazo vencido en SII";
   if (event) return eventLabel(event.action);
   return "Pendiente de decisión";
 }
@@ -98,7 +99,7 @@ export function SiiDteIntegration({
   organizationId: string | null;
   canConfigure: boolean;
   documents: SiiDocument[];
-  onRefreshDocuments: () => void;
+  onRefreshDocuments: () => Promise<void>;
   onOpenDocument: (documentId: string) => void;
 }) {
   const [integration, setIntegration] = useState<Integration | null>(null);
@@ -235,7 +236,7 @@ export function SiiDteIntegration({
         setLookupFeedback({ documentId: document.id, text: lookupErrorMessage(payload?.error), tone: "error" });
         return;
       }
-      await Promise.all([load(), Promise.resolve(onRefreshDocuments())]);
+      await Promise.all([load(), onRefreshDocuments()]);
       const eventsFound = Array.isArray(payload?.history) ? payload.history.length : null;
       const text = payload?.receiptDate
         ? `SII consultado: recepción registrada el ${displayDate(payload.receiptDate)}${eventsFound === null ? "." : `; ${eventsFound} evento(s) informado(s).`}`
@@ -263,7 +264,7 @@ export function SiiDteIntegration({
         setMessage(error === "sii_mail_not_configured" ? "Falta la configuración segura del correo tributario." : `No fue posible leer el correo tributario${error ? `: ${error}` : "."}`);
         return;
       }
-      await Promise.all([load(), Promise.resolve(onRefreshDocuments())]);
+      await Promise.all([load(), onRefreshDocuments()]);
       setMessage(`${payload?.created ?? 0} factura(s) importada(s) y ${payload?.updated ?? 0} actualizada(s) desde finanzas@geimser.cl.`);
     } catch {
       setMessage("No fue posible sincronizar el correo tributario.");
@@ -295,14 +296,15 @@ export function SiiDteIntegration({
       });
       const payload = (await response.json().catch(() => null)) as {
         error?: string;
+        accepted?: boolean;
         result?: { code?: number | null; message?: string | null };
       } | null;
       if (!response.ok) {
         setMessage(payload?.error === "sii_integration_not_enabled" ? "Primero habilita la integración SII." : "El SII rechazó o no pudo procesar la solicitud. Revisa la bitácora.");
         return;
       }
-      await Promise.all([load(), Promise.resolve(onRefreshDocuments())]);
-      setMessage(payload?.result?.code === 0 ? "Acción registrada correctamente en el SII." : `Solicitud enviada. Respuesta SII: ${payload?.result?.message || "sin detalle"}.`);
+      await Promise.all([load(), onRefreshDocuments()]);
+      setMessage(payload?.accepted ? "Acción registrada correctamente en el SII." : `El SII no registró la acción: ${payload?.result?.message || "sin detalle"}.`);
     } catch {
       setMessage("No fue posible enviar la acción al SII.");
     } finally {
@@ -315,9 +317,9 @@ export function SiiDteIntegration({
       <div className="table-heading"><div><span className="panel-label">SII · DTE RECIBIDOS</span><h2>Decisiones tributarias</h2><p>Revisa, acepta o reclama DTE sin salir de cuentas por pagar.</p></div><div className="sii-heading-actions"><span className={`status ${certificateConfigured ? "paid" : "cancelled"}`}>{certificateConfigured ? "Conectado" : "Certificado pendiente"}</span>{canConfigure && <button type="button" className="secondary-button" disabled={syncingMailbox || !integration?.is_enabled} onClick={() => void syncMailbox()}>{syncingMailbox ? "Leyendo correo…" : "Sincronizar correo"}</button>}</div></div>
       {message && <p className="operation-message">{message}</p>}
       <div className="sii-summary-grid">
-        <article><strong>{alerts.length}</strong><span>requieren decisión</span></article>
-        <article><strong>{trackedDocuments.length}</strong><span>con identidad SII</span></article>
-        <article><strong>{documentsToPrepare.length}</strong><span>por preparar</span></article>
+        <article><strong>{alerts.length}</strong><span>listos para decidir</span></article>
+        <article><strong>{trackedDocuments.length}</strong><span>DTE identificados desde correo</span></article>
+        <article><strong>{documentsToPrepare.length}</strong><span>históricos sin XML SII</span></article>
       </div>
       {alerts.length > 0 && <p className="sii-alert"><strong>Atención:</strong> hay DTE sin decisión o con plazo próximo. Resuélvelos desde la bandeja de abajo.</p>}
       {loading ? <p className="billing-empty">Cargando estado SII…</p> : <details className="sii-settings"><summary>Configuración de la conexión</summary>{canConfigure ? <form className="sii-settings-form" onSubmit={(event) => { event.preventDefault(); void saveConfiguration(); }}>
@@ -331,12 +333,12 @@ export function SiiDteIntegration({
 
     <section className="table-section">
       <div className="table-heading"><div><span className="panel-label">BANDEJA DE DECISIÓN</span><h2>Documentos listos para revisar</h2><p>Consulta el SII antes de aceptar o reclamar. Todas las acciones quedan registradas.</p></div></div>
-      <div className="table-scroll"><table><thead><tr><th>Documento</th><th>Recepción / plazo</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{trackedDocuments.length ? trackedDocuments.map((document) => { const busy = workingDocumentId === document.id; const latest = events.find((item) => item.received_document_id === document.id); const feedback = lookupFeedback?.documentId === document.id ? lookupFeedback : null; return <tr key={document.id}><td><strong>{document.supplier_name}</strong><small>DTE {document.sii_document_type} · Folio {document.sii_folio}</small></td><td>{displayDate(document.sii_received_at)}<small>Plazo: {displayDate(document.sii_response_deadline)}</small></td><td><span className={`status ${document.sii_event_status === "claimed" ? "cancelled" : document.sii_event_status ? "paid" : "pending"}`}>{documentState(document, events)}</span>{latest && <small>{eventLabel(latest.action)} · {latest.request_status}</small>}</td><td><div className="cycle-actions"><button type="button" className="secondary-button" disabled={busy || !integration?.is_enabled} onClick={() => void refreshDocument(document)}>{busy ? "Consultando…" : "Consultar"}</button>{!document.sii_event_status && <><button type="button" className="primary-button" disabled={busy || !integration?.is_enabled} onClick={() => void registerAction(document, "ACD")}>Aceptar</button><button type="button" className="text-button" disabled={busy || !integration?.is_enabled} onClick={() => void registerAction(document, "RCD")}>Reclamar</button></>}</div>{feedback && <p className={`sii-lookup-feedback ${feedback.tone}`}>{feedback.text}</p>}</td></tr>; }) : <tr><td colSpan={4}>Aún no hay DTE preparados para decisión.</td></tr>}</tbody></table></div>
+      <div className="table-scroll"><table><thead><tr><th>Documento</th><th>Recepción / plazo</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{trackedDocuments.length ? trackedDocuments.map((document) => { const busy = workingDocumentId === document.id; const latest = events.find((item) => item.received_document_id === document.id); const feedback = lookupFeedback?.documentId === document.id ? lookupFeedback : null; return <tr key={document.id}><td><strong>{document.supplier_name}</strong><small>DTE {document.sii_document_type} · Folio {document.sii_folio}</small></td><td>{displayDate(document.sii_received_at)}<small>Plazo: {displayDate(document.sii_response_deadline)}</small></td><td><span className={`status ${document.sii_event_status === "claimed" || document.sii_event_status === "decision_window_closed" ? "cancelled" : document.sii_event_status ? "paid" : "pending"}`}>{documentState(document, events)}</span>{latest && <small>{eventLabel(latest.action)} · {latest.request_status}{latest.sii_response_message ? ` · ${latest.sii_response_message}` : ""}</small>}</td><td><div className="cycle-actions"><button type="button" className="secondary-button" disabled={busy || !integration?.is_enabled} onClick={() => void refreshDocument(document)}>{busy ? "Consultando…" : "Consultar"}</button>{!document.sii_event_status && <><button type="button" className="primary-button" disabled={busy || !integration?.is_enabled} onClick={() => void registerAction(document, "ACD")}>Aceptar</button><button type="button" className="text-button" disabled={busy || !integration?.is_enabled} onClick={() => void registerAction(document, "RCD")}>Reclamar</button></>}</div>{feedback && <p className={`sii-lookup-feedback ${feedback.tone}`}>{feedback.text}</p>}</td></tr>; }) : <tr><td colSpan={4}>Aún no hay DTE preparados para decisión.</td></tr>}</tbody></table></div>
     </section>
 
     {documentsToPrepare.length > 0 && <section className="table-section">
-      <div className="table-heading"><div><span className="panel-label">POR PREPARAR</span><h2>Facturas ya registradas</h2><p>Estas facturas existen en la plataforma. Ábrelas para completar Tipo DTE y Folio, luego aparecerán arriba listas para consultar.</p></div></div>
-      <div className="table-scroll"><table><thead><tr><th>Proveedor</th><th>Documento</th><th>Estado SII</th><th></th></tr></thead><tbody>{documentsToPrepare.slice(0, 12).map((document) => <tr key={document.id}><td><strong>{document.supplier_name}</strong><small>{document.supplier_tax_id || "Sin RUT"}</small></td><td>{document.document_type}<small>Folio interno: {document.document_number || "—"}</small></td><td><span className="status neutral">Falta identidad DTE</span></td><td><button type="button" className="secondary-button" onClick={() => onOpenDocument(document.id)}>Completar</button></td></tr>)}</tbody></table></div>
+      <div className="table-heading"><div><span className="panel-label">HISTORIAL CONTABLE</span><h2>Facturas aún sin XML del SII</h2><p>Estas cuentas ya existen en la plataforma, pero no son decisiones pendientes ni se envían al SII. Se vinculan automáticamente cuando llegue su XML al correo.</p></div></div>
+      <div className="table-scroll"><table><thead><tr><th>Proveedor</th><th>Documento</th><th>Estado SII</th><th></th></tr></thead><tbody>{documentsToPrepare.slice(0, 12).map((document) => <tr key={document.id}><td><strong>{document.supplier_name}</strong><small>{document.supplier_tax_id || "Sin RUT"}</small></td><td>{document.document_type}<small>Folio interno: {document.document_number || "—"}</small></td><td><span className="status neutral">Sin XML / identidad SII</span></td><td><button type="button" className="secondary-button" onClick={() => onOpenDocument(document.id)}>Ver ficha</button></td></tr>)}</tbody></table></div>
     </section>}
   </>;
 }

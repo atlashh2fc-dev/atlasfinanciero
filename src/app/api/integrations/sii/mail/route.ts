@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isUuid, requireOrganizationAdministrator } from "@/lib/admin-access";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
-import { syncSiiMailbox } from "@/lib/sii/mail-import";
+import { syncPaymentProofMailbox, syncSiiMailbox } from "@/lib/sii/mail-import";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -25,7 +25,10 @@ export async function POST(request: NextRequest) {
   if (context.error) return NextResponse.json({ error: context.error }, { status: context.status });
   if (!hasSupabaseAdminKey()) return NextResponse.json({ error: "server_admin_key_required" }, { status: 503 });
   try {
-    return NextResponse.json(await syncSiiMailbox(createAdminClient(), body.organizationId));
+    const admin = createAdminClient();
+    const dte = await syncSiiMailbox(admin, body.organizationId);
+    const paymentProofs = await syncPaymentProofMailbox(admin, body.organizationId);
+    return NextResponse.json({ ...dte, paymentProofs });
   } catch (error) {
     return NextResponse.json({ error: clientSafeMailError(error) }, { status: 502 });
   }
@@ -39,7 +42,11 @@ export async function GET(request: NextRequest) {
   if (error) return NextResponse.json({ error: "unable_to_load_sii_mail_integrations" }, { status: 500 });
   const results = [];
   for (const integration of data ?? []) {
-    try { results.push({ organizationId: integration.organization_id, ok: true, ...(await syncSiiMailbox(admin, integration.organization_id)) }); }
+    try {
+      const dte = await syncSiiMailbox(admin, integration.organization_id);
+      const paymentProofs = await syncPaymentProofMailbox(admin, integration.organization_id);
+      results.push({ organizationId: integration.organization_id, ok: true, ...dte, paymentProofs });
+    }
     catch (syncError) { results.push({ organizationId: integration.organization_id, ok: false, error: syncError instanceof Error ? syncError.message.slice(0, 300) : "sii_mail_sync_failed" }); }
   }
   return NextResponse.json({ results, executedAt: new Date().toISOString() });

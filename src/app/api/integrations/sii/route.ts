@@ -21,6 +21,15 @@ function receptionDate(raw: string) {
   return match?.[1]?.trim() ?? null;
 }
 
+function actionWasAccepted(code: number | null, message: string | null) {
+  if (code !== 0) return false;
+  return !/(?:no\s+(?:es\s+)?posible|no\s+se\s+puede|rechaz|error|pasados?\s+\d+\s+d[ií]as|fuera\s+de\s+plazo)/i.test(message ?? "");
+}
+
+function decisionWindowClosed(message: string | null) {
+  return /(?:pasados?\s+\d+\s+d[ií]as|fuera\s+de\s+plazo|no\s+(?:es\s+)?posible\s+registrar\s+(?:reclamos?|eventos?))/i.test(message ?? "");
+}
+
 export async function GET(request: NextRequest) {
   const organizationId = request.nextUrl.searchParams.get("organizationId");
   if (!isUuid(organizationId)) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
@@ -103,12 +112,15 @@ export async function POST(request: NextRequest) {
     if (eventError || !event) return NextResponse.json({ error: "unable_to_audit_sii_request" }, { status: 409 });
     try {
       const result = await siiDte.registerAction(environment, document.supplier_tax_id, documentType, folio, action as Exclude<SiiDteAction, "CNS">);
-      await context.supabase.from("sii_dte_events").update({ request_status: "completed", sii_response_code: result.code, sii_response_message: result.message, completed_at: new Date().toISOString() }).eq("id", event.id).eq("organization_id", body.organizationId);
-      if (result.code === 0) {
+      const accepted = actionWasAccepted(result.code, result.message);
+      await context.supabase.from("sii_dte_events").update({ request_status: accepted ? "completed" : "failed", sii_response_code: result.code, sii_response_message: result.message, completed_at: new Date().toISOString() }).eq("id", event.id).eq("organization_id", body.organizationId);
+      if (accepted) {
         const siiEventStatus = action === "ACD" ? "accepted_content" : action === "ERM" ? "receipt_acknowledged" : "claimed";
         await context.supabase.from("received_documents").update({ sii_event_status: siiEventStatus, sii_last_checked_at: new Date().toISOString() }).eq("id", document.id).eq("organization_id", body.organizationId);
+      } else if (decisionWindowClosed(result.message)) {
+        await context.supabase.from("received_documents").update({ sii_event_status: "decision_window_closed", sii_last_checked_at: new Date().toISOString() }).eq("id", document.id).eq("organization_id", body.organizationId);
       }
-      return NextResponse.json({ result });
+      return NextResponse.json({ result, accepted });
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 500) : "sii_request_failed";
       await context.supabase.from("sii_dte_events").update({ request_status: "failed", sii_response_message: message, completed_at: new Date().toISOString() }).eq("id", event.id).eq("organization_id", body.organizationId);

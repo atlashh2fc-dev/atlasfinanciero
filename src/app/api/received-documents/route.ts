@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
     !isUuid(organizationId) ||
     (requestedYear && year === null) ||
     (fileId && !isUuid(fileId)) ||
-    (fileId && fileKind !== "attachment" && fileKind !== "sii-xml")
+    (fileId && fileKind !== "attachment" && fileKind !== "sii-xml" && fileKind !== "payment-proof")
   )
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
 
@@ -52,11 +52,15 @@ export async function GET(request: NextRequest) {
   if (fileId) {
     const { data: document, error } = await context.supabase
       .from("received_documents")
-      .select("attachment_path, sii_xml_path")
+      .select("attachment_path, sii_xml_path, payment_proof_path")
       .eq("id", fileId)
       .eq("organization_id", organizationId)
       .maybeSingle();
-    const storagePath = fileKind === "sii-xml" ? document?.sii_xml_path : document?.attachment_path;
+    const storagePath = fileKind === "sii-xml"
+      ? document?.sii_xml_path
+      : fileKind === "payment-proof"
+        ? document?.payment_proof_path
+        : document?.attachment_path;
     if (error || !storagePath)
       return NextResponse.json({ error: "document_file_not_found" }, { status: 404 });
     const { data: signed, error: signedError } = await context.supabase.storage
@@ -69,7 +73,7 @@ export async function GET(request: NextRequest) {
 
   let documentsQuery = context.supabase
     .from("received_documents")
-    .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_method, payment_bank, payment_reference, payment_notes, payment_date, payment_recorded_at, payment_recorded_by, attachment_path, attachment_name, attachment_mime_type, attachment_size, source_file_name, source_sheet_name, source_row, sii_document_type, sii_folio, sii_xml_path, sii_received_at, sii_response_deadline, sii_event_status, sii_last_checked_at")
+    .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_method, payment_bank, payment_reference, payment_notes, payment_date, payment_recorded_at, payment_recorded_by, attachment_path, attachment_name, attachment_mime_type, attachment_size, payment_proof_path, payment_proof_name, payment_proof_mime_type, payment_proof_size, source_file_name, source_sheet_name, source_row, sii_document_type, sii_folio, sii_xml_path, sii_received_at, sii_response_deadline, sii_event_status, sii_last_checked_at")
     .eq("organization_id", organizationId)
     .order("issue_date", { ascending: false })
     .order("source_row", { ascending: false });

@@ -32,6 +32,20 @@ type ParsedDte = {
   lines: ImportedLine[];
 };
 
+type PayableMatch = {
+  documentId: string | null;
+  status: "matched" | "review_required";
+  reason: string;
+};
+
+type PaymentCandidate = {
+  id: string;
+  document_number: string | null;
+  supplier_tax_id: string | null;
+  total_amount: number | string;
+  payment_proof_path: string | null;
+};
+
 const parser = new XMLParser({ ignoreAttributes: false, trimValues: true, parseTagValue: false });
 
 function item(value: unknown): Record<string, unknown> | null {
@@ -126,6 +140,62 @@ function mailConfig() {
   const port = Number(process.env.SII_IMAP_PORT ?? "993");
   if (!host || !user || !pass || !Number.isInteger(port)) throw new Error("sii_mail_not_configured");
   return { host, user, pass, port };
+}
+
+function normalizedDigits(value: string | null | undefined) {
+  return (value ?? "").replace(/\D/g, "");
+}
+
+function containsExactNumber(haystack: string, value: string) {
+  const normalized = normalizedDigits(value).replace(/^0+/, "");
+  if (!normalized || normalized.length < 3) return false;
+  return new RegExp(`(?:^|\\D)0*${normalized}(?=\\D|$)`).test(haystack);
+}
+
+function containsAmount(haystack: string, value: number | string) {
+  const amount = Math.round(Number(value));
+  if (!Number.isFinite(amount) || amount <= 0) return false;
+  const formatted = new Intl.NumberFormat("es-CL", { maximumFractionDigits: 0 }).format(amount);
+  return haystack.includes(String(amount)) || haystack.includes(formatted) || haystack.includes(`$${formatted}`);
+}
+
+function paymentEmail(text: string) {
+  return /(?:comprobante|confirmaci[oó]n|transferencia|pagad[oa]|pago|abono|deposito|dep[oó]sito|cartola)/i.test(text);
+}
+
+function matchPaymentProof(documents: PaymentCandidate[], searchable: string): PayableMatch {
+  const byFolio = documents.filter((document) => document.document_number && containsExactNumber(searchable, document.document_number));
+  if (byFolio.length === 1) {
+    const document = byFolio[0];
+    if (document.payment_proof_path) return { documentId: null, status: "review_required", reason: "La factura identificada ya tiene un comprobante adjunto." };
+    return { documentId: document.id, status: "matched", reason: "Coincidencia exacta por folio de factura." };
+  }
+  if (byFolio.length > 1) return { documentId: null, status: "review_required", reason: "El folio indicado coincide con más de una cuenta por pagar." };
+
+  const byRutAndAmount = documents.filter((document) => {
+    const rut = normalizedDigits(document.supplier_tax_id);
+    return rut.length >= 8 && containsExactNumber(searchable, rut) && containsAmount(searchable, document.total_amount);
+  });
+  if (byRutAndAmount.length === 1) {
+    const document = byRutAndAmount[0];
+    if (document.payment_proof_path) return { documentId: null, status: "review_required", reason: "La factura identificada ya tiene un comprobante adjunto." };
+    return { documentId: document.id, status: "matched", reason: "Coincidencia por RUT de proveedor y monto exacto." };
+  }
+  if (byRutAndAmount.length > 1) return { documentId: null, status: "review_required", reason: "RUT y monto coinciden con más de una cuenta por pagar." };
+  return { documentId: null, status: "review_required", reason: "No se encontró una coincidencia inequívoca con una cuenta por pagar." };
+}
+
+function attachmentExtension(filename: string | undefined, mimeType: string) {
+  const extension = filename?.split(".").pop()?.toLowerCase();
+  if (extension && ["pdf", "jpg", "jpeg", "png"].includes(extension)) return extension === "jpeg" ? "jpg" : extension;
+  return mimeType === "application/pdf" ? "pdf" : mimeType === "image/png" ? "png" : "jpg";
+}
+
+function paymentProofAttachment(contentType: string, filename: string | undefined, size: number) {
+  const mimeType = contentType.toLowerCase().split(";")[0];
+  return size > 0 && size <= 52_428_800 && (
+    mimeType === "application/pdf" || mimeType === "image/jpeg" || mimeType === "image/png" || /\.(pdf|jpe?g|png)$/i.test(filename ?? "")
+  );
 }
 
 async function importXml(admin: SupabaseClient, organizationId: string, xml: Buffer, messageId: string, attachmentIndex: number) {
@@ -243,4 +313,106 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
     await client.logout().catch(() => undefined);
   }
   return { scanned, created, updated };
+}
+
+export async function syncPaymentProofMailbox(admin: SupabaseClient, organizationId: string) {
+  const config = mailConfig();
+  const client = new ImapFlow({ host: config.host, port: config.port, secure: true, auth: { user: config.user, pass: config.pass }, logger: false });
+  let scanned = 0;
+  let matched = 0;
+  let reviewRequired = 0;
+  let stage = "connect";
+  try {
+    await client.connect();
+    stage = "open_inbox";
+    const lock = await client.getMailboxLock("INBOX");
+    try {
+      stage = "load_payables";
+      const { data: documents, error: documentsError } = await admin
+        .from("received_documents")
+        .select("id, document_number, supplier_tax_id, total_amount, payment_proof_path")
+        .eq("organization_id", organizationId)
+        .not("document_number", "is", null);
+      if (documentsError) throw new Error("payment_proof_payables_load_failed");
+      stage = "search_unseen";
+      const searched = await client.search({ seen: false }, { uid: true });
+      const uids = Array.isArray(searched) ? searched.slice(-50) : [];
+      stage = "fetch_messages";
+      for await (const message of client.fetch(uids, { uid: true, source: true }, { uid: true })) {
+        if (!message.source) continue;
+        stage = "parse_message";
+        const mail = await simpleParser(message.source, {});
+        const subject = mail.subject ?? "";
+        const attachmentNames = (mail.attachments ?? []).map((attachment) => attachment.filename ?? "").join(" ");
+        const searchable = `${subject}\n${mail.text ?? ""}\n${attachmentNames}`;
+        const attachments = (mail.attachments ?? []).filter((attachment) => paymentProofAttachment(attachment.contentType, attachment.filename, attachment.size));
+        if (!attachments.length || !paymentEmail(searchable)) continue;
+        scanned += 1;
+        const messageId = mail.messageId || `uid-${message.uid}`;
+        for (const attachment of attachments) {
+          const checksum = createHash("sha256").update(attachment.content).digest("hex");
+          const { data: alreadyImported } = await admin
+            .from("mail_payment_receipts")
+            .select("id")
+            .eq("organization_id", organizationId)
+            .eq("attachment_sha256", checksum)
+            .maybeSingle();
+          if (alreadyImported) continue;
+          stage = "match_payment_proof";
+          const result = matchPaymentProof((documents ?? []) as PaymentCandidate[], searchable);
+          const mimeType = attachment.contentType.toLowerCase().split(";")[0] === "application/pdf" || attachment.contentType.toLowerCase().includes("pdf")
+            ? "application/pdf"
+            : attachment.contentType.toLowerCase().includes("png") ? "image/png" : "image/jpeg";
+          const safeName = (attachment.filename || `comprobante-${checksum.slice(0, 12)}.${attachmentExtension(attachment.filename, mimeType)}`).slice(0, 300);
+          const storagePath = `${organizationId}/payment-proofs/mail/${checksum}.${attachmentExtension(attachment.filename, mimeType)}`;
+          stage = "store_payment_proof";
+          const { error: uploadError } = await admin.storage.from("received-document-files").upload(storagePath, attachment.content, { contentType: mimeType, upsert: false });
+          if (uploadError && !/already exists/i.test(uploadError.message)) throw new Error("payment_proof_storage_failed");
+          if (result.documentId) {
+            stage = "attach_payment_proof";
+            const { error: attachError } = await admin.from("received_documents").update({
+              payment_proof_path: storagePath,
+              payment_proof_name: safeName,
+              payment_proof_mime_type: mimeType,
+              payment_proof_size: attachment.size,
+            }).eq("id", result.documentId).eq("organization_id", organizationId).is("payment_proof_path", null);
+            if (attachError) throw new Error("payment_proof_attach_failed");
+            matched += 1;
+          } else {
+            reviewRequired += 1;
+          }
+          stage = "record_payment_proof";
+          const { error: receiptError } = await admin.from("mail_payment_receipts").insert({
+            organization_id: organizationId,
+            received_document_id: result.documentId,
+            message_id: messageId.slice(0, 500),
+            attachment_sha256: checksum,
+            attachment_name: safeName,
+            attachment_mime_type: mimeType,
+            attachment_size: attachment.size,
+            storage_path: storagePath,
+            email_subject: subject.slice(0, 1000) || null,
+            received_at: mail.date?.toISOString() ?? null,
+            match_status: result.status,
+            match_reason: result.reason,
+          });
+          if (receiptError) throw new Error("payment_proof_receipt_record_failed");
+        }
+        stage = "mark_seen";
+        await client.messageFlagsAdd(message.uid, ["\\Seen"], { uid: true });
+      }
+    } finally {
+      lock.release();
+    }
+  } catch (error) {
+    const imapError = error as Error & { code?: string; responseText?: string; response?: string };
+    const message = imapError instanceof Error ? imapError.message : String(error);
+    const detail = [imapError.code, imapError.responseText, imapError.response]
+      .filter((value): value is string => typeof value === "string" && Boolean(value))
+      .join(" · ");
+    throw new Error(`payment_proof_imap_${stage}: ${message}${detail ? ` (${detail})` : ""}`);
+  } finally {
+    await client.logout().catch(() => undefined);
+  }
+  return { scanned, matched, reviewRequired };
 }
