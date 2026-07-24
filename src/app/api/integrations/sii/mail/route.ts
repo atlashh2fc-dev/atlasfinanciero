@@ -1,0 +1,46 @@
+import { NextRequest, NextResponse } from "next/server";
+import { isUuid, requireOrganizationAdministrator } from "@/lib/admin-access";
+import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
+import { syncSiiMailbox } from "@/lib/sii/mail-import";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 300;
+
+function authorized(request: NextRequest) {
+  const secret = process.env.CRON_SECRET;
+  return Boolean(secret && request.headers.get("authorization") === `Bearer ${secret}`);
+}
+
+function clientSafeMailError(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("AUTHENTICATIONFAILED")) return "El servidor rechazó las credenciales del buzón. Actualiza la clave de finanzas@geimser.cl en la integración.";
+  if (message.includes("ENOTFOUND")) return "No fue posible encontrar el servidor de correo configurado.";
+  return "No fue posible sincronizar el correo tributario. Intenta nuevamente o revisa la configuración.";
+}
+
+export async function POST(request: NextRequest) {
+  const body = await request.json().catch(() => null) as { organizationId?: unknown } | null;
+  if (!isUuid(body?.organizationId)) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
+  const context = await requireOrganizationAdministrator(body.organizationId);
+  if (context.error) return NextResponse.json({ error: context.error }, { status: context.status });
+  if (!hasSupabaseAdminKey()) return NextResponse.json({ error: "server_admin_key_required" }, { status: 503 });
+  try {
+    return NextResponse.json(await syncSiiMailbox(createAdminClient(), body.organizationId));
+  } catch (error) {
+    return NextResponse.json({ error: clientSafeMailError(error) }, { status: 502 });
+  }
+}
+
+export async function GET(request: NextRequest) {
+  if (!authorized(request)) return NextResponse.json({ error: "cron_authorization_required" }, { status: 401 });
+  if (!hasSupabaseAdminKey()) return NextResponse.json({ error: "server_admin_key_required" }, { status: 503 });
+  const admin = createAdminClient();
+  const { data, error } = await admin.from("sii_integrations").select("organization_id").eq("is_enabled", true).eq("inbound_channel", "email");
+  if (error) return NextResponse.json({ error: "unable_to_load_sii_mail_integrations" }, { status: 500 });
+  const results = [];
+  for (const integration of data ?? []) {
+    try { results.push({ organizationId: integration.organization_id, ok: true, ...(await syncSiiMailbox(admin, integration.organization_id)) }); }
+    catch (syncError) { results.push({ organizationId: integration.organization_id, ok: false, error: syncError instanceof Error ? syncError.message.slice(0, 300) : "sii_mail_sync_failed" }); }
+  }
+  return NextResponse.json({ results, executedAt: new Date().toISOString() });
+}

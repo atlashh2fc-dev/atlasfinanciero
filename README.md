@@ -35,6 +35,14 @@ La aplicación usa la URL y Publishable Key pública en `.env.local` (archivo ig
 
 Las credenciales de PeopleWork se mantienen exclusivamente en variables de servidor (`PEOPLEWORK_*`), sin prefijo `NEXT_PUBLIC_`. Para activar la sincronización se necesita, además de la API Key y Secret Key, el contrato técnico de PeopleWork: URL base, esquema de autenticación y endpoint/campos del costo de remuneraciones. El modelo no asume esos elementos ni intenta convertir liquidaciones individuales.
 
+### SII · DTE recibidos
+
+La integración directa usa los Web Services oficiales del SII para autenticación con certificado digital, consulta de historial/fecha de recepción y Registro de Aceptación o Reclamo. No guarda certificados, contraseñas ni tokens en Supabase: `SII_PRIVATE_KEY_PEM` y `SII_CERTIFICATE_PEM` son secretos de servidor en PEM. El certificado debe pertenecer a un representante legal o usuario autorizado para el RUT configurado.
+
+Cada documento debe tener RUT de emisor, tipo SII y folio. El WS de registro cubre los tipos 33, 34 y 43 y las acciones `ACD` (aceptar contenido), `ERM` (acuse de mercaderías/servicios), `RCD` (reclamo de contenido), `RFP` y `RFT` (falta parcial/total). Las acciones se registran primero en la bitácora y requieren confirmación explícita; no hay aceptación automática. La fecha de recepción del SII se consulta para calcular la alerta interna de ocho días.
+
+El SII no entrega un webhook de facturas recibidas en estos WS. La entrada debe ser el correo tributario del receptor, un proveedor que entregue el XML, o una carga controlada; en todos los casos se deduplica por RUT emisor + tipo + folio antes de registrar un DTE.
+
 Las migraciones incluyen organizaciones, perfiles, membresías por rol, terceros, documentos emitidos, lotes de importación, forecast, almacenamiento privado del libro y auditoría. Las políticas RLS impiden lectura y edición fuera de la organización.
 
 Para incorporar el primer usuario, crea o confirma su cuenta en Supabase Auth y asígnala a GEIMSER con el rol `administrator`. No se asigna este permiso automáticamente a una dirección de correo supuesta.

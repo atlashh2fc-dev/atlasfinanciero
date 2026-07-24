@@ -4,6 +4,10 @@
     {
       "path": "/api/mercado-publico/radar",
       "schedule": "30 11 * * *"
+    },
+    {
+      "path": "/api/integrations/sii/mail",
+      "schedule": "*/30 * * * *"
     }
   ]
 }

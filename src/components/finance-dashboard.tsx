@@ -3107,6 +3107,7 @@ export function FinanceDashboard() {
             <ExpensesDashboard
               organizationId={access?.membership.organizationId ?? null}
               canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
+              canConfigureSii={access?.membership.role === "administrator"}
             />
           ) : null
         ) : activeModule === "Compras, obligaciones y pagos" ? (

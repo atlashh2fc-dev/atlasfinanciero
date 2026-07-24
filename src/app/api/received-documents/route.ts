@@ -66,7 +66,7 @@ export async function GET(request: NextRequest) {
 
   let documentsQuery = context.supabase
     .from("received_documents")
-    .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_method, payment_bank, payment_reference, payment_notes, payment_date, payment_recorded_at, payment_recorded_by, attachment_path, attachment_name, attachment_mime_type, attachment_size, source_file_name, source_sheet_name, source_row")
+    .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_method, payment_bank, payment_reference, payment_notes, payment_date, payment_recorded_at, payment_recorded_by, attachment_path, attachment_name, attachment_mime_type, attachment_size, source_file_name, source_sheet_name, source_row, sii_document_type, sii_folio, sii_received_at, sii_response_deadline, sii_event_status, sii_last_checked_at")
     .eq("organization_id", organizationId)
     .order("issue_date", { ascending: false })
     .order("source_row", { ascending: false });
@@ -138,6 +138,16 @@ export async function PATCH(request: NextRequest) {
     const netAmount = nonNegativeAmount(body.netAmount);
     const vatAmount = nonNegativeAmount(body.vatAmount);
     const additionalTaxAmount = nonNegativeAmount(body.additionalTaxAmount);
+    const siiDocumentType = body.siiDocumentType === null || body.siiDocumentType === undefined || body.siiDocumentType === ""
+      ? null
+      : Number.isInteger(Number(body.siiDocumentType)) && Number(body.siiDocumentType) >= 1 && Number(body.siiDocumentType) <= 999
+        ? Number(body.siiDocumentType)
+        : undefined;
+    const siiFolio = body.siiFolio === null || body.siiFolio === undefined || body.siiFolio === ""
+      ? null
+      : Number.isSafeInteger(Number(body.siiFolio)) && Number(body.siiFolio) > 0
+        ? Number(body.siiFolio)
+        : undefined;
     if (
       supplierName === undefined || !supplierName ||
       supplierTaxId === undefined ||
@@ -147,7 +157,9 @@ export async function PATCH(request: NextRequest) {
       dueDate === undefined ||
       notes === undefined ||
       paymentTermDays === undefined ||
-      netAmount === undefined || vatAmount === undefined || additionalTaxAmount === undefined
+      netAmount === undefined || vatAmount === undefined || additionalTaxAmount === undefined ||
+      siiDocumentType === undefined || siiFolio === undefined ||
+      (siiDocumentType === null) !== (siiFolio === null)
     ) return NextResponse.json({ error: "invalid_received_document" }, { status: 400 });
 
     const context = await requireOrganizationFinanceAccess(organizationId);
@@ -172,10 +184,12 @@ export async function PATCH(request: NextRequest) {
         payment_term_days: paymentTermDays,
         due_date: dueDate,
         due_month: dueMonth,
+        sii_document_type: siiDocumentType,
+        sii_folio: siiFolio,
       })
       .eq("id", body.documentId)
       .eq("organization_id", organizationId)
-      .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, due_date, payment_status, payment_method, payment_bank, payment_reference, payment_date, attachment_path, attachment_name, attachment_mime_type, attachment_size")
+      .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, due_date, payment_status, payment_method, payment_bank, payment_reference, payment_date, attachment_path, attachment_name, attachment_mime_type, attachment_size, sii_document_type, sii_folio, sii_received_at, sii_response_deadline, sii_event_status, sii_last_checked_at")
       .maybeSingle();
     if (error || !data)
       return NextResponse.json({ error: "unable_to_update_received_document" }, { status: 409 });
