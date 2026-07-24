@@ -302,7 +302,7 @@ async function importXml(admin: SupabaseClient, organizationId: string, xml: Buf
   return { outcome: existingId ? "updated" as const : "created" as const, documentId: result.data.id, dte };
 }
 
-export async function syncSiiMailbox(admin: SupabaseClient, organizationId: string) {
+export async function syncSiiMailbox(admin: SupabaseClient, organizationId: string, messageLimit = 25) {
   const config = mailConfig();
   const client = new ImapFlow({ host: config.host, port: config.port, secure: true, auth: { user: config.user, pass: config.pass }, logger: false });
   let created = 0;
@@ -318,39 +318,70 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
     try {
       stage = "search_unseen";
       const searched = await client.search({ seen: false }, { uid: true });
-      const uids = Array.isArray(searched) ? searched.slice(-25) : [];
+      const candidates = Array.isArray(searched) ? searched.slice(-100) : [];
+      const headers: { uid: number; messageId: string }[] = [];
+      for await (const message of client.fetch(candidates, { uid: true, envelope: true }, { uid: true })) {
+        headers.push({ uid: message.uid, messageId: (message.envelope?.messageId || `uid-${message.uid}`).slice(0, 500) });
+      }
+      const { data: processed, error: processedError } = headers.length
+        ? await admin.from("sii_mail_processed_messages").select("message_id").eq("organization_id", organizationId).in("message_id", headers.map((header) => header.messageId))
+        : { data: [], error: null };
+      if (processedError) throw new Error("sii_mail_processed_messages_load_failed");
+      const alreadyProcessed = new Set((processed ?? []).map((row) => row.message_id));
+      const uids = headers.filter((header) => !alreadyProcessed.has(header.messageId)).slice(-Math.max(1, Math.min(messageLimit, 25))).map((header) => header.uid);
       stage = "fetch_messages";
       for await (const message of client.fetch(uids, { uid: true, source: true, envelope: true }, { uid: true })) {
         scanned += 1;
         if (!message.source) continue;
-        stage = "parse_message";
-        const mail = await simpleParser(message.source, {});
-        const messageId = mail.messageId || `uid-${message.uid}`;
+        const messageId = (message.envelope?.messageId || `uid-${message.uid}`).slice(0, 500);
         let imported = 0;
-        for (const [index, attachment] of (mail.attachments ?? []).entries()) {
-          const isXml = dteXmlAttachment(attachment.contentType, attachment.filename);
-          if (!isXml) continue;
-          try {
-            stage = "import_xml";
-            const result = await importXml(admin, organizationId, attachment.content, messageId, index + 1);
-            if (result.outcome === "created") created += 1;
-            else updated += 1;
-            const invoiceFile = matchingInvoiceFile(result.dte, (mail.attachments ?? []) as { contentType: string; filename?: string; content: Buffer; size?: number }[]);
-            if (invoiceFile) {
-              try {
-                stage = "attach_invoice_file";
-                await attachInvoiceFile(admin, organizationId, result.documentId, invoiceFile);
-                filesAttached += 1;
-              } catch (fileError) {
-                console.error("No fue posible adjuntar el PDF recibido", fileError);
+        let processingStatus: "imported" | "ignored" | "failed" = "ignored";
+        let detail: string | null = null;
+        try {
+          stage = "parse_message";
+          const mail = await simpleParser(message.source, {});
+          const xmlAttachments = (mail.attachments ?? []).filter((attachment) => dteXmlAttachment(attachment.contentType, attachment.filename));
+          for (const [index, attachment] of xmlAttachments.entries()) {
+            try {
+              stage = "import_xml";
+              const result = await importXml(admin, organizationId, attachment.content, messageId, index + 1);
+              if (result.outcome === "created") created += 1;
+              else updated += 1;
+              const invoiceFile = matchingInvoiceFile(result.dte, (mail.attachments ?? []) as { contentType: string; filename?: string; content: Buffer; size?: number }[]);
+              if (invoiceFile) {
+                try {
+                  stage = "attach_invoice_file";
+                  await attachInvoiceFile(admin, organizationId, result.documentId, invoiceFile);
+                  filesAttached += 1;
+                } catch (fileError) {
+                  console.error("No fue posible adjuntar el PDF recibido", fileError);
+                }
               }
+              imported += 1;
+            } catch (importError) {
+              skipped += 1;
+              detail = "XML sin una factura recibida válida";
+              console.error("Se omitió un XML que no corresponde a una factura recibida", importError);
             }
-            imported += 1;
-          } catch (importError) {
-            skipped += 1;
-            console.error("Se omitió un XML que no corresponde a una factura recibida", importError);
           }
+          if (!xmlAttachments.length) detail = "Correo sin DTE";
+          processingStatus = imported ? "imported" : "ignored";
+        } catch (messageError) {
+          skipped += 1;
+          processingStatus = "failed";
+          detail = messageError instanceof Error ? messageError.message.slice(0, 500) : "No fue posible leer el correo";
+          console.error("No fue posible procesar un correo tributario", messageError);
         }
+        stage = "record_message";
+        const { error: recordError } = await admin.from("sii_mail_processed_messages").upsert({
+          organization_id: organizationId,
+          message_id: messageId,
+          imap_uid: message.uid,
+          processing_status: processingStatus,
+          detail,
+          processed_at: new Date().toISOString(),
+        }, { onConflict: "organization_id,message_id" });
+        if (recordError) throw new Error("sii_mail_processed_message_record_failed");
         if (imported) {
           stage = "mark_seen";
           await client.messageFlagsAdd(message.uid, ["\\Seen"], { uid: true });
@@ -393,70 +424,108 @@ export async function syncPaymentProofMailbox(admin: SupabaseClient, organizatio
       if (documentsError) throw new Error("payment_proof_payables_load_failed");
       stage = "search_unseen";
       const searched = await client.search({ seen: false }, { uid: true });
-      const uids = Array.isArray(searched) ? searched.slice(-50) : [];
+      const candidates = Array.isArray(searched) ? searched.slice(-100) : [];
+      const headers: { uid: number; messageId: string }[] = [];
+      for await (const message of client.fetch(candidates, { uid: true, envelope: true }, { uid: true })) {
+        headers.push({ uid: message.uid, messageId: (message.envelope?.messageId || `uid-${message.uid}`).slice(0, 500) });
+      }
+      const { data: processed, error: processedError } = headers.length
+        ? await admin.from("mail_payment_processed_messages").select("message_id").eq("organization_id", organizationId).in("message_id", headers.map((header) => header.messageId))
+        : { data: [], error: null };
+      if (processedError) throw new Error("payment_proof_processed_messages_load_failed");
+      const alreadyProcessed = new Set((processed ?? []).map((row) => row.message_id));
+      const uids = headers.filter((header) => !alreadyProcessed.has(header.messageId)).slice(-50).map((header) => header.uid);
       stage = "fetch_messages";
       for await (const message of client.fetch(uids, { uid: true, source: true }, { uid: true })) {
         if (!message.source) continue;
-        stage = "parse_message";
-        const mail = await simpleParser(message.source, {});
-        const subject = mail.subject ?? "";
-        const attachmentNames = (mail.attachments ?? []).map((attachment) => attachment.filename ?? "").join(" ");
-        const searchable = `${subject}\n${mail.text ?? ""}\n${attachmentNames}`;
-        const attachments = (mail.attachments ?? []).filter((attachment) => paymentProofAttachment(attachment.contentType, attachment.filename, attachment.size));
-        if (!attachments.length || !paymentEmail(searchable)) continue;
-        scanned += 1;
-        const messageId = mail.messageId || `uid-${message.uid}`;
-        for (const attachment of attachments) {
-          const checksum = createHash("sha256").update(attachment.content).digest("hex");
-          const { data: alreadyImported } = await admin
-            .from("mail_payment_receipts")
-            .select("id")
-            .eq("organization_id", organizationId)
-            .eq("attachment_sha256", checksum)
-            .maybeSingle();
-          if (alreadyImported) continue;
-          stage = "match_payment_proof";
-          const result = matchPaymentProof((documents ?? []) as PaymentCandidate[], searchable);
-          const mimeType = attachment.contentType.toLowerCase().split(";")[0] === "application/pdf" || attachment.contentType.toLowerCase().includes("pdf")
-            ? "application/pdf"
-            : attachment.contentType.toLowerCase().includes("png") ? "image/png" : "image/jpeg";
-          const safeName = (attachment.filename || `comprobante-${checksum.slice(0, 12)}.${attachmentExtension(attachment.filename, mimeType)}`).slice(0, 300);
-          const storagePath = `${organizationId}/payment-proofs/mail/${checksum}.${attachmentExtension(attachment.filename, mimeType)}`;
-          stage = "store_payment_proof";
-          const { error: uploadError } = await admin.storage.from("received-document-files").upload(storagePath, attachment.content, { contentType: mimeType, upsert: false });
-          if (uploadError && !/already exists/i.test(uploadError.message)) throw new Error("payment_proof_storage_failed");
-          if (result.documentId) {
-            stage = "attach_payment_proof";
-            const { error: attachError } = await admin.from("received_documents").update({
-              payment_proof_path: storagePath,
-              payment_proof_name: safeName,
-              payment_proof_mime_type: mimeType,
-              payment_proof_size: attachment.size,
-            }).eq("id", result.documentId).eq("organization_id", organizationId).is("payment_proof_path", null);
-            if (attachError) throw new Error("payment_proof_attach_failed");
-            matched += 1;
+        const messageId = `uid-${message.uid}`;
+        let processingStatus: "imported" | "ignored" | "failed" = "ignored";
+        let detail: string | null = null;
+        let relevant = false;
+        try {
+          stage = "parse_message";
+          const mail = await simpleParser(message.source, {});
+          const canonicalMessageId = (mail.messageId || messageId).slice(0, 500);
+          const subject = mail.subject ?? "";
+          const attachmentNames = (mail.attachments ?? []).map((attachment) => attachment.filename ?? "").join(" ");
+          const searchable = `${subject}\n${mail.text ?? ""}\n${attachmentNames}`;
+          const attachments = (mail.attachments ?? []).filter((attachment) => paymentProofAttachment(attachment.contentType, attachment.filename, attachment.size));
+          if (!attachments.length || !paymentEmail(searchable)) {
+            detail = "Correo sin comprobante de pago";
           } else {
-            reviewRequired += 1;
+            relevant = true;
+            scanned += 1;
+            for (const attachment of attachments) {
+              const checksum = createHash("sha256").update(attachment.content).digest("hex");
+              const { data: alreadyImported } = await admin
+                .from("mail_payment_receipts")
+                .select("id")
+                .eq("organization_id", organizationId)
+                .eq("attachment_sha256", checksum)
+                .maybeSingle();
+              if (alreadyImported) continue;
+              stage = "match_payment_proof";
+              const result = matchPaymentProof((documents ?? []) as PaymentCandidate[], searchable);
+              const mimeType = attachment.contentType.toLowerCase().split(";")[0] === "application/pdf" || attachment.contentType.toLowerCase().includes("pdf")
+                ? "application/pdf"
+                : attachment.contentType.toLowerCase().includes("png") ? "image/png" : "image/jpeg";
+              const safeName = (attachment.filename || `comprobante-${checksum.slice(0, 12)}.${attachmentExtension(attachment.filename, mimeType)}`).slice(0, 300);
+              const storagePath = `${organizationId}/payment-proofs/mail/${checksum}.${attachmentExtension(attachment.filename, mimeType)}`;
+              stage = "store_payment_proof";
+              const { error: uploadError } = await admin.storage.from("received-document-files").upload(storagePath, attachment.content, { contentType: mimeType, upsert: false });
+              if (uploadError && !/already exists/i.test(uploadError.message)) throw new Error("payment_proof_storage_failed");
+              if (result.documentId) {
+                stage = "attach_payment_proof";
+                const { error: attachError } = await admin.from("received_documents").update({
+                  payment_proof_path: storagePath,
+                  payment_proof_name: safeName,
+                  payment_proof_mime_type: mimeType,
+                  payment_proof_size: attachment.size,
+                }).eq("id", result.documentId).eq("organization_id", organizationId).is("payment_proof_path", null);
+                if (attachError) throw new Error("payment_proof_attach_failed");
+                matched += 1;
+              } else {
+                reviewRequired += 1;
+              }
+              stage = "record_payment_proof";
+              const { error: receiptError } = await admin.from("mail_payment_receipts").insert({
+                organization_id: organizationId,
+                received_document_id: result.documentId,
+                message_id: canonicalMessageId,
+                attachment_sha256: checksum,
+                attachment_name: safeName,
+                attachment_mime_type: mimeType,
+                attachment_size: attachment.size,
+                storage_path: storagePath,
+                email_subject: subject.slice(0, 1000) || null,
+                received_at: mail.date?.toISOString() ?? null,
+                match_status: result.status,
+                match_reason: result.reason,
+              });
+              if (receiptError) throw new Error("payment_proof_receipt_record_failed");
+            }
+            processingStatus = "imported";
           }
-          stage = "record_payment_proof";
-          const { error: receiptError } = await admin.from("mail_payment_receipts").insert({
+          stage = "record_payment_message";
+          const { error: recordError } = await admin.from("mail_payment_processed_messages").upsert({
             organization_id: organizationId,
-            received_document_id: result.documentId,
-            message_id: messageId.slice(0, 500),
-            attachment_sha256: checksum,
-            attachment_name: safeName,
-            attachment_mime_type: mimeType,
-            attachment_size: attachment.size,
-            storage_path: storagePath,
-            email_subject: subject.slice(0, 1000) || null,
-            received_at: mail.date?.toISOString() ?? null,
-            match_status: result.status,
-            match_reason: result.reason,
-          });
-          if (receiptError) throw new Error("payment_proof_receipt_record_failed");
+            message_id: canonicalMessageId,
+            imap_uid: message.uid,
+            processing_status: processingStatus,
+            detail,
+            processed_at: new Date().toISOString(),
+          }, { onConflict: "organization_id,message_id" });
+          if (recordError) throw new Error("payment_proof_processed_message_record_failed");
+        } catch (messageError) {
+          processingStatus = "failed";
+          detail = messageError instanceof Error ? messageError.message.slice(0, 500) : "No fue posible leer el correo";
+          await admin.from("mail_payment_processed_messages").upsert({ organization_id: organizationId, message_id: messageId, imap_uid: message.uid, processing_status: processingStatus, detail, processed_at: new Date().toISOString() }, { onConflict: "organization_id,message_id" });
+          console.error("No fue posible procesar un comprobante de pago", messageError);
         }
-        stage = "mark_seen";
-        await client.messageFlagsAdd(message.uid, ["\\Seen"], { uid: true });
+        if (relevant) {
+          stage = "mark_seen";
+          await client.messageFlagsAdd(message.uid, ["\\Seen"], { uid: true });
+        }
       }
     } finally {
       lock.release();

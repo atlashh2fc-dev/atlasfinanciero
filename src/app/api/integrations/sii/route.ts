@@ -35,12 +35,13 @@ export async function GET(request: NextRequest) {
   if (!isUuid(organizationId)) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   const context = await requireOrganizationExpenseReadAccess(organizationId);
   if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
-  const [integration, events] = await Promise.all([
+  const [integration, events, syncRuns] = await Promise.all([
     context.supabase.from("sii_integrations").select("taxpayer_rut, environment, inbound_channel, inbound_address, is_enabled, configured_at").eq("organization_id", organizationId).maybeSingle(),
     context.supabase.from("sii_dte_events").select("id, received_document_id, action, reason, request_status, sii_response_code, sii_response_message, requested_at, completed_at").eq("organization_id", organizationId).order("requested_at", { ascending: false }).limit(500),
+    context.supabase.from("sii_mail_sync_runs").select("started_at, completed_at, run_status, dte_created, dte_updated, dte_skipped, invoice_files_attached, payment_matched, payment_review_required, error_detail").eq("organization_id", organizationId).order("started_at", { ascending: false }).limit(48),
   ]);
-  if (integration.error || events.error) return NextResponse.json({ error: "unable_to_load_sii_integration" }, { status: 500 });
-  return NextResponse.json({ integration: integration.data, events: events.data ?? [], certificateConfigured: Boolean(process.env.SII_PRIVATE_KEY_PEM && process.env.SII_CERTIFICATE_PEM) });
+  if (integration.error || events.error || syncRuns.error) return NextResponse.json({ error: "unable_to_load_sii_integration" }, { status: 500 });
+  return NextResponse.json({ integration: integration.data, events: events.data ?? [], mailSyncRuns: syncRuns.data ?? [], certificateConfigured: Boolean(process.env.SII_PRIVATE_KEY_PEM && process.env.SII_CERTIFICATE_PEM) });
 }
 
 export async function PATCH(request: NextRequest) {

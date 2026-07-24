@@ -37,6 +37,19 @@ type Event = {
   completed_at: string | null;
 };
 
+type MailSyncRun = {
+  started_at: string;
+  completed_at: string | null;
+  run_status: "completed" | "failed";
+  dte_created: number;
+  dte_updated: number;
+  dte_skipped: number;
+  invoice_files_attached: number;
+  payment_matched: number;
+  payment_review_required: number;
+  error_detail: string | null;
+};
+
 type ConfigDraft = {
   taxpayerRut: string;
   environment: "production" | "certification";
@@ -102,6 +115,7 @@ export function SiiDteIntegration({
 }) {
   const [integration, setIntegration] = useState<Integration | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
+  const [mailSyncRuns, setMailSyncRuns] = useState<MailSyncRun[]>([]);
   const [certificateConfigured, setCertificateConfigured] = useState(false);
   const [draft, setDraft] = useState<ConfigDraft>({
     taxpayerRut: "",
@@ -121,6 +135,7 @@ export function SiiDteIntegration({
     if (!organizationId) {
       setIntegration(null);
       setEvents([]);
+      setMailSyncRuns([]);
       setLoading(false);
       return;
     }
@@ -133,6 +148,7 @@ export function SiiDteIntegration({
       const payload = (await response.json().catch(() => null)) as {
         integration?: Integration | null;
         events?: Event[];
+        mailSyncRuns?: MailSyncRun[];
         certificateConfigured?: boolean;
       } | null;
       if (!response.ok || !payload) {
@@ -141,6 +157,7 @@ export function SiiDteIntegration({
       }
       setIntegration(payload.integration ?? null);
       setEvents(payload.events ?? []);
+      setMailSyncRuns(payload.mailSyncRuns ?? []);
       setCertificateConfigured(Boolean(payload.certificateConfigured));
       if (payload.integration) {
         setDraft({
@@ -243,30 +260,6 @@ export function SiiDteIntegration({
     }
   }
 
-  async function syncMailbox() {
-    if (!organizationId) return;
-    setSyncingMailbox(true);
-    try {
-      const response = await fetch("/api/integrations/sii/mail", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ organizationId }),
-      });
-      const payload = (await response.json().catch(() => null)) as { created?: number; updated?: number; skipped?: number; filesAttached?: number; error?: string } | null;
-      if (!response.ok) {
-        const error = payload?.error;
-        setMessage(error === "sii_mail_not_configured" ? "Falta la configuración segura del correo tributario." : `No fue posible leer el correo tributario${error ? `: ${error}` : "."}`);
-        return;
-      }
-      await Promise.all([load(), onRefreshDocuments()]);
-      setMessage(`${payload?.created ?? 0} factura(s) nueva(s), ${payload?.updated ?? 0} actualizada(s) y ${payload?.filesAttached ?? 0} PDF(s) adjuntado(s).${payload?.skipped ? ` Se omitieron ${payload.skipped} archivo(s) que no eran facturas.` : ""}`);
-    } catch {
-      setMessage("No fue posible sincronizar el correo tributario.");
-    } finally {
-      setSyncingMailbox(false);
-    }
-  }
-
   async function registerAction(document: SiiDocument, action: "ACD" | "ERM" | "RCD" | "RFP" | "RFT") {
     if (!organizationId) return;
     const claim = ["RCD", "RFP", "RFT"].includes(action);
@@ -308,12 +301,13 @@ export function SiiDteIntegration({
 
   return <>
     <section className="table-section sii-workbench">
-      <div className="table-heading"><div><span className="panel-label">SII · DTE RECIBIDOS</span><h2>Decisiones tributarias</h2><p>Revisa, acepta o reclama DTE sin salir de cuentas por pagar.</p></div><div className="sii-heading-actions"><span className={`status ${certificateConfigured ? "paid" : "cancelled"}`}>{certificateConfigured ? "Conectado" : "Certificado pendiente"}</span>{canConfigure && <button type="button" className="secondary-button" disabled={syncingMailbox || !integration?.is_enabled} onClick={() => void syncMailbox()}>{syncingMailbox ? "Leyendo correo…" : "Sincronizar correo"}</button>}</div></div>
+      <div className="table-heading"><div><span className="panel-label">SII · DTE RECIBIDOS</span><h2>Decisiones tributarias</h2><p>El correo tributario se revisa automáticamente cada 30 minutos.</p></div><div className="sii-heading-actions"><span className={`status ${certificateConfigured && integration?.is_enabled ? "paid" : "cancelled"}`}>{certificateConfigured && integration?.is_enabled ? "Automático activo" : "Conexión pendiente"}</span></div></div>
       {message && <p className="operation-message">{message}</p>}
       <div className="sii-summary-grid">
         <article><strong>{alerts.length}</strong><span>listos para decidir</span></article>
         <article><strong>{trackedDocuments.length}</strong><span>DTE identificados desde correo</span></article>
       </div>
+      {integration?.is_enabled && <p className="form-note">{mailSyncRuns[0] ? mailSyncRuns[0].run_status === "completed" ? `Última revisión: ${displayDate(mailSyncRuns[0].completed_at)}. En las últimas 24 horas: ${mailSyncRuns.filter((run) => new Date(run.started_at).valueOf() >= Date.now() - 24 * 60 * 60 * 1000).reduce((total, run) => total + run.dte_created, 0)} factura(s) nueva(s), ${mailSyncRuns.filter((run) => new Date(run.started_at).valueOf() >= Date.now() - 24 * 60 * 60 * 1000).reduce((total, run) => total + run.invoice_files_attached, 0)} respaldo(s) adjuntado(s) y ${mailSyncRuns.filter((run) => new Date(run.started_at).valueOf() >= Date.now() - 24 * 60 * 60 * 1000).reduce((total, run) => total + run.payment_matched, 0)} comprobante(s) conciliado(s).` : `La última revisión automática falló: ${mailSyncRuns[0].error_detail || "sin detalle"}.` : "La primera revisión automática quedará registrada dentro de 30 minutos."}</p>}
       {alerts.length > 0 && <p className="sii-alert"><strong>Atención:</strong> hay DTE sin decisión o con plazo próximo. Resuélvelos desde la bandeja de abajo.</p>}
       {loading ? <p className="billing-empty">Cargando estado SII…</p> : <details className="sii-settings"><summary>Configuración de la conexión</summary>{canConfigure ? <form className="sii-settings-form" onSubmit={(event) => { event.preventDefault(); void saveConfiguration(); }}>
         <label>RUT contribuyente<input required value={draft.taxpayerRut} maxLength={12} onChange={(event) => setDraft((current) => ({ ...current, taxpayerRut: event.target.value }))} /></label>
