@@ -78,12 +78,12 @@ function collectRows(value: unknown, matcher: (row: Record<string, unknown>) => 
   return found;
 }
 
-async function callRcv(method: string, token: string, data: Record<string, unknown>) {
+async function postRcv(method: string, token: string, data: Record<string, unknown>) {
   const body = {
     metaData: {
       namespace: `${NAMESPACE_PREFIX}/${method}`,
       conversationId: token,
-      transactionId: crypto.randomUUID(),
+      transactionId: "0",
       page: null,
     },
     data,
@@ -96,7 +96,7 @@ async function callRcv(method: string, token: string, data: Record<string, unkno
         "Content-Type": "application/json",
         Accept: "application/json",
         Referer: "https://www4.sii.cl/consdcvinternetui/",
-        Cookie: `TOKEN=${token}`,
+        Cookie: `TOKEN=${token}; NETSCAPE_LIVEWIRE.locexp=${token}`,
       },
       body: JSON.stringify(body),
       cache: "no-store",
@@ -107,12 +107,22 @@ async function callRcv(method: string, token: string, data: Record<string, unkno
     throw new Error("sii_rcv_unavailable");
   }
   const raw = await response.text();
-  if (!response.ok) throw new Error(`sii_rcv_http_${response.status}`);
+  return { status: response.status, raw };
+}
+
+function parseRcvResponse(status: number, raw: string) {
+  // El SII incluye la descripción del problema en el cuerpo incluso con
+  // HTTP 500 (por ejemplo, campos no reconocidos por Jackson). Ese detalle se
+  // propaga para diagnóstico en la bitácora de sincronizaciones.
+  if (status < 200 || status >= 300) {
+    const snippet = raw.replace(/\s+/g, " ").trim().slice(0, 220);
+    throw new Error(`sii_rcv_http_${status}${snippet ? `:${snippet}` : ""}`);
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error("sii_rcv_invalid_response");
+    throw new Error(`sii_rcv_invalid_response:${raw.replace(/\s+/g, " ").trim().slice(0, 220)}`);
   }
   const payload = parsed as { metaData?: { errors?: unknown }; data?: unknown } | null;
   const errors = payload?.metaData?.errors;
@@ -121,6 +131,32 @@ async function callRcv(method: string, token: string, data: Record<string, unkno
     throw new Error(`sii_rcv_error:${detail.slice(0, 300)}`);
   }
   return parsed;
+}
+
+// El contrato exacto del payload ha cambiado con los años (busquedaInicial,
+// campos recaptcha). Se intentan variantes conocidas en orden y se conserva el
+// último error con el detalle textual del SII.
+async function callRcv(method: string, token: string, data: Record<string, unknown>) {
+  const variants: Record<string, unknown>[] = [
+    data,
+    { ...data, busquedaInicial: true },
+    { ...data, accionRecaptcha: "RCV_DETC", tokenRecaptcha: "c3" },
+    { ...data, busquedaInicial: true, accionRecaptcha: "RCV_DETC", tokenRecaptcha: "c3" },
+  ];
+  let lastError: Error | null = null;
+  for (const variant of variants) {
+    const { status, raw } = await postRcv(method, token, variant);
+    try {
+      return parseRcvResponse(status, raw);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("sii_rcv_unavailable");
+      // Sólo reintentar con otra variante ante errores que sugieren contrato
+      // de payload (500/400); un 401/403 es de autenticación y no se resuelve
+      // cambiando campos.
+      if (!/^sii_rcv_(http_(400|500)|error:)/.test(lastError.message)) throw lastError;
+    }
+  }
+  throw lastError ?? new Error("sii_rcv_unavailable");
 }
 
 function summaryDocumentTypes(response: unknown): number[] {
@@ -178,7 +214,6 @@ export async function fetchRcvPeriod(taxpayerRut: string, period: string, operat
     ptributario: period,
     estadoContab: "REGISTRO",
     operacion: operation,
-    busquedaInicial: true,
   };
   const summary = await callRcv("getResumen", token, baseData);
   const documentTypes = summaryDocumentTypes(summary);

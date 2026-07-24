@@ -148,6 +148,8 @@ export function SiiDteIntegration({
   const [rcvSyncRuns, setRcvSyncRuns] = useState<RcvSyncRun[]>([]);
   const [rcvPendingEntries, setRcvPendingEntries] = useState<RcvPendingEntry[]>([]);
   const [syncingRcv, setSyncingRcv] = useState(false);
+  const [rcvMessage, setRcvMessage] = useState<string | null>(null);
+  const [rcvHistoryStart, setRcvHistoryStart] = useState("2026-01");
   const [certificateConfigured, setCertificateConfigured] = useState(false);
   const [draft, setDraft] = useState<ConfigDraft>({
     taxpayerRut: "",
@@ -264,32 +266,83 @@ export function SiiDteIntegration({
     }
   }
 
+  async function requestRcvSync(period?: string) {
+    const response = await fetch("/api/integrations/sii/rcv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(period ? { organizationId, period } : { organizationId }),
+    });
+    const payload = (await response.json().catch(() => null)) as {
+      error?: string;
+      purchasesFetched?: number;
+      salesFetched?: number;
+      purchasesCreated?: number;
+      salesCreated?: number;
+      discrepancies?: number;
+    } | null;
+    return { ok: response.ok, payload };
+  }
+
   async function syncRcvNow() {
     if (!organizationId) return;
     setSyncingRcv(true);
-    setMessage("Sincronizando el Registro de Compras y Ventas del SII…");
+    setRcvMessage("Sincronizando el Registro de Compras y Ventas del SII…");
     try {
-      const response = await fetch("/api/integrations/sii/rcv", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ organizationId }),
-      });
-      const payload = (await response.json().catch(() => null)) as {
-        error?: string;
-        purchasesFetched?: number;
-        salesFetched?: number;
-        purchasesCreated?: number;
-        salesCreated?: number;
-        discrepancies?: number;
-      } | null;
-      if (!response.ok) {
-        setMessage(payload?.error || "No fue posible sincronizar el RCV.");
+      const { ok, payload } = await requestRcvSync();
+      if (!ok) {
+        setRcvMessage(payload?.error || "No fue posible sincronizar el RCV.");
         return;
       }
       await Promise.all([load(), onRefreshDocuments()]);
-      setMessage(`RCV sincronizado: ${payload?.purchasesFetched ?? 0} compra(s) y ${payload?.salesFetched ?? 0} venta(s) leídas del SII; ${(payload?.purchasesCreated ?? 0) + (payload?.salesCreated ?? 0)} documento(s) nuevo(s) y ${payload?.discrepancies ?? 0} discrepancia(s) de monto.`);
+      setRcvMessage(`RCV sincronizado: ${payload?.purchasesFetched ?? 0} compra(s) y ${payload?.salesFetched ?? 0} venta(s) leídas del SII; ${(payload?.purchasesCreated ?? 0) + (payload?.salesCreated ?? 0)} documento(s) nuevo(s) y ${payload?.discrepancies ?? 0} discrepancia(s) de monto.`);
     } catch {
-      setMessage("No fue posible sincronizar el RCV. Inténtalo nuevamente.");
+      setRcvMessage("No fue posible sincronizar el RCV. Inténtalo nuevamente.");
+    } finally {
+      setSyncingRcv(false);
+    }
+  }
+
+  async function syncRcvHistory() {
+    if (!organizationId) return;
+    const match = rcvHistoryStart.match(/^(\d{4})-(\d{2})$/);
+    if (!match) {
+      setRcvMessage("Indica el mes inicial del histórico en formato AAAA-MM.");
+      return;
+    }
+    const now = new Date();
+    const periods: string[] = [];
+    let year = Number(match[1]);
+    let month = Number(match[2]);
+    while (year < now.getFullYear() || (year === now.getFullYear() && month <= now.getMonth() + 1)) {
+      periods.push(`${year}${String(month).padStart(2, "0")}`);
+      month += 1;
+      if (month > 12) { month = 1; year += 1; }
+    }
+    if (!periods.length || periods.length > 60) {
+      setRcvMessage(periods.length ? "El histórico está limitado a 60 meses por ejecución." : "El mes inicial debe ser anterior o igual al mes actual.");
+      return;
+    }
+    setSyncingRcv(true);
+    let totals = { purchases: 0, sales: 0, created: 0, discrepancies: 0 };
+    try {
+      for (const [index, period] of periods.entries()) {
+        setRcvMessage(`Trayendo histórico del SII: período ${period} (${index + 1} de ${periods.length})…`);
+        const { ok, payload } = await requestRcvSync(period);
+        if (!ok) {
+          setRcvMessage(`El período ${period} falló: ${payload?.error || "sin detalle"}. Avance previo: ${totals.purchases} compra(s) y ${totals.sales} venta(s) leídas.`);
+          return;
+        }
+        totals = {
+          purchases: totals.purchases + (payload?.purchasesFetched ?? 0),
+          sales: totals.sales + (payload?.salesFetched ?? 0),
+          created: totals.created + (payload?.purchasesCreated ?? 0) + (payload?.salesCreated ?? 0),
+          discrepancies: totals.discrepancies + (payload?.discrepancies ?? 0),
+        };
+      }
+      await Promise.all([load(), onRefreshDocuments()]);
+      setRcvMessage(`Histórico completo (${periods.length} período(s)): ${totals.purchases} compra(s) y ${totals.sales} venta(s) leídas del SII; ${totals.created} documento(s) nuevo(s) y ${totals.discrepancies} discrepancia(s) de monto.`);
+    } catch {
+      setRcvMessage("La sincronización histórica se interrumpió. Puedes reintentarla: los períodos ya traídos no se duplican.");
     } finally {
       setSyncingRcv(false);
     }
@@ -386,8 +439,13 @@ export function SiiDteIntegration({
     </section>
 
     <section className="table-section">
-      <div className="table-heading"><div><span className="panel-label">SII · REGISTRO DE COMPRAS Y VENTAS</span><h2>Fuente oficial del SII</h2><p>Todo documento emitido o recibido según el SII, aunque nunca llegue el correo. Compras y ventas del período actual y anterior.</p></div><div className="sii-heading-actions"><button type="button" className="secondary-button" disabled={syncingRcv || !integration?.is_enabled || !canConfigure || integration?.environment !== "production"} onClick={() => void syncRcvNow()}>{syncingRcv ? "Sincronizando…" : "Sincronizar RCV ahora"}</button></div></div>
+      <div className="table-heading"><div><span className="panel-label">SII · REGISTRO DE COMPRAS Y VENTAS</span><h2>Fuente oficial del SII</h2><p>Todo documento emitido o recibido según el SII, aunque nunca llegue el correo. El automático diario cubre el período actual y anterior; el histórico se trae por rango.</p></div><div className="sii-heading-actions"><button type="button" className="secondary-button" disabled={syncingRcv || !integration?.is_enabled || !canConfigure || integration?.environment !== "production"} onClick={() => void syncRcvNow()}>{syncingRcv ? "Sincronizando…" : "Sincronizar RCV ahora"}</button></div></div>
       {integration?.is_enabled && integration.environment !== "production" && <p className="form-note">El RCV sólo existe en el ambiente de producción del SII. Cambia el ambiente para habilitar la sincronización.</p>}
+      {canConfigure && <div className="sii-settings-form" style={{ alignItems: "end" }}>
+        <label>Traer histórico desde<input type="month" value={rcvHistoryStart} min="2017-08" max={new Date().toISOString().slice(0, 7)} onChange={(event) => setRcvHistoryStart(event.target.value)} /></label>
+        <button type="button" className="secondary-button" disabled={syncingRcv || !integration?.is_enabled || integration?.environment !== "production"} onClick={() => void syncRcvHistory()}>{syncingRcv ? "Sincronizando…" : "Traer histórico"}</button>
+      </div>}
+      {rcvMessage && <p className="operation-message">{rcvMessage}</p>}
       <p className="form-note">{rcvSyncRuns[0]
         ? rcvSyncRuns[0].run_status === "completed"
           ? `Última sincronización (${rcvSyncRuns[0].trigger_source === "cron" ? "automática" : "manual"}): ${displayDate(rcvSyncRuns[0].completed_at)} · períodos ${rcvSyncRuns[0].periods.join(", ")} · ${rcvSyncRuns[0].purchase_entries_fetched} compra(s) y ${rcvSyncRuns[0].sale_entries_fetched} venta(s) leídas · ${rcvSyncRuns[0].purchases_created + rcvSyncRuns[0].sales_created} documento(s) creado(s) · ${rcvSyncRuns[0].discrepancies} discrepancia(s).`
