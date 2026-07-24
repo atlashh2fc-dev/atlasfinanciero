@@ -136,11 +136,13 @@ export function SiiDteIntegration({
   canConfigure,
   documents,
   onRefreshDocuments,
+  view = "full",
 }: {
   organizationId: string | null;
   canConfigure: boolean;
   documents: SiiDocument[];
   onRefreshDocuments: () => Promise<void>;
+  view?: "full" | "decisions";
 }) {
   const [integration, setIntegration] = useState<Integration | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
@@ -420,7 +422,8 @@ export function SiiDteIntegration({
   }
 
   return <>
-    <section className="table-section sii-workbench">
+    {view === "decisions" && message && <p className="operation-message">{message}</p>}
+    {view === "full" && <section className="table-section sii-workbench">
       <div className="table-heading"><div><span className="panel-label">SII · DTE RECIBIDOS</span><h2>Decisiones tributarias</h2><p>El Registro de Compras y Ventas del SII se sincroniza a diario como fuente oficial; el correo tributario aporta el XML con el detalle.</p></div><div className="sii-heading-actions"><span className={`status ${certificateConfigured && integration?.is_enabled ? "paid" : "cancelled"}`}>{certificateConfigured && integration?.is_enabled ? "Automático activo" : "Conexión pendiente"}</span></div></div>
       {message && <p className="operation-message">{message}</p>}
       <div className="sii-summary-grid">
@@ -436,9 +439,9 @@ export function SiiDteIntegration({
         <label>Referencia<input value={draft.inboundAddress} maxLength={254} placeholder="correo o proveedor" onChange={(event) => setDraft((current) => ({ ...current, inboundAddress: event.target.value }))} /></label>
         <button className="secondary-button" disabled={saving || !certificateConfigured}>{saving ? "Guardando…" : "Guardar"}</button>
       </form> : <p className="form-note">Sólo Administrador puede modificar la conexión.</p>}<p className="form-note">Estado: {integration?.is_enabled ? "habilitada" : "deshabilitada"}. El ingreso automático requiere conectar el correo tributario o proveedor XML.</p></details>}
-    </section>
+    </section>}
 
-    <section className="table-section">
+    {view === "full" && <section className="table-section">
       <div className="table-heading"><div><span className="panel-label">SII · REGISTRO DE COMPRAS Y VENTAS</span><h2>Fuente oficial del SII</h2><p>Todo documento emitido o recibido según el SII, aunque nunca llegue el correo. El automático diario cubre el período actual y anterior; el histórico se trae por rango.</p></div><div className="sii-heading-actions"><button type="button" className="secondary-button" disabled={syncingRcv || !integration?.is_enabled || !canConfigure || integration?.environment !== "production"} onClick={() => void syncRcvNow()}>{syncingRcv ? "Sincronizando…" : "Sincronizar RCV ahora"}</button></div></div>
       {integration?.is_enabled && integration.environment !== "production" && <p className="form-note">El RCV sólo existe en el ambiente de producción del SII. Cambia el ambiente para habilitar la sincronización.</p>}
       {canConfigure && <div className="sii-settings-form" style={{ alignItems: "end" }}>
@@ -455,7 +458,7 @@ export function SiiDteIntegration({
         <p className="sii-alert"><strong>Revisión requerida:</strong> {rcvPendingEntries.length} entrada(s) del RCV sin conciliar o con montos distintos a los registrados.</p>
         <div className="table-scroll"><table><thead><tr><th>Operación</th><th>Documento</th><th>Contraparte</th><th>Total SII</th><th>Situación</th></tr></thead><tbody>{rcvPendingEntries.map((entry) => <tr key={entry.id}><td>{entry.operation === "purchase" ? "Compra" : "Venta"}<small>Período {entry.period}</small></td><td><strong>DTE {entry.document_type}</strong><small>Folio {entry.folio}</small></td><td>{entry.counterpart_name || entry.counterpart_tax_id}<small>{entry.counterpart_tax_id}</small></td><td>{entry.total_amount === null ? "—" : new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP" }).format(Number(entry.total_amount))}</td><td><span className={`status ${entry.match_status === "amount_mismatch" ? "cancelled" : "pending"}`}>{entry.match_status === "amount_mismatch" ? "Montos distintos" : "Sin conciliar"}</span>{entry.match_detail && <small>{entry.match_detail}</small>}</td></tr>)}</tbody></table></div>
       </>}
-    </section>
+    </section>}
 
     <section className="table-section">
       <div className="table-heading"><div><span className="panel-label">BANDEJA DE DECISIÓN</span><h2>Documentos listos para revisar</h2><p>Consulta el SII antes de aceptar o reclamar. Todas las acciones quedan registradas.</p></div></div>
