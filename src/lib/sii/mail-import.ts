@@ -198,6 +198,14 @@ function paymentProofAttachment(contentType: string, filename: string | undefine
   );
 }
 
+function dteXmlAttachment(contentType: string, filename: string | undefined) {
+  const mimeType = contentType.toLowerCase().split(";")[0].trim();
+  return filename?.toLowerCase().endsWith(".xml")
+    || mimeType === "application/xml"
+    || mimeType === "text/xml"
+    || mimeType.endsWith("+xml");
+}
+
 function invoiceFileAttachment(contentType: string, filename: string | undefined, size: number) {
   return paymentProofAttachment(contentType, filename, size);
 }
@@ -300,6 +308,8 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
   let created = 0;
   let updated = 0;
   let scanned = 0;
+  let skipped = 0;
+  let filesAttached = 0;
   let stage = "connect";
   try {
     await client.connect();
@@ -318,18 +328,28 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
         const messageId = mail.messageId || `uid-${message.uid}`;
         let imported = 0;
         for (const [index, attachment] of (mail.attachments ?? []).entries()) {
-          const isXml = attachment.contentType.includes("xml") || attachment.filename?.toLowerCase().endsWith(".xml");
+          const isXml = dteXmlAttachment(attachment.contentType, attachment.filename);
           if (!isXml) continue;
-          stage = "import_xml";
-          const result = await importXml(admin, organizationId, attachment.content, messageId, index + 1);
-          if (result.outcome === "created") created += 1;
-          else updated += 1;
-          const invoiceFile = matchingInvoiceFile(result.dte, (mail.attachments ?? []) as { contentType: string; filename?: string; content: Buffer; size?: number }[]);
-          if (invoiceFile) {
-            stage = "attach_invoice_file";
-            await attachInvoiceFile(admin, organizationId, result.documentId, invoiceFile);
+          try {
+            stage = "import_xml";
+            const result = await importXml(admin, organizationId, attachment.content, messageId, index + 1);
+            if (result.outcome === "created") created += 1;
+            else updated += 1;
+            const invoiceFile = matchingInvoiceFile(result.dte, (mail.attachments ?? []) as { contentType: string; filename?: string; content: Buffer; size?: number }[]);
+            if (invoiceFile) {
+              try {
+                stage = "attach_invoice_file";
+                await attachInvoiceFile(admin, organizationId, result.documentId, invoiceFile);
+                filesAttached += 1;
+              } catch (fileError) {
+                console.error("No fue posible adjuntar el PDF recibido", fileError);
+              }
+            }
+            imported += 1;
+          } catch (importError) {
+            skipped += 1;
+            console.error("Se omitió un XML que no corresponde a una factura recibida", importError);
           }
-          imported += 1;
         }
         if (imported) {
           stage = "mark_seen";
@@ -349,7 +369,7 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
   } finally {
     await client.logout().catch(() => undefined);
   }
-  return { scanned, created, updated };
+  return { scanned, created, updated, skipped, filesAttached };
 }
 
 export async function syncPaymentProofMailbox(admin: SupabaseClient, organizationId: string) {

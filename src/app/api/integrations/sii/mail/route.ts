@@ -27,7 +27,10 @@ export async function POST(request: NextRequest) {
   try {
     const admin = createAdminClient();
     const dte = await syncSiiMailbox(admin, body.organizationId);
-    const paymentProofs = await syncPaymentProofMailbox(admin, body.organizationId);
+    const paymentProofs = await syncPaymentProofMailbox(admin, body.organizationId).catch((error) => {
+      console.error("No fue posible procesar comprobantes de pago", error);
+      return { scanned: 0, matched: 0, reviewRequired: 0, error: "payment_proof_sync_failed" };
+    });
     return NextResponse.json({ ...dte, paymentProofs });
   } catch (error) {
     return NextResponse.json({ error: clientSafeMailError(error) }, { status: 502 });
@@ -44,7 +47,10 @@ export async function GET(request: NextRequest) {
   for (const integration of data ?? []) {
     try {
       const dte = await syncSiiMailbox(admin, integration.organization_id);
-      const paymentProofs = await syncPaymentProofMailbox(admin, integration.organization_id);
+      const paymentProofs = await syncPaymentProofMailbox(admin, integration.organization_id).catch((error) => {
+        console.error("No fue posible procesar comprobantes de pago", error);
+        return { scanned: 0, matched: 0, reviewRequired: 0, error: "payment_proof_sync_failed" };
+      });
       results.push({ organizationId: integration.organization_id, ok: true, ...dte, paymentProofs });
     }
     catch (syncError) { results.push({ organizationId: integration.organization_id, ok: false, error: syncError instanceof Error ? syncError.message.slice(0, 300) : "sii_mail_sync_failed" }); }

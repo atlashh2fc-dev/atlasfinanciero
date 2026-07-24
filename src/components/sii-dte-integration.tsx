@@ -252,14 +252,14 @@ export function SiiDteIntegration({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ organizationId }),
       });
-      const payload = (await response.json().catch(() => null)) as { created?: number; updated?: number; error?: string } | null;
+      const payload = (await response.json().catch(() => null)) as { created?: number; updated?: number; skipped?: number; filesAttached?: number; error?: string } | null;
       if (!response.ok) {
         const error = payload?.error;
         setMessage(error === "sii_mail_not_configured" ? "Falta la configuración segura del correo tributario." : `No fue posible leer el correo tributario${error ? `: ${error}` : "."}`);
         return;
       }
       await Promise.all([load(), onRefreshDocuments()]);
-      setMessage(`${payload?.created ?? 0} factura(s) importada(s) y ${payload?.updated ?? 0} actualizada(s) desde finanzas@geimser.cl.`);
+      setMessage(`${payload?.created ?? 0} factura(s) nueva(s), ${payload?.updated ?? 0} actualizada(s) y ${payload?.filesAttached ?? 0} PDF(s) adjuntado(s).${payload?.skipped ? ` Se omitieron ${payload.skipped} archivo(s) que no eran facturas.` : ""}`);
     } catch {
       setMessage("No fue posible sincronizar el correo tributario.");
     } finally {
