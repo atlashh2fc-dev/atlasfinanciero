@@ -15,6 +15,7 @@ function clientSafeMailError(error: unknown) {
   const message = error instanceof Error ? error.message : "";
   if (message.includes("AUTHENTICATIONFAILED")) return "El servidor rechazó las credenciales del buzón. Actualiza la clave de finanzas@geimser.cl en la integración.";
   if (message.includes("ENOTFOUND")) return "No fue posible encontrar el servidor de correo configurado.";
+  if (message.includes("Timeout") || message.includes("timeout")) return "El servidor de correo no está aceptando la conexión automática. La solución es ejecutar el lector desde el propio cPanel, donde vive el buzón.";
   return "No fue posible sincronizar el correo tributario. Intenta nuevamente o revisa la configuración.";
 }
 

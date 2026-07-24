@@ -142,6 +142,19 @@ function mailConfig() {
   return { host, user, pass, port };
 }
 
+function imapClient(config: ReturnType<typeof mailConfig>) {
+  return new ImapFlow({
+    host: config.host,
+    port: config.port,
+    secure: true,
+    auth: { user: config.user, pass: config.pass },
+    connectionTimeout: 8_000,
+    greetingTimeout: 8_000,
+    socketTimeout: 20_000,
+    logger: false,
+  });
+}
+
 function normalizedDigits(value: string | null | undefined) {
   return (value ?? "").replace(/\D/g, "");
 }
@@ -304,7 +317,7 @@ async function importXml(admin: SupabaseClient, organizationId: string, xml: Buf
 
 export async function syncSiiMailbox(admin: SupabaseClient, organizationId: string, messageLimit = 25) {
   const config = mailConfig();
-  const client = new ImapFlow({ host: config.host, port: config.port, secure: true, auth: { user: config.user, pass: config.pass }, logger: false });
+  const client = imapClient(config);
   let created = 0;
   let updated = 0;
   let scanned = 0;
@@ -405,7 +418,7 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
 
 export async function syncPaymentProofMailbox(admin: SupabaseClient, organizationId: string, messageLimit = 50) {
   const config = mailConfig();
-  const client = new ImapFlow({ host: config.host, port: config.port, secure: true, auth: { user: config.user, pass: config.pass }, logger: false });
+  const client = imapClient(config);
   let scanned = 0;
   let matched = 0;
   let reviewRequired = 0;
