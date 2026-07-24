@@ -186,7 +186,7 @@ async function mergePurchase(admin: SupabaseClient, organizationId: string, entr
     sii_last_checked_at: new Date().toISOString(),
   }).select("id").single();
   if (error || !created) {
-    await admin.from("sii_rcv_entries").update({ match_status: "unmatched", match_detail: "No fue posible crear el documento recibido desde el RCV." }).eq("id", entryId);
+    await admin.from("sii_rcv_entries").update({ match_status: "unmatched", match_detail: `No fue posible crear el documento recibido desde el RCV${error ? `: ${error.message.slice(0, 200)}` : "."}` }).eq("id", entryId);
     return { outcome: "unmatched" as const };
   }
   await admin.from("sii_rcv_entries").update({ received_document_id: created.id, match_status: "created", match_detail: null }).eq("id", entryId);
@@ -254,7 +254,9 @@ async function mergeSale(admin: SupabaseClient, organizationId: string, entryId:
     net_amount: entry.netAmount,
     vat_amount: entry.vatAmount,
     total_amount: entry.totalAmount,
-    payment_status: "Pendiente de revisión",
+    // issued_documents restringe los estados permitidos; las notas de crédito
+    // llegan con su estado propio.
+    payment_status: entry.documentType === 61 || entry.documentType === 112 ? "Nota de crédito" : "Pendiente",
     source_file_name: `sii-rcv-${entry.counterpartTaxId}-${entry.documentType}-${entry.folio}`,
     source_sheet_name: `RCV ${period}`,
     source_row: 0,
@@ -262,7 +264,7 @@ async function mergeSale(admin: SupabaseClient, organizationId: string, entryId:
     sii_folio: entry.folio,
   }).select("id").single();
   if (error || !created) {
-    await admin.from("sii_rcv_entries").update({ match_status: "unmatched", match_detail: "No fue posible crear el documento emitido desde el RCV." }).eq("id", entryId);
+    await admin.from("sii_rcv_entries").update({ match_status: "unmatched", match_detail: `No fue posible crear el documento emitido desde el RCV${error ? `: ${error.message.slice(0, 200)}` : "."}` }).eq("id", entryId);
     return { outcome: "unmatched" as const };
   }
   await admin.from("sii_rcv_entries").update({ issued_document_id: created.id, match_status: "created", match_detail: null }).eq("id", entryId);
