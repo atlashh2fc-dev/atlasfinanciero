@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
       const dte = await syncSiiMailbox(admin, integration.organization_id, 2);
       const paymentProofs = await syncPaymentProofMailbox(admin, integration.organization_id, 2).catch((error) => {
         console.error("No fue posible procesar comprobantes de pago", error);
-        return { scanned: 0, matched: 0, reviewRequired: 0, error: "payment_proof_sync_failed" };
+        return { scanned: 0, matched: 0, reviewRequired: 0, error: error instanceof Error ? error.message.slice(0, 500) : "payment_proof_sync_failed" };
       });
       const result = { organizationId: integration.organization_id, ok: true, ...dte, paymentProofs };
       const { error: runError } = await admin.from("sii_mail_sync_runs").insert({
