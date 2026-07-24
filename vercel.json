@@ -7,7 +7,7 @@
     },
     {
       "path": "/api/integrations/sii/mail",
-      "schedule": "*/15 * * * *"
+      "schedule": "*/5 * * * *"
     }
   ]
 }

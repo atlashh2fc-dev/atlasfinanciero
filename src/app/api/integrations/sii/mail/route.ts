@@ -43,8 +43,8 @@ export async function GET(request: NextRequest) {
   for (const integration of data ?? []) {
     const startedAt = new Date().toISOString();
     try {
-      const dte = await syncSiiMailbox(admin, integration.organization_id, 8);
-      const paymentProofs = await syncPaymentProofMailbox(admin, integration.organization_id, 8).catch((error) => {
+      const dte = await syncSiiMailbox(admin, integration.organization_id, 2);
+      const paymentProofs = await syncPaymentProofMailbox(admin, integration.organization_id, 2).catch((error) => {
         console.error("No fue posible procesar comprobantes de pago", error);
         return { scanned: 0, matched: 0, reviewRequired: 0, error: "payment_proof_sync_failed" };
       });
