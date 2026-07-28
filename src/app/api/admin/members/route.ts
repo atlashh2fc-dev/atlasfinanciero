@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isUuid, requireOrganizationAdministrator, type OrganizationRole } from "@/lib/admin-access";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 
-const roles = new Set<OrganizationRole>(["administrator", "finance", "operations", "auditor"]);
+const roles = new Set<OrganizationRole>(["administrator", "finance", "operations", "auditor", "data_entry"]);
 
 function organizationFromUrl(request: NextRequest) {
   return request.nextUrl.searchParams.get("organizationId");

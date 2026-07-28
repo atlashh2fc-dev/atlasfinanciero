@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ServiceCatalogManagement } from "@/components/service-catalog-management";
 
-type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
+type OrganizationRole = "administrator" | "finance" | "operations" | "auditor" | "data_entry";
 type Organization = { id: string; legal_name: string; tax_id: string | null };
 type AdminOrganization = { id: string; role: OrganizationRole; organization: Organization };
 type Member = { userId: string; role: OrganizationRole; createdAt: string; profile: { email: string | null; full_name: string | null } | null };
@@ -14,6 +14,7 @@ const roleLabels: Record<OrganizationRole, string> = {
   finance: "Finanzas",
   operations: "Operación",
   auditor: "Auditor",
+  data_entry: "Digitador",
 };
 
 function readError(payload: unknown) {

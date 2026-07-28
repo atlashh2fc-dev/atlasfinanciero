@@ -250,7 +250,7 @@ function NavigationItemIcon({ item }: { item: Module }) {
   return <svg {...iconProps}><path d="M12 3v3m0 12v3m9-9h-3M6 12H3m15.4-6.4-2.1 2.1M7.7 16.3l-2.1 2.1m12.8 0-2.1-2.1M7.7 7.7 5.6 5.6" /><circle cx="12" cy="12" r="3" /></svg>;
 }
 
-type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
+type OrganizationRole = "administrator" | "finance" | "operations" | "auditor" | "data_entry";
 type AccessProfile = {
   user: { email: string | null };
   isSuperAdmin: boolean;
@@ -400,6 +400,7 @@ function roleLabel(role: OrganizationRole) {
     finance: "Finanzas",
     operations: "Operación",
     auditor: "Auditor",
+    data_entry: "Digitador",
   }[role];
 }
 

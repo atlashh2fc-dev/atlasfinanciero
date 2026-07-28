@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 
 type Membership = {
   organization_id: string;
-  role: "administrator" | "finance" | "operations" | "auditor";
+  role: "administrator" | "finance" | "operations" | "auditor" | "data_entry";
   organizations: { legal_name: string; tax_id: string | null } | Array<{ legal_name: string; tax_id: string | null }> | null;
 };
 

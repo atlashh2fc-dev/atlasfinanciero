@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 
-export type OrganizationRole = "administrator" | "finance" | "operations" | "auditor";
+export type OrganizationRole = "administrator" | "finance" | "operations" | "auditor" | "data_entry";
 
 export async function requirePlatformAdministrator() {
   const supabase = await createClient();
@@ -50,6 +50,24 @@ export async function requireOrganizationFinanceAccess(organizationId: string) {
 
   if (error) return { error: "unable_to_read_membership" as const, status: 500, supabase: null, user: null };
   if (!membership || !["administrator", "finance"].includes(membership.role)) return { error: "finance_access_required" as const, status: 403, supabase: null, user: null };
+
+  return { error: null, status: 200, supabase, user };
+}
+
+export async function requireOrganizationDataEntryAccess(organizationId: string) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "authentication_required" as const, status: 401, supabase: null, user: null };
+
+  const { data: membership, error } = await supabase
+    .from("organization_memberships")
+    .select("organization_id, role")
+    .eq("organization_id", organizationId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (error) return { error: "unable_to_read_membership" as const, status: 500, supabase: null, user: null };
+  if (membership?.role !== "data_entry") return { error: "data_entry_access_required" as const, status: 403, supabase: null, user: null };
 
   return { error: null, status: 200, supabase, user };
 }

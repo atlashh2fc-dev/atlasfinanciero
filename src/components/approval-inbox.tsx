@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type Membership = { organization_id: string; role: "administrator" | "finance" | "operations" | "auditor" };
+type Membership = { organization_id: string; role: "administrator" | "finance" | "operations" | "auditor" | "data_entry" };
 type ApprovalStep = {
   id: string;
   step_number: number;
@@ -147,7 +147,7 @@ export function ApprovalInbox({ organizationId }: { organizationId: string | nul
     <section className="kpis">
       <article className="kpi-card accent"><span>Pendientes</span><strong>{pendingCount}</strong><small>Solicitudes aún sin resolución</small></article>
       <article className="kpi-card"><span>Para mi rol</span><strong>{actionableCount}</strong><small>Acciones disponibles ahora</small></article>
-      <article className="kpi-card"><span>Rol activo</span><strong>{payload?.membership.role === "administrator" ? "Admin." : payload?.membership.role === "finance" ? "Finanzas" : payload?.membership.role === "operations" ? "Operaciones" : "Auditoría"}</strong><small>Determina los pasos que puedes resolver</small></article>
+      <article className="kpi-card"><span>Rol activo</span><strong>{payload?.membership.role === "administrator" ? "Admin." : payload?.membership.role === "finance" ? "Finanzas" : payload?.membership.role === "operations" ? "Operaciones" : payload?.membership.role === "data_entry" ? "Digitador" : "Auditoría"}</strong><small>Determina los pasos que puedes resolver</small></article>
     </section>
     <section className="table-section"><div className="table-heading"><div><span className="panel-label">SOLICITUDES</span><h2>Decisiones y trazabilidad</h2><p>Una solicitud aprobada o rechazada no puede editarse desde esta bandeja.</p></div></div>
       {loading ? <p className="billing-empty">Cargando aprobaciones…</p> : <div className="approval-inbox-list">{payload?.requests.map((request) => {

@@ -92,8 +92,9 @@ PostgreSQL
 | Finanzas | Registra, valida y aprueba documentos, cobros y pagos. |
 | Operación | Prepara documentos y adjuntos para revisión, sin cierre contable. |
 | Auditor | Consulta datos, bitácora e importaciones sin editar. |
+| Digitador | Registra facturas de venta y costos pendientes de revisión, sin acceso a resultados, balances, pagos ni remuneraciones. |
 
-La interfaz actual sólo simula la vista de rol. La autorización efectiva requiere autenticación y políticas en servidor/base de datos.
+La autorización se aplica mediante autenticación y políticas en servidor/base de datos; no depende sólo de ocultar módulos en la interfaz.
 
 ## Regla de datos
 

@@ -16,7 +16,8 @@ type DocumentRequest = {
   factoringRecourseAt?: unknown;
 };
 
-const writeRoles = new Set(["administrator", "finance", "operations"]);
+const createRoles = new Set(["administrator", "finance", "operations", "data_entry"]);
+const updateRoles = new Set(["administrator", "finance", "operations"]);
 const paymentConditions = new Set(["advance", "post_service"]);
 const paymentStatuses = new Set(["Pendiente", "Abonada", "Pagada", "Factorizada", "Pagada al factoring", "Recomprada al factoring", "Anulada", "Nota de crédito"]);
 const documentTypes = new Set(["Factura afecta", "Factura exenta", "Nota de crédito", "Nota de débito"]);
@@ -132,7 +133,7 @@ export async function POST(request: NextRequest) {
     );
 
   const eligibleMemberships = (memberships ?? []).filter((membership) =>
-    writeRoles.has(membership.role),
+    createRoles.has(membership.role),
   );
   const membership = eligibleMemberships.find((item) => item.organization_id === profile?.active_organization_id) ?? (eligibleMemberships.length === 1 ? eligibleMemberships[0] : null);
 
@@ -146,6 +147,9 @@ export async function POST(request: NextRequest) {
       },
       { status: 403 },
     );
+  }
+  if (membership.role === "data_entry" && (status !== "Pendiente" || paymentProof instanceof File)) {
+    return NextResponse.json({ error: "data_entry_documents_must_be_pending" }, { status: 403 });
   }
 
   const [{ data: organization, error: organizationError }, { data: client, error: clientError }] = await Promise.all([
@@ -182,8 +186,8 @@ export async function POST(request: NextRequest) {
       document_number: invoiceNumber,
       issue_date: issueDate,
       document_type: documentType,
-      issuer_name: issuerName,
-      issuer_tax_id: issuerTaxId,
+      issuer_name: membership.role === "data_entry" ? organization.legal_name : issuerName,
+      issuer_tax_id: membership.role === "data_entry" ? organization.tax_id : issuerTaxId,
       client_name: client.trade_name || client.legal_name,
       recipient_name: contact?.full_name || client.trade_name || client.legal_name,
       recipient_tax_id: client.tax_id,
@@ -327,7 +331,7 @@ export async function PATCH(request: NextRequest) {
     );
 
   const eligibleOrganizationIds = (memberships ?? [])
-    .filter((membership) => writeRoles.has(membership.role))
+    .filter((membership) => updateRoles.has(membership.role))
     .map((membership) => membership.organization_id);
   if (!eligibleOrganizationIds.length)
     return NextResponse.json(

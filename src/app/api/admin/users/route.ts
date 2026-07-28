@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import { isUuid, requireOrganizationAdministrator, type OrganizationRole } from "@/lib/admin-access";
 
-const roles = new Set<OrganizationRole>(["administrator", "finance", "operations", "auditor"]);
+const roles = new Set<OrganizationRole>(["administrator", "finance", "operations", "auditor", "data_entry"]);
 
 export async function POST(request: NextRequest) {
   const body: unknown = await request.json().catch(() => null);

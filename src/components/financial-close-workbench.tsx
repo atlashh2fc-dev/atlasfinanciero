@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type Role = "administrator" | "finance" | "operations" | "auditor";
+type Role = "administrator" | "finance" | "operations" | "auditor" | "data_entry";
 type PeriodStatus = "open" | "soft_closed" | "closed" | "locked";
 type TaskStatus = "pending" | "completed" | "not_applicable";
 type Period = { id: string; period_start: string; period_end: string; status: PeriodStatus; closed_at: string | null; notes: string | null };

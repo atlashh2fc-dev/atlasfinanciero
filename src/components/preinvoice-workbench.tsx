@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type Role = "administrator" | "finance" | "operations" | "auditor";
+type Role = "administrator" | "finance" | "operations" | "auditor" | "data_entry";
 type Customer = { id: string; legal_name: string; trade_name: string | null };
 type CustomerService = { id: string; counterparty_id: string; service_catalog_id: string; service_name: string; service_category: string | null; quantity: number; unit_price: number; currency: string; starts_on: string | null; ends_on: string | null; billing_frequency: "monthly" | "quarterly" | "annual" | "one_time" };
 type ServiceDraft = { customerServiceId: string; description: string; quantity: string; unitPrice: string; notes: string };
