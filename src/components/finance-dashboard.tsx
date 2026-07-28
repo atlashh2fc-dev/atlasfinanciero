@@ -2582,6 +2582,8 @@ export function FinanceDashboard() {
       setFormError(
         payload?.error === "payment_proof_required"
           ? "Al marcar la factura como pagada debes adjuntar el comprobante de pago."
+          : payload?.error === "payment_must_be_registered_as_installment"
+            ? "El pago debe registrarse en “Abonos y saldo”. Al ingresar el abono completo, la factura queda pagada automáticamente."
           : payload?.error === "invalid_payment_proof"
             ? "El comprobante debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
             : payload?.error === "unable_to_upload_payment_proof"

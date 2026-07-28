@@ -436,6 +436,11 @@ export async function PATCH(request: NextRequest) {
   if (error || !data) {
     if (attachmentPath || paymentProofPath)
       await supabase.storage.from("issued-document-files").remove([attachmentPath, paymentProofPath].filter((path): path is string => Boolean(path)));
+    if (error?.message.includes("Documents can only be settled through payment_executions"))
+      return NextResponse.json(
+        { error: "payment_must_be_registered_as_installment" },
+        { status: 409 },
+      );
     return NextResponse.json(
       { error: "unable_to_update_document" },
       { status: 403 },
