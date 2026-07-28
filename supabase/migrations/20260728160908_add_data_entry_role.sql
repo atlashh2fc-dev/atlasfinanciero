@@ -100,7 +100,7 @@ for select to authenticated using (
 create policy "data entry users read own issued document objects" on storage.objects
 for select to authenticated using (
   bucket_id = 'issued-document-files'
-  and owner_id = (select auth.uid())
+  and owner_id = (select auth.uid())::text
   and exists (
     select 1 from public.organization_memberships membership
     where membership.organization_id::text = split_part(name, '/', 1)
@@ -116,7 +116,19 @@ for insert to authenticated with check (
     select 1 from public.organization_memberships membership
     where membership.organization_id::text = split_part(name, '/', 1)
       and membership.user_id = (select auth.uid())
-      and membership.role::text in ('administrator', 'finance', 'operations', 'data_entry')
+      and membership.role::text in ('administrator', 'finance', 'operations')
+  )
+);
+
+create policy "data entry users upload own issued document objects" on storage.objects
+for insert to authenticated with check (
+  bucket_id = 'issued-document-files'
+  and owner_id = (select auth.uid())::text
+  and exists (
+    select 1 from public.organization_memberships membership
+    where membership.organization_id::text = split_part(name, '/', 1)
+      and membership.user_id = (select auth.uid())
+      and membership.role::text = 'data_entry'
   )
 );
 
@@ -134,7 +146,7 @@ for delete to authenticated using (
 create policy "data entry users delete own issued document objects" on storage.objects
 for delete to authenticated using (
   bucket_id = 'issued-document-files'
-  and owner_id = (select auth.uid())
+  and owner_id = (select auth.uid())::text
   and exists (
     select 1 from public.organization_memberships membership
     where membership.organization_id::text = split_part(name, '/', 1)
@@ -161,7 +173,7 @@ for select to authenticated using (
 create policy "data entry users read own received document objects" on storage.objects
 for select to authenticated using (
   bucket_id = 'received-document-files'
-  and owner_id = (select auth.uid())
+  and owner_id = (select auth.uid())::text
   and exists (
     select 1 from public.organization_memberships membership
     where membership.organization_id::text = split_part(name, '/', 1)
@@ -177,7 +189,19 @@ for insert to authenticated with check (
     select 1 from public.organization_memberships membership
     where membership.organization_id::text = split_part(name, '/', 1)
       and membership.user_id = (select auth.uid())
-      and membership.role::text in ('administrator', 'finance', 'data_entry')
+      and membership.role::text in ('administrator', 'finance')
+  )
+);
+
+create policy "data entry users upload own received document objects" on storage.objects
+for insert to authenticated with check (
+  bucket_id = 'received-document-files'
+  and owner_id = (select auth.uid())::text
+  and exists (
+    select 1 from public.organization_memberships membership
+    where membership.organization_id::text = split_part(name, '/', 1)
+      and membership.user_id = (select auth.uid())
+      and membership.role::text = 'data_entry'
   )
 );
 
@@ -195,7 +219,7 @@ for delete to authenticated using (
 create policy "data entry users delete own received document objects" on storage.objects
 for delete to authenticated using (
   bucket_id = 'received-document-files'
-  and owner_id = (select auth.uid())
+  and owner_id = (select auth.uid())::text
   and exists (
     select 1 from public.organization_memberships membership
     where membership.organization_id::text = split_part(name, '/', 1)
