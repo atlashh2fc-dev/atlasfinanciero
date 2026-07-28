@@ -46,7 +46,28 @@ export async function GET(request: NextRequest) {
   const context = await requireOrganizationDataEntryAccess(organizationId);
   if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
 
-  const [customers, suppliers, costCenters] = await Promise.all([
+  const fileId = request.nextUrl.searchParams.get("fileId");
+  const fileKind = request.nextUrl.searchParams.get("fileKind");
+  if (fileId || fileKind) {
+    if (!isUuid(fileId) || !["sale", "cost"].includes(fileKind ?? "")) return NextResponse.json({ error: "invalid_document_file" }, { status: 400 });
+    const source = fileKind === "sale"
+      ? { table: "issued_documents", bucket: "issued-document-files" }
+      : { table: "received_documents", bucket: "received-document-files" };
+    const { data: document, error } = await context.supabase
+      .from(source.table)
+      .select("attachment_path, attachment_name")
+      .eq("id", fileId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+    if (error || !document?.attachment_path) return NextResponse.json({ error: "document_file_not_found" }, { status: 404 });
+    const { data: signed, error: signedError } = await context.supabase.storage
+      .from(source.bucket)
+      .createSignedUrl(document.attachment_path, 60);
+    if (signedError || !signed) return NextResponse.json({ error: "unable_to_open_document_file" }, { status: 409 });
+    return NextResponse.json({ signedUrl: signed.signedUrl, fileName: document.attachment_name });
+  }
+
+  const [customers, suppliers, costCenters, sales, costs] = await Promise.all([
     context.supabase
       .from("counterparties")
       .select("id, legal_name, trade_name, tax_id")
@@ -67,8 +88,20 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId)
       .eq("is_active", true)
       .order("code"),
+    context.supabase
+      .from("issued_documents")
+      .select("id, document_number, issue_date, document_type, client_name, total_amount, payment_status, attachment_path, attachment_name, created_at")
+      .eq("organization_id", organizationId)
+      .order("created_at", { ascending: false })
+      .limit(50),
+    context.supabase
+      .from("received_documents")
+      .select("id, document_number, issue_date, document_type, supplier_name, total_amount, payment_status, attachment_path, attachment_name, created_at")
+      .eq("organization_id", organizationId)
+      .order("created_at", { ascending: false })
+      .limit(50),
   ]);
-  if (customers.error || suppliers.error || costCenters.error) {
+  if (customers.error || suppliers.error || costCenters.error || sales.error || costs.error) {
     return NextResponse.json({ error: "unable_to_load_data_entry_catalogs" }, { status: 500 });
   }
 
@@ -76,6 +109,34 @@ export async function GET(request: NextRequest) {
     customers: customers.data ?? [],
     suppliers: suppliers.data ?? [],
     costCenters: costCenters.data ?? [],
+    entries: [
+      ...(sales.data ?? []).map((document) => ({
+        id: document.id,
+        kind: "sale" as const,
+        number: document.document_number,
+        documentType: document.document_type,
+        counterpart: document.client_name,
+        issuedOn: document.issue_date,
+        amount: document.total_amount,
+        status: document.payment_status,
+        attachmentName: document.attachment_name,
+        hasAttachment: Boolean(document.attachment_path),
+        createdAt: document.created_at,
+      })),
+      ...(costs.data ?? []).map((document) => ({
+        id: document.id,
+        kind: "cost" as const,
+        number: document.document_number,
+        documentType: document.document_type,
+        counterpart: document.supplier_name,
+        issuedOn: document.issue_date,
+        amount: document.total_amount,
+        status: document.payment_status,
+        attachmentName: document.attachment_name,
+        hasAttachment: Boolean(document.attachment_path),
+        createdAt: document.created_at,
+      })),
+    ].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
   });
 }
 
