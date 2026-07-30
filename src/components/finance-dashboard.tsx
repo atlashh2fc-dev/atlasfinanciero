@@ -43,6 +43,7 @@ import { AtlasAssistant } from "@/components/atlas-assistant";
 import { ManagementCenter } from "@/components/management-center";
 import { PlatformSuperAdminDashboard } from "@/components/platform-super-admin-dashboard";
 import { AccountingWorkbench } from "@/components/accounting-workbench";
+import { BenefitsHub } from "@/components/benefits-hub";
 import {
   isActiveIssuedInvoice,
   isCreditNoteDocument,
@@ -91,6 +92,8 @@ const modulePreviews: Record<Module, string> = {
     "Resumen, pipeline, clientes 360, contratos, proyectos y evolución comercial en un workspace integrado.",
   "Mercado Público":
     "Búsqueda oficial de licitaciones ChileCompra y conversión trazable a oportunidades del CRM.",
+  "Fondos y beneficios":
+    "Prechequeo de programas públicos, subsidios al empleo y convocatorias para empresas chilenas.",
   "Cuentas por cobrar":
     "Cartera pendiente por vencimiento, gestión, compromisos de pago y factoring.",
   Proyecciones:
@@ -131,6 +134,7 @@ type Module =
   | "Planificación financiera"
   | "CRM y clientes"
   | "Mercado Público"
+  | "Fondos y beneficios"
   | "Cuentas por cobrar"
   | "Recurrentes"
   | "Prefacturación"
@@ -166,6 +170,7 @@ const navigationGroups: NavigationGroup[] = [
     items: [
       "CRM y clientes",
       "Mercado Público",
+      "Fondos y beneficios",
       "Prefacturación",
       "Facturas",
       "Recurrentes",
@@ -232,6 +237,7 @@ function NavigationItemIcon({ item }: { item: Module }) {
   if (item === "Gestión 360") return <svg {...iconProps}><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></svg>;
   if (item === "CRM y clientes" || item === "Remuneraciones") return <svg {...iconProps}><circle cx="9" cy="8" r="3" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0m2-10a3 3 0 0 1 0 6m1.5-8a3 3 0 0 1 0 5" /></svg>;
   if (item === "Mercado Público") return <svg {...iconProps}><circle cx="10.5" cy="10.5" r="5.5" /><path d="m15 15 4.5 4.5M7 10.5h7M10.5 7v7" /></svg>;
+  if (item === "Fondos y beneficios") return <svg {...iconProps}><path d="M12 3v18M16 7.5c-.7-1-2-1.5-4-1.5-2.3 0-4 1.1-4 3s1.7 3 4 3 4 1.1 4 3-1.7 3-4 3c-2 0-3.3-.5-4-1.5" /><path d="M4 20h16" /></svg>;
   if (item === "Prefacturación") return <svg {...iconProps}><path d="M6 3h9l4 4v14H6z" /><path d="M14 3v5h5M9 14l5-5 2 2-5 5-3 1z" /></svg>;
   if (item === "Facturas" || item === "Cuentas por pagar") return <svg {...iconProps}><path d="M6 3h12v18H6z" /><path d="M9 8h6M9 12h6M9 16h3" /></svg>;
   if (item === "Recurrentes") return <svg {...iconProps}><path d="M18 8a7 7 0 0 0-12-2L4 8m2-2v4h4M6 16a7 7 0 0 0 12 2l2-2m-2 2v-4h-4" /></svg>;
@@ -592,6 +598,7 @@ function EmptyModule({
     | "Planificación financiera"
     | "CRM y clientes"
     | "Mercado Público"
+    | "Fondos y beneficios"
     | "Cuentas por cobrar"
     | "Recurrentes"
     | "Prefacturación"
@@ -3071,6 +3078,8 @@ export function FinanceDashboard() {
             organizationId={access?.membership.organizationId ?? null}
             canManage={hasEditPermission}
           />
+        ) : activeModule === "Fondos y beneficios" ? (
+          <BenefitsHub organizationId={access?.membership.organizationId ?? null} />
         ) : activeModule === "Cuentas por cobrar" ? (
           <AccountsReceivable
             records={records}
