@@ -350,10 +350,23 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
         let imported = 0;
         let processingStatus: "imported" | "ignored" | "failed" = "ignored";
         let detail: string | null = null;
+        let emailSubject: string | null = null;
+        let senderName: string | null = null;
+        let senderAddress: string | null = null;
+        let receivedAt: string | null = null;
+        let attachmentCount = 0;
+        let dteAttachmentCount = 0;
         try {
           stage = "parse_message";
           const mail = await simpleParser(message.source, {});
           const xmlAttachments = (mail.attachments ?? []).filter((attachment) => dteXmlAttachment(attachment.contentType, attachment.filename));
+          const sender = mail.from?.value[0];
+          emailSubject = mail.subject?.slice(0, 1000) || null;
+          senderName = sender?.name?.slice(0, 500) || null;
+          senderAddress = sender?.address?.slice(0, 500) || null;
+          receivedAt = mail.date?.toISOString() ?? null;
+          attachmentCount = mail.attachments?.length ?? 0;
+          dteAttachmentCount = xmlAttachments.length;
           for (const [index, attachment] of xmlAttachments.entries()) {
             try {
               stage = "import_xml";
@@ -392,6 +405,12 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
           imap_uid: message.uid,
           processing_status: processingStatus,
           detail,
+          email_subject: emailSubject,
+          sender_name: senderName,
+          sender_address: senderAddress,
+          received_at: receivedAt,
+          attachment_count: attachmentCount,
+          dte_attachment_count: dteAttachmentCount,
           processed_at: new Date().toISOString(),
         }, { onConflict: "organization_id,message_id" });
         if (recordError) throw new Error("sii_mail_processed_message_record_failed");
@@ -455,11 +474,22 @@ export async function syncPaymentProofMailbox(admin: SupabaseClient, organizatio
         let processingStatus: "imported" | "ignored" | "failed" = "ignored";
         let detail: string | null = null;
         let relevant = false;
+        let emailSubject: string | null = null;
+        let senderName: string | null = null;
+        let senderAddress: string | null = null;
+        let receivedAt: string | null = null;
+        let attachmentCount = 0;
         try {
           stage = "parse_message";
           const mail = await simpleParser(message.source, {});
           const canonicalMessageId = (mail.messageId || messageId).slice(0, 500);
           const subject = mail.subject ?? "";
+          const sender = mail.from?.value[0];
+          emailSubject = subject.slice(0, 1000) || null;
+          senderName = sender?.name?.slice(0, 500) || null;
+          senderAddress = sender?.address?.slice(0, 500) || null;
+          receivedAt = mail.date?.toISOString() ?? null;
+          attachmentCount = mail.attachments?.length ?? 0;
           const attachmentNames = (mail.attachments ?? []).map((attachment) => attachment.filename ?? "").join(" ");
           const searchable = `${subject}\n${mail.text ?? ""}\n${attachmentNames}`;
           const attachments = (mail.attachments ?? []).filter((attachment) => paymentProofAttachment(attachment.contentType, attachment.filename, attachment.size));
@@ -526,13 +556,18 @@ export async function syncPaymentProofMailbox(admin: SupabaseClient, organizatio
             imap_uid: message.uid,
             processing_status: processingStatus,
             detail,
+            email_subject: emailSubject,
+            sender_name: senderName,
+            sender_address: senderAddress,
+            received_at: receivedAt,
+            attachment_count: attachmentCount,
             processed_at: new Date().toISOString(),
           }, { onConflict: "organization_id,message_id" });
           if (recordError) throw new Error("payment_proof_processed_message_record_failed");
         } catch (messageError) {
           processingStatus = "failed";
           detail = messageError instanceof Error ? messageError.message.slice(0, 500) : "No fue posible leer el correo";
-          await admin.from("mail_payment_processed_messages").upsert({ organization_id: organizationId, message_id: messageId, imap_uid: message.uid, processing_status: processingStatus, detail, processed_at: new Date().toISOString() }, { onConflict: "organization_id,message_id" });
+          await admin.from("mail_payment_processed_messages").upsert({ organization_id: organizationId, message_id: messageId, imap_uid: message.uid, processing_status: processingStatus, detail, email_subject: emailSubject, sender_name: senderName, sender_address: senderAddress, received_at: receivedAt, attachment_count: attachmentCount, processed_at: new Date().toISOString() }, { onConflict: "organization_id,message_id" });
           console.error("No fue posible procesar un comprobante de pago", messageError);
         }
         if (relevant) {

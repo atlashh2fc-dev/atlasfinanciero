@@ -4714,3 +4714,61 @@ td small {
   .benefits-workflow-heading a { width: fit-content; }
   .benefits-workflow-history strong { min-width: 0; margin-right: 6px; }
 }
+/* Bandeja mail: trazabilidad operacional del correo, sin almacenar su contenido. */
+.mail-inbox .kpis-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mail-inbox-heading {
+  gap: 1rem;
+}
+
+.mail-inbox-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin: 1rem 0;
+}
+
+.filter-chip {
+  border: 1px solid var(--line, #d8e0ea);
+  border-radius: 999px;
+  background: var(--surface, #fff);
+  color: var(--muted, #627089);
+  cursor: pointer;
+  font: inherit;
+  font-size: .82rem;
+  font-weight: 650;
+  padding: .42rem .75rem;
+}
+
+.filter-chip:hover,
+.filter-chip.active {
+  border-color: var(--primary, #396ee8);
+  background: color-mix(in srgb, var(--primary, #396ee8) 11%, white);
+  color: var(--primary, #396ee8);
+}
+
+.mail-inbox-table td {
+  vertical-align: top;
+}
+
+.mail-inbox-table small {
+  display: block;
+  line-height: 1.35;
+  margin-top: .2rem;
+  max-width: 28rem;
+}
+
+.mail-kind {
+  color: var(--muted, #627089);
+  font-size: .84rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .mail-inbox .kpis-three {
+    grid-template-columns: 1fr;
+  }
+}

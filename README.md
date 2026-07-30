@@ -43,6 +43,8 @@ Cada documento debe tener RUT de emisor, tipo SII y folio. El WS de registro cub
 
 El SII no entrega un webhook de facturas recibidas en estos WS. La entrada debe ser el correo tributario del receptor, un proveedor que entregue el XML, o una carga controlada; en todos los casos se deduplica por RUT emisor + tipo + folio antes de registrar un DTE.
 
+La sección **Bandeja mail** permite a Finanzas y Auditoría ver la trazabilidad de cada correo procesado: asunto, remitente, fecha, cantidad de adjuntos, resultado y documento asociado. No almacena ni muestra el cuerpo de los correos. Un Administrador puede ejecutar una revisión manual; ésta importa DTE y busca comprobantes de pago, dejando los casos ambiguos pendientes de conciliación. Para habilitar el lector se configuran, exclusivamente como secretos de servidor, `SII_IMAP_HOST`, `SII_IMAP_PORT`, `SII_IMAP_USER` y `SII_IMAP_PASSWORD`.
+
 ### SII · Registro de Compras y Ventas (fuente maestra)
 
 El descubrimiento de documentos ya no depende del correo: un trabajo diario descarga el Registro de Compras y Ventas oficial del SII (compras y ventas del período actual y anterior) autenticándose con el mismo certificado digital. El RCV usa los endpoints JSON de la interfaz web del SII (`consdcvinternetui`), que no son una API publicada: el parseo es tolerante y cada fila se conserva cruda en `sii_rcv_entries` con su corrida de origen (`sii_rcv_sync_runs`), cumpliendo la regla de staging trazable.

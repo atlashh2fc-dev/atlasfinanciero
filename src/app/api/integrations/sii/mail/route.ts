@@ -25,11 +25,31 @@ export async function POST(request: NextRequest) {
   const context = await requireOrganizationAdministrator(body.organizationId);
   if (context.error) return NextResponse.json({ error: context.error }, { status: context.status });
   if (!hasSupabaseAdminKey()) return NextResponse.json({ error: "server_admin_key_required" }, { status: 503 });
+  const startedAt = new Date().toISOString();
   try {
     const admin = createAdminClient();
     const dte = await syncSiiMailbox(admin, body.organizationId, 3);
-    return NextResponse.json(dte);
+    const paymentProofs = await syncPaymentProofMailbox(admin, body.organizationId, 3);
+    const { error: runError } = await admin.from("sii_mail_sync_runs").insert({
+      organization_id: body.organizationId,
+      started_at: startedAt,
+      completed_at: new Date().toISOString(),
+      run_status: "completed",
+      dte_scanned: dte.scanned,
+      dte_created: dte.created,
+      dte_updated: dte.updated,
+      dte_skipped: dte.skipped,
+      invoice_files_attached: dte.filesAttached,
+      payment_scanned: paymentProofs.scanned,
+      payment_matched: paymentProofs.matched,
+      payment_review_required: paymentProofs.reviewRequired,
+    });
+    if (runError) throw new Error("sii_mail_sync_run_record_failed");
+    return NextResponse.json({ ...dte, paymentProofs });
   } catch (error) {
+    const admin = createAdminClient();
+    const detail = error instanceof Error ? error.message.slice(0, 500) : "sii_mail_sync_failed";
+    await admin.from("sii_mail_sync_runs").insert({ organization_id: body.organizationId, started_at: startedAt, completed_at: new Date().toISOString(), run_status: "failed", error_detail: detail });
     return NextResponse.json({ error: clientSafeMailError(error) }, { status: 502 });
   }
 }

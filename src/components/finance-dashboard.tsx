@@ -44,6 +44,7 @@ import { ManagementCenter } from "@/components/management-center";
 import { PlatformSuperAdminDashboard } from "@/components/platform-super-admin-dashboard";
 import { AccountingWorkbench } from "@/components/accounting-workbench";
 import { BenefitsHub } from "@/components/benefits-hub";
+import { MailInbox } from "@/components/mail-inbox";
 import {
   isActiveIssuedInvoice,
   isCreditNoteDocument,
@@ -102,6 +103,8 @@ const modulePreviews: Record<Module, string> = {
     "Presupuesto versionado, caja semanal de 13 semanas y rentabilidad por cliente y servicio.",
   "Cuentas por pagar":
     "Facturas recibidas, proveedores, vencimientos y registro individual de pagos.",
+  "Bandeja mail":
+    "Correos de facturación procesados, comprobantes y documentos vinculados.",
   Proveedores:
     "Directorio único de proveedores para compras, gastos, cuentas por pagar y factoring.",
   "Compras, obligaciones y pagos":
@@ -139,6 +142,7 @@ type Module =
   | "Recurrentes"
   | "Prefacturación"
   | "Cuentas por pagar"
+  | "Bandeja mail"
   | "Proveedores"
   | "Compras, obligaciones y pagos"
   | "Tesorería"
@@ -182,7 +186,7 @@ const navigationGroups: NavigationGroup[] = [
   },
   {
     label: "COMPRAS Y CAJA",
-    items: ["Compras, obligaciones y pagos", "Cuentas por pagar", "Proveedores", "Tesorería"],
+    items: ["Compras, obligaciones y pagos", "Cuentas por pagar", "Bandeja mail", "Proveedores", "Tesorería"],
     accent: "#f4c56b",
     accentSoft: "#403621",
   },
@@ -240,6 +244,7 @@ function NavigationItemIcon({ item }: { item: Module }) {
   if (item === "Fondos y beneficios") return <svg {...iconProps}><path d="M12 3v18M16 7.5c-.7-1-2-1.5-4-1.5-2.3 0-4 1.1-4 3s1.7 3 4 3 4 1.1 4 3-1.7 3-4 3c-2 0-3.3-.5-4-1.5" /><path d="M4 20h16" /></svg>;
   if (item === "Prefacturación") return <svg {...iconProps}><path d="M6 3h9l4 4v14H6z" /><path d="M14 3v5h5M9 14l5-5 2 2-5 5-3 1z" /></svg>;
   if (item === "Facturas" || item === "Cuentas por pagar") return <svg {...iconProps}><path d="M6 3h12v18H6z" /><path d="M9 8h6M9 12h6M9 16h3" /></svg>;
+  if (item === "Bandeja mail") return <svg {...iconProps}><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m4 7 8 6 8-6" /></svg>;
   if (item === "Recurrentes") return <svg {...iconProps}><path d="M18 8a7 7 0 0 0-12-2L4 8m2-2v4h4M6 16a7 7 0 0 0 12 2l2-2m-2 2v-4h-4" /></svg>;
   if (item === "Cuentas por cobrar") return <svg {...iconProps}><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></svg>;
   if (item === "OC de clientes" || item === "Compras, obligaciones y pagos") return <svg {...iconProps}><path d="M7 5h10v15H7z" /><path d="M9 5V3h6v2M10 11h4m-4 4h4" /></svg>;
@@ -602,6 +607,8 @@ function EmptyModule({
     | "Cuentas por cobrar"
     | "Recurrentes"
     | "Prefacturación"
+    | "Cuentas por pagar"
+    | "Bandeja mail"
     | "Proveedores"
     | "Compras, obligaciones y pagos"
     | "Tesorería"
@@ -616,16 +623,11 @@ function EmptyModule({
     | "Control SaaS"
   >;
 }) {
-  const detail: Record<typeof module, string> = {
-    "Cuentas por pagar":
-      "Preparado para documentos recibidos, órdenes de compra, centros de costo y proveedores. Requiere fuente de gastos aprobada.",
-  };
-
   return (
     <main className="module-placeholder">
       <span className="eyebrow">Módulo en preparación</span>
       <h1>{module}</h1>
-      <p>{detail[module]}</p>
+      <p>Este módulo se está preparando para la operación financiera.</p>
       <div className="placeholder-grid">
         <article>
           <strong>Fuente requerida</strong>
@@ -2879,6 +2881,7 @@ export function FinanceDashboard() {
           (item !== "Centros de costo" || canManageCostCenters) &&
           (item !== "Imputaciones pendientes" || canManageCostCenters) &&
           (item !== "Cuentas por pagar" || canReadExpenses) &&
+          (item !== "Bandeja mail" || canReadExpenses) &&
           (item !== "Proveedores" || canReadExpenses) &&
           (item !== "Compras, obligaciones y pagos" || canReadProcurement) &&
           (item !== "Tesorería" || canReadExpenses) &&
@@ -3120,6 +3123,13 @@ export function FinanceDashboard() {
               organizationId={access?.membership.organizationId ?? null}
               canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
               canConfigureSii={access?.membership.role === "administrator"}
+            />
+          ) : null
+        ) : activeModule === "Bandeja mail" ? (
+          canReadExpenses ? (
+            <MailInbox
+              organizationId={access?.membership.organizationId ?? null}
+              canSynchronize={access?.membership.role === "administrator"}
             />
           ) : null
         ) : activeModule === "Compras, obligaciones y pagos" ? (
