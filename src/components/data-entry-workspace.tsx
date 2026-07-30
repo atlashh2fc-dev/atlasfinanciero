@@ -2,12 +2,13 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { BenefitsWorkflow } from "@/components/benefits-workflow";
 
 type Counterparty = { id: string; legal_name: string; trade_name: string | null; tax_id: string | null };
 type CostCenter = { id: string; code: string; name: string };
 type Entry = { id: string; kind: "sale" | "cost"; number: string | null; documentType: string | null; counterpart: string | null; issuedOn: string | null; amount: number | string | null; status: string | null; attachmentName: string | null; hasAttachment: boolean; createdAt: string };
 type Payload = { customers: Counterparty[]; suppliers: Counterparty[]; costCenters: CostCenter[]; entries: Entry[] };
-type View = "register" | "history";
+type View = "register" | "history" | "benefits";
 
 const today = () => new Date().toISOString().slice(0, 10);
 const label = (item: Counterparty) => item.trade_name?.trim() || item.legal_name;
@@ -24,6 +25,10 @@ function RegisterIcon() {
 
 function HistoryIcon() {
   return <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /><path d="M12 7v5l3 2" /></svg>;
+}
+
+function BenefitsIcon() {
+  return <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v18M16 7.5c-.7-1-2-1.5-4-1.5-2.3 0-4 1.1-4 3s1.7 3 4 3 4 1.1 4 3-1.7 3-4 3c-2 0-3.3-.5-4-1.5" /><path d="M4 20h16" /></svg>;
 }
 
 export function DataEntryWorkspace({ organizationId, organizationName, organizationTaxId }: { organizationId: string; organizationName: string; organizationTaxId: string | null }) {
@@ -132,6 +137,9 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
             <button type="button" className={`nav-item ${view === "history" ? "active" : ""}`} onClick={() => selectView("history")}>
               <span className="nav-icon"><HistoryIcon /></span><span className="nav-item-label">Mis ingresos</span><span className="nav-count">{data.entries.length}</span>
             </button>
+            <button type="button" className={`nav-item ${view === "benefits" ? "active" : ""}`} onClick={() => selectView("benefits")}>
+              <span className="nav-icon"><BenefitsIcon /></span><span className="nav-item-label">Postulaciones</span>
+            </button>
           </div>
         </section>
       </nav>
@@ -140,16 +148,16 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
 
     <section className="content-area">
       <header className="topbar">
-        <div className="breadcrumb">Digitación <span>/</span> {view === "history" ? "Mis ingresos" : "Registrar documento"}</div>
+        <div className="breadcrumb">Digitación <span>/</span> {view === "history" ? "Mis ingresos" : view === "benefits" ? "Postulaciones" : "Registrar documento"}</div>
         <div className="topbar-actions"><span className="access-role">Digitador</span><button className="avatar" type="button" onClick={() => void signOut()} aria-label="Cerrar sesión" title="Cerrar sesión">DG</button></div>
       </header>
       <main className="dashboard data-entry-content">
         <header className="headline data-entry-header">
-          <div><span className="eyebrow">OPERACIÓN · DOCUMENTOS</span><h1>{view === "history" ? "Mis ingresos" : "Registrar documento"}</h1><p>{view === "history" ? "Revisa sólo los documentos que tú cargaste y su etapa de revisión. No se muestran saldos, pagos ni resultados de la empresa." : "Registra ventas y costos para que Finanzas los revise. Tus documentos quedarán disponibles en Mis ingresos."}</p></div>
+          <div><span className="eyebrow">{view === "benefits" ? "OPERACIÓN · POSTULACIONES" : "OPERACIÓN · DOCUMENTOS"}</span><h1>{view === "history" ? "Mis ingresos" : view === "benefits" ? "Postulaciones" : "Registrar documento"}</h1><p>{view === "history" ? "Revisa sólo los documentos que tú cargaste y su etapa de revisión. No se muestran saldos, pagos ni resultados de la empresa." : view === "benefits" ? "Actualiza la tipificación, responsable, documentos y gestiones de cada postulación. No se muestran ventas ni antecedentes tributarios." : "Registra ventas y costos para que Finanzas los revise. Tus documentos quedarán disponibles en Mis ingresos."}</p></div>
           {view === "history" ? <button type="button" className="primary-button" onClick={() => selectView("register")}>Registrar documento</button> : <button type="button" className="secondary-button" onClick={() => selectView("history")}>Ver mis ingresos</button>}
         </header>
         {message && <p className="operation-message" role="status">{message}</p>}
-        {loading ? <section className="panel data-entry-loading">Cargando tu bandeja…</section> : view === "history" ? <section className="panel data-entry-history">
+        {loading ? <section className="panel data-entry-loading">Cargando tu bandeja…</section> : view === "benefits" ? <BenefitsWorkflow organizationId={organizationId} compact /> : view === "history" ? <section className="panel data-entry-history">
           <div className="data-entry-history-heading"><div><span className="panel-label">TRAZABILIDAD PERSONAL</span><h2>Documentos que ingresaste</h2><p>Cada documento queda visible para ti, sin revelar información financiera consolidada.</p></div><button type="button" className="secondary-button" onClick={() => void load()}>Actualizar</button></div>
           <div className="data-entry-summary"><article><span>Ventas ingresadas</span><strong>{salesCount}</strong></article><article><span>Costos ingresados</span><strong>{costsCount}</strong></article><article><span>En revisión</span><strong>{pendingEntries}</strong></article></div>
           <div className="table-scroll data-entry-table"><table><thead><tr><th>Documento</th><th>Cliente / proveedor</th><th>Fecha</th><th>Monto</th><th>Revisión</th><th>Respaldo</th></tr></thead><tbody>{data.entries.map((entry) => <tr key={`${entry.kind}-${entry.id}`}><td><span className={`data-entry-kind is-${entry.kind}`}>{entry.kind === "sale" ? "Venta" : "Costo"}</span><strong>{entry.number || "Sin folio"}</strong><small>{entry.documentType || "Documento"}</small></td><td>{entry.counterpart || "Sin contraparte"}</td><td>{displayDate(entry.issuedOn)}</td><td>{money.format(Number(entry.amount ?? 0))}</td><td><span className={`status ${(!entry.status || entry.status === "Pendiente") ? "pending" : "paid"}`}>{reviewStatus(entry.status)}</span></td><td>{entry.hasAttachment ? <button type="button" className="text-button" onClick={() => void openAttachment(entry)} disabled={openingFile === entry.id}>{openingFile === entry.id ? "Abriendo…" : "Ver respaldo"}</button> : <span className="data-entry-empty">Sin adjunto</span>}</td></tr>)}{!data.entries.length && <tr><td colSpan={6}><div className="data-entry-empty-state"><strong>Aún no has ingresado documentos.</strong><span>Cuando registres una venta o costo aparecerá aquí, con su estado de revisión.</span><button type="button" className="primary-button" onClick={() => selectView("register")}>Registrar el primero</button></div></td></tr>}</tbody></table></div>

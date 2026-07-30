@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { BenefitsWorkflow } from "@/components/benefits-workflow";
 
 type BenefitsProfile = {
   organizationName: string;
@@ -66,7 +67,6 @@ type Benefit = {
 
 const money = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 const dateTime = new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" });
-const appStatusLabel: Record<ApplicationStatus, string> = { preparing: "Preparando", ready_for_submission: "Lista para postular", submitted: "Postulada", not_selected: "No seleccionada", awarded: "Adjudicada", withdrawn: "Descartada" };
 
 const benefits: Benefit[] = [
   {
@@ -277,16 +277,6 @@ export function BenefitsHub({ organizationId }: { organizationId: string | null 
     await load();
   }
 
-  async function setApplicationStatus(application: BenefitsApplication, status: ApplicationStatus) {
-    if (!organizationId || saving) return;
-    setSaving(true);
-    const response = await fetch("/api/benefits", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, applicationId: application.id, status, deadline: application.deadline, notes: application.notes }) });
-    setSaving(false);
-    if (!response.ok) { setOperationMessage("No fue posible actualizar el estado de esta postulación."); return; }
-    setOperationMessage("Estado de postulación actualizado.");
-    await load();
-  }
-
   const shownBenefits = useMemo(() => benefits.filter((benefit) => category === "Todos" || benefit.category === category), [category]);
   const readyPrograms = payload ? benefits.filter((benefit) => benefit.status !== "not-for-company" && benefit.checks(payload.profile).some((check) => check.state === "ready")).length : 0;
 
@@ -325,7 +315,7 @@ export function BenefitsHub({ organizationId }: { organizationId: string | null 
       <div className="table-scroll"><table><thead><tr><th>Colaborador</th><th>Inicio de contrato</th><th className="money-col">Bruto mensual</th><th>Estado Atlas</th></tr></thead><tbody>{payload.sence.candidates.length ? payload.sence.candidates.map((candidate) => <tr key={candidate.personId}><td><strong>{candidate.personName}</strong><small>Datos de PeopleWork</small></td><td>{candidate.startDate}</td><td className="money-col">{money.format(candidate.monthlyGrossSalary)}</td><td><span className="status pending">Pre-elegible</span><small>Falta validación externa SENCE / DT</small></td></tr>) : <tr><td colSpan={4}>No hay contratos pre-elegibles según los datos sincronizados. Atlas revisa fecha de inicio y remuneración, no cotizaciones previas.</td></tr>}</tbody></table></div>
     </section>
 
-    {payload.applications.length > 0 && <section className="benefits-applications-section"><div className="table-heading"><div><span className="panel-label">BANDEJA DE POSTULACIONES</span><h2>Preparación y seguimiento</h2><p>El estado organiza el trabajo interno. La postulación y confirmación final ocurren en la plataforma oficial.</p></div></div><div className="benefits-applications-list">{payload.applications.map((application) => <article key={application.id}><div><span className="panel-label">{application.institution}</span><h3>{application.program_name}</h3><small>Actualizada {formatDate(application.updated_at)}</small></div><select aria-label={`Estado de ${application.program_name}`} value={application.status} disabled={saving} onChange={(event) => void setApplicationStatus(application, event.target.value as ApplicationStatus)}>{Object.entries(appStatusLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><a className="secondary-button" href={application.official_url} target="_blank" rel="noreferrer">Portal oficial <span aria-hidden="true">↗</span></a></article>)}</div></section>}
+    {payload.workspaceReady && <BenefitsWorkflow organizationId={organizationId ?? ""} />}
 
     <section className="benefits-catalog">
       <div className="table-heading"><div><span className="panel-label">CATÁLOGO OFICIAL</span><h2>Oportunidades para revisar</h2><p>Se muestran líneas de empleo, empresa, innovación y emprendimiento. El acceso abre el sitio oficial para completar una postulación autenticada.</p></div></div>
