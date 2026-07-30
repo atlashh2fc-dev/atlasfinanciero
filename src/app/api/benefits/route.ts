@@ -111,7 +111,7 @@ export async function GET(request: NextRequest) {
       siiConfiguredAt: siiResult.data?.configured_at ?? null,
       payrollConnected: Boolean(payrollIntegrationResult.data?.is_active),
       payrollSyncedAt: payrollIntegrationResult.data?.last_sync_at ?? null,
-      configuration: benefitsWorkspaceMissing ? {
+      configuration: benefitsProfileResult.data ?? {
         region: null,
         commune: null,
         business_sector: null,
@@ -123,7 +123,7 @@ export async function GET(request: NextRequest) {
         no_pending_public_renditions_declared: false,
         project_focus: null,
         project_budget: null,
-      } : benefitsProfileResult.data,
+      },
     },
     sence: { salaryLimit: senceSalaryLimit, candidates: senceCandidates },
     applications: benefitsWorkspaceMissing ? [] : applicationsResult.data ?? [],
