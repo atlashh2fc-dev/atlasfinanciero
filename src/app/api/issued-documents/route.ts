@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import {
+  calculateClpInvoiceAmounts,
+  normalizeClpAmount,
+  parseWholeClpAmount,
+} from "@/lib/clp";
 
 type DocumentRequest = {
   id?: unknown;
@@ -34,8 +39,7 @@ function readText(value: unknown, maxLength: number, required = false) {
 function readAmount(value: unknown, required = false) {
   if (value === undefined || value === null || value === "")
     return required ? undefined : null;
-  const amount = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(amount) && amount >= 0 ? amount : undefined;
+  return parseWholeClpAmount(value, { allowZero: true }) ?? undefined;
 }
 
 function readDate(value: unknown) {
@@ -159,8 +163,10 @@ export async function POST(request: NextRequest) {
   const { data: contact, error: contactError } = contactId ? await supabase.from("counterparty_contacts").select("id, full_name").eq("id", contactId).eq("counterparty_id", client.id).eq("organization_id", membership.organization_id).maybeSingle() : { data: null, error: null };
   if (contactError || (contactId && !contact)) return NextResponse.json({ error: "customer_contact_not_found" }, { status: 400 });
 
-  const vatAmount = documentType === "Factura afecta" ? Math.round(netAmount * 0.19 * 100) / 100 : 0;
-  const totalAmount = Math.round((netAmount + vatAmount) * 100) / 100;
+  const { vatAmount, totalAmount } = calculateClpInvoiceAmounts(
+    netAmount,
+    documentType === "Factura afecta",
+  );
   const safeName = upload instanceof File ? upload.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "factura" : null;
   const attachmentPath = upload instanceof File ? `${membership.organization_id}/${client.id}/${crypto.randomUUID()}-${safeName}` : null;
   if (upload instanceof File && attachmentPath) {
@@ -184,6 +190,7 @@ export async function POST(request: NextRequest) {
       net_amount: netAmount,
       vat_amount: vatAmount,
       total_amount: totalAmount,
+      currency_code: "CLP",
       due_date: dueDate,
       payment_status: status,
       payment_condition: paymentCondition,
@@ -346,6 +353,24 @@ export async function PATCH(request: NextRequest) {
   if (paymentProof !== null && paymentProof !== undefined)
     return NextResponse.json({ error: "payment_must_be_registered_as_installment" }, { status: 409 });
 
+  if (documentType && documentType !== existingDocument.document_type) {
+    const { count: paymentCount, error: paymentCountError } = await supabase
+      .from("issued_document_payments")
+      .select("id", { count: "exact", head: true })
+      .eq("issued_document_id", documentId)
+      .eq("organization_id", existingDocument.organization_id);
+    if (paymentCountError)
+      return NextResponse.json(
+        { error: "unable_to_verify_document_payments" },
+        { status: 500 },
+      );
+    if ((paymentCount ?? 0) > 0)
+      return NextResponse.json(
+        { error: "document_amounts_locked_after_payment" },
+        { status: 409 },
+      );
+  }
+
   const isFactoring = ["Factorizada", "Pagada al factoring", "Recomprada al factoring"].includes(status);
   const { data: factor } = isFactoring
     ? await supabase.from("counterparties").select("id, legal_name, trade_name").eq("id", factoringCounterpartyId!).in("organization_id", eligibleOrganizationIds).in("kind", ["supplier", "both"]).eq("is_active", true).maybeSingle()
@@ -386,15 +411,16 @@ export async function PATCH(request: NextRequest) {
     updatePayload.payment_date = paymentDate;
     updatePayload.payment_method = readText(body?.paymentMethod, 80);
   }
-  if (documentType) {
-    const netAmount = Number(existingDocument.net_amount ?? 0);
-    const vatAmount =
-      documentType === "Factura afecta"
-        ? Math.round(netAmount * 0.19 * 100) / 100
-        : 0;
+  if (documentType && documentType !== existingDocument.document_type) {
+    const netAmount = normalizeClpAmount(existingDocument.net_amount);
+    const { vatAmount, totalAmount } = calculateClpInvoiceAmounts(
+      netAmount,
+      documentType === "Factura afecta",
+    );
     updatePayload.document_type = documentType;
+    updatePayload.net_amount = netAmount;
     updatePayload.vat_amount = vatAmount;
-    updatePayload.total_amount = Math.round((netAmount + vatAmount) * 100) / 100;
+    updatePayload.total_amount = totalAmount;
   }
   if (upload instanceof File && attachmentPath) {
     updatePayload.attachment_path = attachmentPath;
@@ -418,6 +444,15 @@ export async function PATCH(request: NextRequest) {
     if (error?.message.includes("Documents can only be settled through payment_executions"))
       return NextResponse.json(
         { error: "payment_must_be_registered_as_installment" },
+        { status: 409 },
+      );
+    if (
+      /monetary|amounts?.*locked|after (a )?payment|accounting entr/i.test(
+        error?.message ?? "",
+      )
+    )
+      return NextResponse.json(
+        { error: "document_amounts_locked_after_payment" },
         { status: 409 },
       );
     return NextResponse.json(
@@ -512,9 +547,9 @@ export async function GET(request: NextRequest) {
   }
 
   const { data, error } = await supabase
-    .from("issued_documents")
+    .from("issued_document_receivable_balances")
     .select(
-      "id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, net_amount, vat_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_date, payment_method, payment_condition, factoring_entity, factoring_counterparty_id, factored_at, factoring_settled_at, factoring_recourse_at, origin_account_or_tax_id, destination_bank, destination_account, attachment_path, attachment_name, attachment_mime_type, attachment_size, payment_proof_path, payment_proof_name, payment_proof_mime_type, payment_proof_size, source_file_name, source_sheet_name, source_row",
+      "issued_document_id, document_number, issue_date, document_type, issuer_name, issuer_tax_id, client_name, recipient_name, recipient_tax_id, currency_code, net_amount, vat_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_date, payment_method, payment_condition, factoring_entity, factoring_counterparty_id, factored_at, factoring_settled_at, factoring_recourse_at, origin_account_or_tax_id, destination_bank, destination_account, attachment_path, attachment_name, attachment_mime_type, attachment_size, payment_proof_path, payment_proof_name, payment_proof_mime_type, payment_proof_size, source_file_name, source_sheet_name, source_row, settlement_amount, paid_amount, outstanding_amount, reconciled_amount, unreconciled_paid_amount, available_to_reconcile, collection_status",
     )
     .eq("organization_id", organizationId)
     .order("issue_date", { ascending: false });
@@ -524,5 +559,11 @@ export async function GET(request: NextRequest) {
       { status: 500 },
     );
 
-  return NextResponse.json({ documents: data ?? [] });
+  return NextResponse.json({
+    documents: (data ?? []).map((document) => ({
+      ...document,
+      id: document.issued_document_id,
+      payment_status: document.collection_status,
+    })),
+  });
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireOrganizationExpenseReadAccess, requireOrganizationFinanceAccess, isUuid } from "@/lib/admin-access";
+import { parseWholeClpAmount } from "@/lib/clp";
 
 const allowedMimeTypes = new Set(["application/pdf", "image/jpeg", "image/png"]);
 
@@ -10,9 +11,7 @@ function readDate(value: unknown) {
 }
 
 function readAmount(value: unknown) {
-  if (typeof value !== "string" && typeof value !== "number") return null;
-  const amount = Number(value);
-  return Number.isFinite(amount) && amount > 0 ? amount : null;
+  return parseWholeClpAmount(value);
 }
 
 function readText(value: unknown, maxLength: number) {
@@ -53,7 +52,7 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await context.supabase
     .from("issued_document_payments")
-    .select("id, organization_id, issued_document_id, amount, paid_on, payment_method, notes, proof_path, proof_name, proof_mime_type, proof_size, created_at")
+    .select("id, organization_id, issued_document_id, payment_execution_id, amount, paid_on, payment_method, notes, proof_path, proof_name, proof_mime_type, proof_size, created_at")
     .eq("organization_id", organizationId)
     .order("paid_on", { ascending: false })
     .order("created_at", { ascending: false });
@@ -74,8 +73,10 @@ export async function POST(request: NextRequest) {
   const paidOn = readDate(form.get("paidOn"));
   const paymentMethod = readText(form.get("paymentMethod"), 120);
   const notes = readText(form.get("notes"), 2_000);
+  const idempotencyKey =
+    form.get("idempotencyKey") ?? request.headers.get("idempotency-key");
   const proof = form.get("proof");
-  if (!isUuid(organizationId) || !isUuid(issuedDocumentId) || !amount || !paidOn || paymentMethod === undefined || notes === undefined || (proof !== null && !(proof instanceof File)))
+  if (!isUuid(organizationId) || !isUuid(issuedDocumentId) || !isUuid(idempotencyKey) || !amount || !paidOn || paymentMethod === undefined || notes === undefined || (proof !== null && !(proof instanceof File)))
     return NextResponse.json({ error: "invalid_issued_document_payment" }, { status: 400 });
   if (proof instanceof File && (proof.size === 0 || proof.size > 52_428_800 || !allowedMimeTypes.has(proof.type)))
     return NextResponse.json({ error: "invalid_payment_proof" }, { status: 400 });
@@ -99,49 +100,92 @@ export async function POST(request: NextRequest) {
     ? proof.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "comprobante"
     : null;
   const proofPath = proof instanceof File && proofName
-    ? `${organizationId}/issued-payment-installments/${crypto.randomUUID()}-${proofName}`
+    ? `${organizationId}/issued-payment-installments/${idempotencyKey}-${proofName}`
     : null;
+  let uploadedProof = false;
   if (proof instanceof File && proofPath) {
     const { error } = await context.supabase.storage
       .from("issued-document-files")
       .upload(proofPath, proof, { contentType: proof.type, upsert: false });
-    if (error)
+    const isExistingIdempotentProof = /already exists|duplicate/i.test(
+      error?.message ?? "",
+    );
+    if (error && !isExistingIdempotentProof)
       return NextResponse.json({ error: "unable_to_upload_payment_proof" }, { status: 409 });
+    uploadedProof = !error;
   }
 
-  const { data: payment, error } = await context.supabase
-    .from("issued_document_payments")
-    .insert({
-      organization_id: organizationId,
-      issued_document_id: issuedDocumentId,
-      amount,
-      paid_on: paidOn,
-      payment_method: paymentMethod,
-      notes,
-      proof_path: proofPath,
-      proof_name: proof instanceof File ? proof.name.slice(0, 300) : null,
-      proof_mime_type: proof instanceof File ? proof.type : null,
-      proof_size: proof instanceof File ? proof.size : null,
-      created_by: context.user.id,
-    })
-    .select("id, organization_id, issued_document_id, amount, paid_on, payment_method, notes, proof_path, proof_name, proof_mime_type, proof_size, created_at")
-    .single();
-  if (error || !payment) {
-    if (proofPath)
+  const { data: receiptRows, error: receiptError } = await context.supabase.rpc(
+    "record_issued_receipt",
+    {
+      p_organization_id: organizationId,
+      p_issued_document_id: issuedDocumentId,
+      p_amount: amount,
+      p_payment_date: paidOn,
+      p_payment_method: paymentMethod,
+      p_proof_path: proofPath,
+      p_notes: notes,
+      p_proof_name: proof instanceof File ? proof.name.slice(0, 300) : null,
+      p_proof_mime_type: proof instanceof File ? proof.type : null,
+      p_proof_size: proof instanceof File ? proof.size : null,
+      p_idempotency_key: idempotencyKey,
+    },
+  );
+  const receipt = Array.isArray(receiptRows) ? receiptRows[0] : receiptRows;
+  if (receiptError || !receipt) {
+    if (proofPath && uploadedProof)
       await context.supabase.storage.from("issued-document-files").remove([proofPath]);
+    const message = receiptError?.message ?? "";
+    const error = /exceeds|outstanding balance|overpayment/i.test(message)
+      ? "payment_exceeds_outstanding_balance"
+      : /not found/i.test(message)
+        ? "document_not_found"
+        : /not collectible|status|factoring|cancel/i.test(message)
+          ? "document_not_collectible"
+          : /whole|integer|CLP/i.test(message)
+            ? "invalid_issued_document_payment"
+            : "unable_to_create_issued_document_payment";
     return NextResponse.json(
-      { error: error?.message.includes("exceeds the outstanding balance") ? "payment_exceeds_outstanding_balance" : "unable_to_create_issued_document_payment" },
-      { status: 400 },
+      { error },
+      { status: error === "document_not_found" ? 404 : error === "unable_to_create_issued_document_payment" ? 500 : 409 },
     );
   }
 
-  const { data: updatedDocument, error: updatedDocumentError } = await context.supabase
-    .from("issued_documents")
-    .select("id, payment_status, payment_date, payment_method")
-    .eq("id", issuedDocumentId)
+  const { data: payment, error: paymentError } = await context.supabase
+    .from("issued_document_payments")
+    .select("id, organization_id, issued_document_id, payment_execution_id, amount, paid_on, payment_method, notes, proof_path, proof_name, proof_mime_type, proof_size, created_at")
+    .eq("id", receipt.payment_id)
     .eq("organization_id", organizationId)
-    .single();
-  if (updatedDocumentError)
-    return NextResponse.json({ error: "payment_registered_but_document_unavailable", payment }, { status: 201 });
-  return NextResponse.json({ payment, document: updatedDocument }, { status: 201 });
+    .maybeSingle();
+  if (paymentError)
+    return NextResponse.json(
+      { error: "payment_registered_but_projection_unavailable", receipt },
+      { status: 201 },
+    );
+
+  return NextResponse.json(
+    {
+      payment: payment ?? {
+        id: receipt.payment_id,
+        organization_id: organizationId,
+        issued_document_id: issuedDocumentId,
+        payment_execution_id: receipt.payment_execution_id,
+        amount,
+        paid_on: paidOn,
+        payment_method: paymentMethod,
+        notes,
+        proof_path: proofPath,
+      },
+      document: {
+        id: receipt.issued_document_id,
+        payment_status: receipt.collection_status,
+      },
+      balance: {
+        settlement_amount: receipt.settlement_amount,
+        paid_amount: receipt.paid_amount,
+        outstanding_amount: receipt.outstanding_amount,
+      },
+    },
+    { status: 201 },
+  );
 }

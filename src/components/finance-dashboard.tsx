@@ -52,6 +52,10 @@ import {
   outstandingDocumentBalance,
   recognizedNetAmount,
 } from "@/lib/document-revenue";
+import {
+  calculateClpInvoiceAmounts,
+  parseWholeClpAmount,
+} from "@/lib/clp";
 
 const calendarMonths = [
   "Enero",
@@ -326,6 +330,7 @@ type PaymentDraft = {
   paidOn: string;
   paymentMethod: string;
   notes: string;
+  idempotencyKey: string;
 };
 
 type DocumentSortColumn =
@@ -361,6 +366,7 @@ const blankPaymentDraft = (): PaymentDraft => ({
   paidOn: new Date().toISOString().slice(0, 10),
   paymentMethod: "",
   notes: "",
+  idempotencyKey: crypto.randomUUID(),
 });
 
 const money = new Intl.NumberFormat("es-CL", {
@@ -427,6 +433,25 @@ function monthFromDate(value: string) {
 function localIsoDate(value = new Date()) {
   const local = new Date(value.getTime() - value.getTimezoneOffset() * 60000);
   return local.toISOString().slice(0, 10);
+}
+
+type CanonicalInvoiceRecord = InvoiceRecord & {
+  settlementAmount?: number;
+  paidAmount?: number;
+  outstandingAmount?: number;
+  collectionStatus?: string | null;
+};
+
+function canonicalPaidAmount(record: InvoiceRecord) {
+  const amount = (record as CanonicalInvoiceRecord).paidAmount;
+  return typeof amount === "number" && Number.isFinite(amount) ? amount : 0;
+}
+
+function canonicalOutstandingAmount(record: InvoiceRecord) {
+  const amount = (record as CanonicalInvoiceRecord).outstandingAmount;
+  return typeof amount === "number" && Number.isFinite(amount)
+    ? amount
+    : outstandingDocumentBalance(record, canonicalPaidAmount(record));
 }
 
 function sumRecognizedNet(records: InvoiceRecord[]) {
@@ -648,12 +673,10 @@ function EmptyModule({
 
 function ExecutiveDashboard({
   records,
-  payments,
   onOpenReceivables,
   onOpenPreinvoices,
 }: {
   records: InvoiceRecord[];
-  payments: IssuedDocumentPayment[];
   onOpenReceivables: () => void;
   onOpenPreinvoices: () => void;
 }) {
@@ -739,14 +762,11 @@ function ExecutiveDashboard({
   const netDocumentedClosedMonths = sumRecognizedNet(closedMonthRecords);
   const paidAmountByDocument = useMemo(() => {
     const amounts = new Map<string, number>();
-    payments.forEach((payment) =>
-      amounts.set(
-        payment.issued_document_id,
-        (amounts.get(payment.issued_document_id) ?? 0) + Number(payment.amount),
-      ),
+    periodRecords.forEach((record) =>
+      amounts.set(record.id, canonicalPaidAmount(record)),
     );
     return amounts;
-  }, [payments]);
+  }, [periodRecords]);
   const pending = periodRecords.filter(
     (record) =>
       !isPurchaseOrderDocument(record) &&
@@ -1231,7 +1251,18 @@ function buildCustomerEvolution(records: InvoiceRecord[]) {
       current.total += amount;
       current.documents += 1;
       if (record.paymentDate) current.withPaymentDate += 1;
-      if (isOutstandingStatus(record.status)) current.pendingNet += amount;
+      if (isOutstandingStatus(record.status)) {
+        const settlementAmount = Number(
+          (record as CanonicalInvoiceRecord).settlementAmount ??
+            record.totalAmount ??
+            0,
+        );
+        const outstandingAmount = canonicalOutstandingAmount(record);
+        const pendingRatio = settlementAmount > 0
+          ? Math.min(1, outstandingAmount / settlementAmount)
+          : 0;
+        current.pendingNet += amount * pendingRatio;
+      }
       if (record.month)
         current.byMonth[record.month] =
           (current.byMonth[record.month] ?? 0) + amount;
@@ -2110,6 +2141,10 @@ type StoredDocument = {
   source_file_name: string | null;
   source_sheet_name: string | null;
   source_row: number | null;
+  settlement_amount?: number | string | null;
+  paid_amount?: number | string | null;
+  outstanding_amount?: number | string | null;
+  collection_status?: string | null;
 };
 
 function normalizeDocumentType(value: string | null) {
@@ -2129,7 +2164,25 @@ function normalizeDocumentType(value: string | null) {
   );
 }
 
-function mapStoredDocument(document: StoredDocument): InvoiceRecord {
+function mapStoredDocument(
+  document: StoredDocument,
+  previous?: InvoiceRecord | null,
+): CanonicalInvoiceRecord {
+  const previousCanonical = previous as CanonicalInvoiceRecord | null | undefined;
+  const settlementAmount = Number(
+    document.settlement_amount ??
+      previousCanonical?.settlementAmount ??
+      document.total_amount ??
+      0,
+  );
+  const paidAmount = Number(
+    document.paid_amount ?? previousCanonical?.paidAmount ?? 0,
+  );
+  const outstandingAmount = Number(
+    document.outstanding_amount ??
+      previousCanonical?.outstandingAmount ??
+      Math.max(0, settlementAmount - paidAmount),
+  );
   return {
     id: document.id,
     invoiceNumber: document.document_number,
@@ -2146,8 +2199,7 @@ function mapStoredDocument(document: StoredDocument): InvoiceRecord {
       document.net_amount === null ? null : Number(document.net_amount),
     vatAmount:
       document.vat_amount === null ? null : Number(document.vat_amount),
-    totalAmount:
-      document.total_amount === null ? null : Number(document.total_amount),
+    totalAmount: Number.isFinite(settlementAmount) ? settlementAmount : 0,
     notes: document.notes,
     paymentTermDays:
       document.payment_term_days === null
@@ -2155,7 +2207,7 @@ function mapStoredDocument(document: StoredDocument): InvoiceRecord {
         : Number(document.payment_term_days),
     dueDate: document.due_date,
     dueMonth: document.due_month,
-    status: document.payment_status,
+    status: document.collection_status ?? document.payment_status,
     paymentDate: document.payment_date,
     paymentMethod: document.payment_method,
     paymentCondition: document.payment_condition,
@@ -2172,6 +2224,12 @@ function mapStoredDocument(document: StoredDocument): InvoiceRecord {
       sheet: document.source_sheet_name ?? "Registro manual",
       row: document.source_row ?? 0,
     },
+    settlementAmount: Number.isFinite(settlementAmount) ? settlementAmount : 0,
+    paidAmount: Number.isFinite(paidAmount) ? paidAmount : 0,
+    outstandingAmount: Number.isFinite(outstandingAmount)
+      ? outstandingAmount
+      : 0,
+    collectionStatus: document.collection_status ?? document.payment_status,
   };
 }
 
@@ -2237,7 +2295,9 @@ export function FinanceDashboard() {
       )
       .then((payload) => {
         if (active && payload) {
-          setDatabaseRecords(payload.documents.map(mapStoredDocument));
+          setDatabaseRecords(
+            payload.documents.map((document) => mapStoredDocument(document)),
+          );
           setAttachmentByDocument(Object.fromEntries(payload.documents.map((document) => [document.id, Boolean(document.attachment_path)])));
           setPaymentProofByDocument(Object.fromEntries(payload.documents.map((document) => [document.id, Boolean(document.payment_proof_path)])));
         }
@@ -2319,9 +2379,15 @@ export function FinanceDashboard() {
   const records = useMemo(() => [...databaseRecords, ...sessionRecords], [databaseRecords, sessionRecords]);
   const contactsForDraftCustomer = useMemo(() => (documentContacts ?? []).filter((contact) => contact.counterparty_id === draft.clientId), [documentContacts, draft.clientId]);
   const selectedDraftCustomer = useMemo(() => (documentCustomers ?? []).find((customer) => customer.id === draft.clientId) ?? null, [documentCustomers, draft.clientId]);
-  const entryNetAmount = Number(draft.netAmount || 0);
-  const entryVatAmount = draft.documentType === "Factura afecta" ? Math.round(entryNetAmount * 0.19 * 100) / 100 : 0;
-  const entryTotalAmount = Math.round((entryNetAmount + entryVatAmount) * 100) / 100;
+  const entryNetAmount = parseWholeClpAmount(draft.netAmount, {
+    allowZero: true,
+  }) ?? 0;
+  const entryAmounts = calculateClpInvoiceAmounts(
+    entryNetAmount,
+    draft.documentType === "Factura afecta",
+  );
+  const entryVatAmount = entryAmounts.vatAmount;
+  const entryTotalAmount = entryAmounts.totalAmount;
   const availableYears = useMemo(
     () =>
       Array.from(
@@ -2471,30 +2537,32 @@ export function FinanceDashboard() {
     [yearFilteredRecords],
   );
 
-  const paidAmountByDocument = useMemo(() => {
-    const amounts = new Map<string, number>();
-    partialPayments.forEach((payment) =>
-      amounts.set(
-        payment.issued_document_id,
-        (amounts.get(payment.issued_document_id) ?? 0) + Number(payment.amount),
-      ),
-    );
-    return amounts;
-  }, [partialPayments]);
+  const canonicalPaymentSummaries = useMemo(
+    () =>
+      records
+        .filter((record) => canonicalPaidAmount(record) > 0)
+        .map((record) => ({
+          id: `canonical-${record.id}`,
+          issued_document_id: record.id,
+          amount: canonicalPaidAmount(record),
+          paid_on: record.paymentDate ?? record.issueDate ?? localIsoDate(),
+        })),
+    [records],
+  );
   const currentDate = localIsoDate();
   const overdueRecords = yearFilteredRecords.filter(
     (record) =>
       !isPurchaseOrderDocument(record) &&
       !isCreditNoteDocument(record) &&
       isOutstandingStatus(record.status) &&
-      outstandingDocumentBalance(record, paidAmountByDocument.get(record.id)) > 0 &&
+      canonicalOutstandingAmount(record) > 0 &&
       Boolean(record.dueDate) &&
       record.dueDate! < currentDate,
   );
   const overdueAmount = overdueRecords.reduce(
     (total, record) =>
       total +
-      outstandingDocumentBalance(record, paidAmountByDocument.get(record.id)),
+      canonicalOutstandingAmount(record),
     0,
   );
   const registeredIncome = sumRecognizedNet(yearFilteredRecords);
@@ -2522,13 +2590,18 @@ export function FinanceDashboard() {
       : [],
     [editingRecord, partialPayments],
   );
-  const editingPaidAmount = editingPayments.reduce(
-    (total, payment) => total + Number(payment.amount),
-    0,
-  );
-  const editingDocumentTotal = Number(editingRecord?.totalAmount ?? 0);
+  const editingPaidAmount = editingRecord
+    ? canonicalPaidAmount(editingRecord)
+    : 0;
+  const editingDocumentTotal = editingRecord
+    ? Number(
+        (editingRecord as CanonicalInvoiceRecord).settlementAmount ??
+          editingRecord.totalAmount ??
+          0,
+      )
+    : 0;
   const editingOutstandingAmount = editingRecord
-    ? outstandingDocumentBalance(editingRecord, editingPaidAmount)
+    ? canonicalOutstandingAmount(editingRecord)
     : 0;
   const editingPaymentStateIsDerived =
     editDraft.status === "Abonada" || editDraft.status === "Pagada";
@@ -2596,7 +2669,7 @@ export function FinanceDashboard() {
       return;
     }
     const payload = (await response.json()) as { document: StoredDocument };
-    const updated = mapStoredDocument(payload.document);
+    const updated = mapStoredDocument(payload.document, editingRecord);
     setDatabaseRecords((current) =>
       current
         ? current.map((record) => (record.id === updated.id ? updated : record))
@@ -2613,9 +2686,9 @@ export function FinanceDashboard() {
   }
 
   async function registerPartialPayment() {
-    if (!editingRecord || !access?.membership.organizationId) return;
+    if (!editingRecord || !access?.membership.organizationId || isRegisteringPayment) return;
     const amount = Number(paymentDraft.amount);
-    if (!Number.isFinite(amount) || amount <= 0 || amount > editingOutstandingAmount) {
+    if (!Number.isSafeInteger(amount) || amount <= 0 || amount > editingOutstandingAmount) {
       setFormError(`Ingresa un abono mayor a $0 y de hasta ${formatMoney(editingOutstandingAmount)}.`);
       return;
     }
@@ -2632,15 +2705,28 @@ export function FinanceDashboard() {
     formData.set("paidOn", paymentDraft.paidOn);
     formData.set("paymentMethod", paymentDraft.paymentMethod);
     formData.set("notes", paymentDraft.notes);
+    formData.set("idempotencyKey", paymentDraft.idempotencyKey);
     if (paymentInstallmentProof) formData.set("proof", paymentInstallmentProof);
-    const response = await fetch("/api/issued-document-payments", {
-      method: "POST",
-      body: formData,
-    });
+    let response: Response;
+    try {
+      response = await fetch("/api/issued-document-payments", {
+        method: "POST",
+        body: formData,
+      });
+    } catch {
+      setIsRegisteringPayment(false);
+      setFormError("No hubo respuesta del servidor. Puedes reintentar: conservamos el identificador para no duplicar el abono.");
+      return;
+    }
     const payload = (await response.json().catch(() => null)) as {
       error?: string;
       payment?: IssuedDocumentPayment;
-      document?: { id: string; payment_status: string | null; payment_date: string | null; payment_method: string | null };
+      document?: { id: string; payment_status: string | null };
+      balance?: {
+        settlement_amount: number | string;
+        paid_amount: number | string;
+        outstanding_amount: number | string;
+      };
     } | null;
     setIsRegisteringPayment(false);
     if (!response.ok || !payload?.payment) {
@@ -2654,19 +2740,20 @@ export function FinanceDashboard() {
       return;
     }
     setPartialPayments((current) => [payload.payment!, ...current]);
-    if (payload.document) {
+    if (payload.document && payload.balance) {
       const change = {
         status: payload.document.payment_status,
-        paymentDate: payload.document.payment_date,
-        paymentMethod: payload.document.payment_method,
+        collectionStatus: payload.document.payment_status,
+        settlementAmount: Number(payload.balance.settlement_amount),
+        totalAmount: Number(payload.balance.settlement_amount),
+        paidAmount: Number(payload.balance.paid_amount),
+        outstandingAmount: Number(payload.balance.outstanding_amount),
       };
       setDatabaseRecords((current) => current?.map((record) => record.id === payload.document!.id ? { ...record, ...change } : record) ?? current);
       setEditingRecord((current) => current?.id === payload.document!.id ? { ...current, ...change } : current);
       setEditDraft((current) => ({
         ...current,
         status: payload.document!.payment_status ?? current.status,
-        paymentDate: payload.document!.payment_date ?? "",
-        paymentMethod: payload.document!.payment_method ?? "",
       }));
     }
     setPaymentDraft(blankPaymentDraft());
@@ -3031,7 +3118,6 @@ export function FinanceDashboard() {
         ) : activeModule === "Inicio" ? (
           <ExecutiveDashboard
             records={records}
-            payments={partialPayments}
             onOpenReceivables={() => selectModule("Cuentas por cobrar", "INGRESOS")}
             onOpenPreinvoices={() => selectModule("Prefacturación", "INGRESOS")}
           />
@@ -3068,7 +3154,7 @@ export function FinanceDashboard() {
             organizationId={access?.membership.organizationId ?? null}
             canManage={hasEditPermission}
             isPersisted={Boolean(databaseRecords)}
-            payments={partialPayments}
+            payments={canonicalPaymentSummaries}
             onEditDocument={(record) => {
               setActiveModule("Facturas");
               startDocumentEdit(record);
@@ -3699,7 +3785,7 @@ export function FinanceDashboard() {
                   <input
                     type="number"
                     min="0"
-                    step="0.01"
+                    step="1"
                     value={draft.netAmount}
                     onChange={(event) =>
                       updateDraft("netAmount", event.target.value)

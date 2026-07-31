@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
     supabase.from("issued_documents").select("issue_date, document_type, net_amount, counterparty_id, cost_center_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
     supabase.from("received_documents").select("issue_date, document_type, net_amount, cost_center_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
     supabase.from("direct_payables").select("issue_date, total_amount, cost_center_id, currency_code").eq("organization_id", organizationId).in("status", ["approved", "paid"]).is("asset_financing_installment_id", null).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
-    supabase.from("issued_documents").select("issue_date, document_type, net_amount, payment_status, due_date, payment_date").eq("organization_id", organizationId),
+    supabase.from("issued_document_receivable_balances").select("issued_document_id, issue_date, document_type, net_amount, due_date, payment_date, outstanding_amount, collection_status, is_collectible").eq("organization_id", organizationId),
     supabase.from("cost_centers").select("id, code, name").eq("organization_id", organizationId).eq("is_active", true),
     supabase.from("cost_center_customer_links").select("cost_center_id, counterparty_id, allocation_percentage, effective_from, effective_to").eq("organization_id", organizationId),
     supabase.from("customer_purchase_orders").select("id, net_amount, status").eq("organization_id", organizationId).neq("status", "cancelled"),
@@ -189,14 +189,17 @@ export async function GET(request: NextRequest) {
   }
   const today = new Date().toISOString().slice(0, 10);
   const inSevenDays = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
-  const isPending = (status: string | null) => normalizedType(status).includes("pendiente");
   const receivables = (receivablesResult.data ?? []).filter((document) => {
     const type = normalizedType(document.document_type);
-    return !type.includes("orden de compra") && !type.includes("nota de credito") && isPending(document.payment_status);
+    return !type.includes("orden de compra") &&
+      !type.includes("nota de credito") &&
+      document.is_collectible &&
+      ["Pendiente", "Abonada"].includes(document.collection_status ?? "") &&
+      asNumber(document.outstanding_amount) > 0;
   });
-  const totalReceivable = receivables.reduce((total, document) => total + asNumber(document.net_amount), 0);
-  const overdueReceivable = receivables.filter((document) => document.due_date && document.due_date < today).reduce((total, document) => total + asNumber(document.net_amount), 0);
-  const dueNextSevenDays = receivables.filter((document) => document.due_date && document.due_date >= today && document.due_date <= inSevenDays).reduce((total, document) => total + asNumber(document.net_amount), 0);
+  const totalReceivable = receivables.reduce((total, document) => total + asNumber(document.outstanding_amount), 0);
+  const overdueReceivable = receivables.filter((document) => document.due_date && document.due_date < today).reduce((total, document) => total + asNumber(document.outstanding_amount), 0);
+  const dueNextSevenDays = receivables.filter((document) => document.due_date && document.due_date >= today && document.due_date <= inSevenDays).reduce((total, document) => total + asNumber(document.outstanding_amount), 0);
   const observedPaymentDays = (receivablesResult.data ?? []).flatMap((document) => document.issue_date && document.payment_date ? [Math.round((new Date(`${document.payment_date}T00:00:00`).getTime() - new Date(`${document.issue_date}T00:00:00`).getTime()) / 86_400_000)] : []);
   const averageCollectionDays = observedPaymentDays.length ? observedPaymentDays.reduce((total, item) => total + item, 0) / observedPaymentDays.length : null;
   const allocationsByOrder = new Map<string, number>();

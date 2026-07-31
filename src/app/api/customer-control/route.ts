@@ -47,11 +47,23 @@ export async function GET(request: NextRequest) {
     data.supabase.from("service_catalog").select("id, name, category, description, unit_name, unit_price, currency, is_active").eq("organization_id", organizationId).order("name"),
     data.supabase.from("customer_services").select("id, counterparty_id, service_catalog_id, quantity, unit_price, currency, starts_on, ends_on, billing_frequency, notes, is_active").eq("organization_id", organizationId).order("created_at"),
     data.supabase.from("customer_files").select("id, counterparty_id, file_name, mime_type, file_size, document_type, notes, created_at").eq("organization_id", organizationId).order("created_at", { ascending: false }),
-    data.supabase.from("issued_documents").select("id, counterparty_id, document_number, issue_date, document_type, client_name, recipient_name, total_amount, payment_status").eq("organization_id", organizationId).order("issue_date", { ascending: false }),
+    data.supabase.from("issued_document_receivable_balances").select("issued_document_id, counterparty_id, document_number, issue_date, document_type, client_name, recipient_name, settlement_amount, collection_status").eq("organization_id", organizationId).order("issue_date", { ascending: false }),
     canReadExpenses ? data.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, document_number, issue_date, document_type, total_amount, payment_status").eq("organization_id", organizationId).order("issue_date", { ascending: false }) : Promise.resolve({ data: [], error: null }),
   ]);
   if (catalog.error || services.error || files.error || issued.error || received.error) return NextResponse.json({ error: "unable_to_load_customer_control" }, { status: 500 });
-  return NextResponse.json({ catalog: catalog.data ?? [], services: services.data ?? [], files: files.data ?? [], issuedDocuments: issued.data ?? [], receivedDocuments: received.data ?? [], canReadExpenses });
+  return NextResponse.json({
+    catalog: catalog.data ?? [],
+    services: services.data ?? [],
+    files: files.data ?? [],
+    issuedDocuments: (issued.data ?? []).map((document) => ({
+      ...document,
+      id: document.issued_document_id,
+      total_amount: document.settlement_amount,
+      payment_status: document.collection_status,
+    })),
+    receivedDocuments: received.data ?? [],
+    canReadExpenses,
+  });
 }
 
 export async function POST(request: NextRequest) {

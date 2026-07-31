@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isUuid, requireOrganizationProcurementAccess } from "@/lib/admin-access";
 
 type AskRequest = { organizationId?: unknown; question?: unknown };
-type IssuedDocument = { document_number: string | null; issue_date: string | null; document_type: string | null; client_name: string | null; recipient_name: string | null; total_amount: number | string | null; payment_status: string | null };
+type IssuedDocument = { document_number: string | null; issue_date: string | null; document_type: string | null; client_name: string | null; recipient_name: string | null; total_amount: number | string | null; payment_status: string | null; outstanding_amount: number | string | null; is_collectible: boolean };
 type Preinvoice = { counterparty_id: string; period_month: string; status: string; total_amount: number | string | null };
 type Counterparty = { id: string; legal_name: string; trade_name: string | null };
 
@@ -44,10 +44,6 @@ function isInvoice(document: IssuedDocument) {
 
 function hasExpenseAccess(role: string) {
   return ["administrator", "finance", "auditor"].includes(role);
-}
-
-function isPaid(status: string | null) {
-  return normalize(status).includes("pagada");
 }
 
 export async function POST(request: NextRequest) {
@@ -102,18 +98,31 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ answer: `Hay ${summary.draft ?? 0} prefactura(s) en borrador, ${summary.review ?? 0} en revisión, ${summary.approved ?? 0} aprobada(s) y ${summary.issued ?? 0} emitida(s). Puedes preguntarme por un cliente específico.` });
   }
 
-  const { data, error } = await context.supabase.from("issued_documents").select("document_number, issue_date, document_type, client_name, recipient_name, total_amount, payment_status").eq("organization_id", organizationId).order("issue_date", { ascending: false }).limit(1000);
+  const { data: balanceRows, error } = await context.supabase.from("issued_document_receivable_balances").select("document_number, issue_date, document_type, client_name, recipient_name, settlement_amount, outstanding_amount, collection_status, is_collectible").eq("organization_id", organizationId).order("issue_date", { ascending: false }).limit(1000);
   if (error) return NextResponse.json({ error: "unable_to_read_issued_documents" }, { status: 500 });
-  const invoices = (data as IssuedDocument[] ?? []).filter(isInvoice);
+  const invoices = (balanceRows ?? []).map((document) => ({
+    ...document,
+    total_amount: document.settlement_amount,
+    payment_status: document.collection_status,
+  })) as IssuedDocument[];
+  const issuedInvoices = invoices.filter(isInvoice);
 
   if (receivableQuestion) {
-    const pending = invoices.filter((document) => !isPaid(document.payment_status));
-    const total = pending.reduce((sum, document) => sum + Number(document.total_amount ?? 0), 0);
-    return NextResponse.json({ answer: `La cartera abierta registra ${pending.length} factura(s) no pagada(s), por un total de ${amount(total)}. Esta lectura usa el estado de pago registrado en Facturas.` });
+    const balances = issuedInvoices.filter(
+      (document) =>
+        document.is_collectible &&
+        ["Pendiente", "Abonada"].includes(document.payment_status ?? "") &&
+        Number(document.outstanding_amount ?? 0) > 0,
+    );
+    const total = balances.reduce(
+      (sum, balance) => sum + Number(balance.outstanding_amount ?? 0),
+      0,
+    );
+    return NextResponse.json({ answer: `La cartera abierta registra ${balances.length} factura(s) con saldo pendiente, por un total de ${amount(total)}. Esta lectura usa el saldo canónico de Cuentas por Cobrar.` });
   }
 
   const folio = normalizedQuestion.match(/(?:folio|factura|n)[°ºo.\s]*(\d{1,12})/)?.[1];
-  const document = folio ? invoices.find((item) => normalize(item.document_number).includes(folio)) ?? null : bestByName(invoices, questionTerms, (item) => [item.client_name, item.recipient_name]);
+  const document = folio ? issuedInvoices.find((item) => normalize(item.document_number).includes(folio)) ?? null : bestByName(issuedInvoices, questionTerms, (item) => [item.client_name, item.recipient_name]);
   if (!document) return NextResponse.json({ answer: questionTerms.length ? "No encontré una factura emitida para ese cliente o folio en la empresa activa." : "No hay facturas emitidas disponibles para consultar." });
   const customer = document.client_name || document.recipient_name || "cliente no informado";
   return NextResponse.json({ answer: `La última factura emitida a ${customer} es ${document.document_type || "Factura"} folio ${document.document_number || "sin folio"}. Fecha de emisión: ${date(document.issue_date)}. Total: ${amount(document.total_amount)}. Estado: ${document.payment_status || "sin estado"}.` });

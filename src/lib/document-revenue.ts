@@ -1,3 +1,5 @@
+import { normalizeClpAmount } from "@/lib/clp";
+
 export type RevenueDocument = {
   documentType?: string | null;
   invoiceNumber?: string | null;
@@ -48,21 +50,15 @@ export function recognizedNetAmount(document: RevenueDocument) {
   return isCreditNoteDocument(document) ? -Math.abs(amount) : amount;
 }
 
-/** CLP is settled in whole pesos, including imported totals with VAT decimals. */
-function clpAmount(value: unknown) {
-  const amount = Number(value);
-  return Number.isFinite(amount) ? Math.round(amount) : 0;
-}
-
 /** Balance still collectible after all registered partial payments. */
 export function outstandingDocumentBalance(
   document: RevenueDocument,
   paidAmount = 0,
 ) {
-  const documentAmount = clpAmount(
+  const documentAmount = normalizeClpAmount(
     document.totalAmount ?? recognizedNetAmount(document),
   );
-  const paid = clpAmount(paidAmount);
+  const paid = normalizeClpAmount(paidAmount);
   return Math.max(0, documentAmount - paid);
 }
 
@@ -75,8 +71,8 @@ export function outstandingBalanceBreakdown(
   paidAmount = 0,
 ) {
   const balance = outstandingDocumentBalance(document, paidAmount);
-  const netAmount = clpAmount(document.netAmount ?? 0);
-  const paid = clpAmount(paidAmount);
+  const netAmount = normalizeClpAmount(document.netAmount ?? 0);
+  const paid = normalizeClpAmount(paidAmount);
   const netPending = Math.min(
     balance,
     Math.max(0, netAmount - paid),

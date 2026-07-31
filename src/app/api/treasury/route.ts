@@ -5,6 +5,7 @@ import {
   requireOrganizationExpenseReadAccess,
   requireOrganizationFinanceAccess,
 } from "@/lib/admin-access";
+import { parseWholeClpAmount } from "@/lib/clp";
 
 type ReconcileRequest = {
   organizationId?: unknown;
@@ -13,6 +14,7 @@ type ReconcileRequest = {
   documentId?: unknown;
   documentType?: unknown;
   matchedAmount?: unknown;
+  idempotencyKey?: unknown;
   notes?: unknown;
   account?: unknown;
 };
@@ -146,8 +148,8 @@ export async function GET(request: NextRequest) {
         .order("created_at", { ascending: false })
         .limit(500),
       context.supabase
-        .from("issued_documents")
-        .select("id, document_number, issue_date, client_name, total_amount, payment_status")
+        .from("issued_document_receivable_balances")
+        .select("organization_id, issued_document_id, document_number, document_type, client_name, issue_date, due_date, payment_status, total_amount, settlement_amount, paid_amount, outstanding_amount, reconciled_amount, available_to_reconcile, collection_status, is_collectible")
         .eq("organization_id", organizationId)
         .order("issue_date", { ascending: false })
         .limit(250),
@@ -195,9 +197,12 @@ export async function GET(request: NextRequest) {
     accounts: accountsResult.data ?? [],
     transactions: transactionsResult.data ?? [],
     matches: matchesResult.data ?? [],
-    issuedDocuments: (issuedResult.data ?? []).filter(
-      (document) => !isPaid(document.payment_status),
-    ),
+    issuedDocuments: (issuedResult.data ?? [])
+      .filter(
+        (document) =>
+          document.is_collectible && Number(document.available_to_reconcile ?? 0) > 0,
+      )
+      .map((document) => ({ ...document, id: document.issued_document_id })),
     receivedDocuments: (receivedResult.data ?? []).filter(
       (document) => !isPaid(document.payment_status),
     ),
@@ -375,12 +380,16 @@ export async function POST(request: NextRequest) {
   const bankTransactionId = body?.bankTransactionId;
   const documentId = body?.documentId;
   const documentType = body?.documentType;
-  const matchedAmount = readAmount(body?.matchedAmount);
+  const matchedAmount = documentType === "issued"
+    ? parseWholeClpAmount(body?.matchedAmount)
+    : readAmount(body?.matchedAmount);
+  const idempotencyKey = body?.idempotencyKey;
   const notes = readNotes(body?.notes);
   if (
     body?.action !== "reconcile" ||
     !isUuid(bankTransactionId) ||
     !isUuid(documentId) ||
+    !isUuid(idempotencyKey) ||
     (documentType !== "issued" && documentType !== "received" && documentType !== "direct") ||
     !matchedAmount ||
     (body?.notes !== undefined &&
@@ -388,6 +397,30 @@ export async function POST(request: NextRequest) {
       (typeof body.notes !== "string" || body.notes.length > 2_000))
   )
     return NextResponse.json({ error: "invalid_reconciliation" }, { status: 400 });
+
+  const priorMatchResult = await context.supabase
+    .from("bank_reconciliation_matches")
+    .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, matched_amount, matched_on, notes, idempotency_key")
+    .eq("organization_id", organizationId)
+    .eq("idempotency_key", idempotencyKey)
+    .maybeSingle();
+  if (priorMatchResult.error)
+    return NextResponse.json({ error: "unable_to_check_reconciliation_attempt" }, { status: 500 });
+  const priorMatch = priorMatchResult.data;
+  if (priorMatch) {
+    const priorDocumentId =
+      documentType === "issued"
+        ? priorMatch.issued_document_id
+        : documentType === "direct"
+          ? priorMatch.direct_payable_id
+          : priorMatch.received_document_id;
+    if (
+      priorMatch.bank_transaction_id !== bankTransactionId ||
+      priorDocumentId !== documentId ||
+      Number(priorMatch.matched_amount) !== matchedAmount
+    )
+      return NextResponse.json({ error: "idempotency_conflict" }, { status: 409 });
+  }
 
   const { data: transaction, error: transactionError } = await context.supabase
     .from("bank_transactions")
@@ -404,22 +437,36 @@ export async function POST(request: NextRequest) {
   )
     return NextResponse.json({ error: "transaction_direction_mismatch" }, { status: 400 });
 
-  const documentTable = documentType === "issued" ? "issued_documents" : documentType === "direct" ? "direct_payables" : "received_documents";
+  const documentTable = documentType === "issued" ? "issued_document_receivable_balances" : documentType === "direct" ? "direct_payables" : "received_documents";
   const { data: document, error: documentError } = await context.supabase
     .from(documentTable)
-    .select(documentType === "direct" ? "id, total_amount, status" : "id, total_amount, payment_status")
-    .eq("id", documentId)
+    .select(
+      documentType === "issued"
+        ? "issued_document_id, total_amount, payment_status, outstanding_amount, available_to_reconcile, collection_status, is_collectible"
+        : documentType === "direct"
+          ? "id, total_amount, status"
+          : "id, total_amount, payment_status",
+    )
+    .eq(documentType === "issued" ? "issued_document_id" : "id", documentId)
     .eq("organization_id", organizationId)
     .maybeSingle();
   if (documentError || !document)
     return NextResponse.json({ error: "document_not_found" }, { status: 404 });
   const directDocument = document as { status?: string | null };
   const invoiceDocument = document as { payment_status?: string | null };
+  const issuedDocument = document as {
+    available_to_reconcile?: number | string | null;
+    is_collectible?: boolean | null;
+  };
   if (
-    (documentType === "direct" && !["approved", "paid"].includes(directDocument.status ?? "")) ||
-    (documentType !== "direct" && isPaid(invoiceDocument.payment_status ?? null))
+    !priorMatch &&
+    ((documentType === "direct" && !["approved", "paid"].includes(directDocument.status ?? "")) ||
+      (documentType === "received" && isPaid(invoiceDocument.payment_status ?? null)) ||
+      (documentType === "issued" &&
+        (!issuedDocument.is_collectible ||
+          matchedAmount > Number(issuedDocument.available_to_reconcile ?? 0))))
   )
-    return NextResponse.json({ error: "document_already_paid" }, { status: 409 });
+    return NextResponse.json({ error: "document_not_available_for_reconciliation" }, { status: 409 });
 
   const matchPayload = {
     organization_id: organizationId,
@@ -429,50 +476,91 @@ export async function POST(request: NextRequest) {
     direct_payable_id: documentType === "direct" ? documentId : null,
     matched_amount: matchedAmount,
     matched_on: transaction.booked_on,
+    idempotency_key: idempotencyKey,
     notes,
   };
-  const { data: match, error: matchError } = await context.supabase
-    .from("bank_reconciliation_matches")
-    .insert(matchPayload)
-    .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, matched_amount, matched_on, notes")
-    .single();
+  let match = priorMatch;
+  let matchError: { code?: string } | null = null;
+  if (!match) {
+    const insertResult = await context.supabase
+      .from("bank_reconciliation_matches")
+      .insert(matchPayload)
+      .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, matched_amount, matched_on, notes, idempotency_key")
+      .single();
+    match = insertResult.data;
+    matchError = insertResult.error;
+  }
+
+  if (matchError?.code === "23505") {
+    const existing = await context.supabase
+      .from("bank_reconciliation_matches")
+      .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, matched_amount, matched_on, notes, idempotency_key")
+      .eq("organization_id", organizationId)
+      .eq("idempotency_key", idempotencyKey)
+      .maybeSingle();
+    match = existing.data;
+    matchError = existing.error;
+    const expectedDocumentId =
+      documentType === "issued"
+        ? match?.issued_document_id
+        : documentType === "direct"
+          ? match?.direct_payable_id
+          : match?.received_document_id;
+    if (
+      !match ||
+      match.bank_transaction_id !== bankTransactionId ||
+      expectedDocumentId !== documentId ||
+      Number(match.matched_amount) !== matchedAmount
+    )
+      return NextResponse.json({ error: "idempotency_conflict" }, { status: 409 });
+  }
   if (matchError || !match)
     return NextResponse.json({ error: "unable_to_reconcile" }, { status: 409 });
 
-  const [{ data: transactionMatches }, { data: documentMatches }] = await Promise.all([
+  const [updatedTransaction, updatedDocument] = await Promise.all([
     context.supabase
-      .from("bank_reconciliation_matches")
-      .select("matched_amount")
-      .eq("bank_transaction_id", bankTransactionId),
-    context.supabase
-      .from("bank_reconciliation_matches")
-      .select("matched_amount")
-      .eq(documentType === "issued" ? "issued_document_id" : documentType === "direct" ? "direct_payable_id" : "received_document_id", documentId),
+      .from("bank_transactions")
+      .select("reconciliation_status")
+      .eq("id", bankTransactionId)
+      .eq("organization_id", organizationId)
+      .single(),
+    documentType === "issued"
+      ? context.supabase
+          .from("issued_document_receivable_balances")
+          .select("outstanding_amount, collection_status")
+          .eq("organization_id", organizationId)
+          .eq("issued_document_id", documentId)
+          .single()
+      : documentType === "direct"
+        ? context.supabase
+            .from("direct_payables")
+            .select("status")
+            .eq("organization_id", organizationId)
+            .eq("id", documentId)
+            .single()
+        : context.supabase
+            .from("received_documents")
+            .select("payment_status")
+            .eq("organization_id", organizationId)
+            .eq("id", documentId)
+            .single(),
   ]);
-  const matchedForTransaction = (transactionMatches ?? []).reduce(
-    (total, item) => total + Number(item.matched_amount),
-    0,
-  );
-  const matchedForDocument = (documentMatches ?? []).reduce(
-    (total, item) => total + Number(item.matched_amount),
-    0,
-  );
-  const transactionTotal = Math.abs(Number(transaction.amount));
-  const documentTotal = Math.abs(Number(document.total_amount));
-  const transactionStatus =
-    matchedForTransaction >= transactionTotal
-      ? "reconciled"
-      : "partially_reconciled";
-
-  await context.supabase
-    .from("bank_transactions")
-    .update({ reconciliation_status: transactionStatus })
-    .eq("id", bankTransactionId)
-    .eq("organization_id", organizationId);
+  if (updatedTransaction.error || updatedDocument.error)
+    return NextResponse.json({ error: "unable_to_load_reconciliation_result" }, { status: 500 });
+  const reconciliationDocument = updatedDocument.data as {
+    outstanding_amount?: number | string | null;
+    status?: string | null;
+    payment_status?: string | null;
+  };
 
   return NextResponse.json({
     match,
-    transactionStatus,
-    documentPaid: matchedForDocument >= documentTotal,
+    transactionStatus: updatedTransaction.data.reconciliation_status,
+    documentPaid:
+      documentType === "issued"
+        ? Number(reconciliationDocument.outstanding_amount ?? 0) === 0
+        : documentType === "direct"
+          ? reconciliationDocument.status === "paid"
+          : isPaid(reconciliationDocument.payment_status ?? null),
   });
 }

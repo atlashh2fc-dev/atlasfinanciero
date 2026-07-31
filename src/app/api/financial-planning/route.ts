@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: context.error }, { status: context.status });
 
   const range = dateRangeForYear(year);
-  const [membership, plans, budgetLines, settings, adjustments, issued, issuedPayments, received, directPayables, directPayableExecutions, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations] = await Promise.all([
+  const [membership, plans, budgetLines, settings, adjustments, issued, received, directPayables, directPayableExecutions, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations] = await Promise.all([
     context.supabase
       .from("organization_memberships")
       .select("role")
@@ -99,15 +99,11 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId)
       .order("expected_on"),
     context.supabase
-      .from("issued_documents")
-      .select("id, counterparty_id, document_number, issue_date, due_date, payment_term_days, document_type, net_amount, total_amount, payment_status, client_name")
+      .from("issued_document_receivable_balances")
+      .select("issued_document_id, counterparty_id, document_number, issue_date, due_date, payment_term_days, document_type, net_amount, settlement_amount, paid_amount, outstanding_amount, collection_status, is_collectible, client_name")
       .eq("organization_id", organizationId)
       .order("issue_date", { ascending: false })
       .limit(1500),
-    context.supabase
-      .from("issued_document_payments")
-      .select("issued_document_id, amount")
-      .eq("organization_id", organizationId),
     context.supabase
       .from("received_documents")
       .select("id, supplier_counterparty_id, supplier_name, document_number, issue_date, due_date, payment_term_days, document_type, net_amount, total_amount, payment_status")
@@ -182,7 +178,7 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId),
   ]);
 
-  const results = [plans, budgetLines, settings, adjustments, issued, issuedPayments, received, directPayables, directPayableExecutions, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations];
+  const results = [plans, budgetLines, settings, adjustments, issued, received, directPayables, directPayableExecutions, amortizationSchedules, financingPlans, accounts, transactions, customers, services, customerServices, preinvoices, preinvoiceLines, allocations];
   if (results.some((result) => result.error))
     return NextResponse.json({ error: "unable_to_load_financial_planning" }, { status: 500 });
 
@@ -193,8 +189,18 @@ export async function GET(request: NextRequest) {
     budgetLines: budgetLines.data ?? [],
     settings: settings.data ?? { horizon_weeks: 13, include_overdue_in_first_week: true },
     adjustments: adjustments.data ?? [],
-    issuedDocuments: issued.data ?? [],
-    issuedPayments: issuedPayments.data ?? [],
+    issuedDocuments: (issued.data ?? []).map((document) => ({
+      ...document,
+      id: document.issued_document_id,
+      total_amount: document.settlement_amount,
+      payment_status: document.collection_status,
+    })),
+    // Keep the existing response contract while sourcing the aggregate from
+    // the canonical, transactionally calculated receivable balance.
+    issuedPayments: (issued.data ?? []).map((document) => ({
+      issued_document_id: document.issued_document_id,
+      amount: document.paid_amount,
+    })),
     receivedDocuments: received.data ?? [],
     directPayables: (directPayables.data ?? []).map((payable) => {
       const paidAmount = (directPayableExecutions.data ?? [])

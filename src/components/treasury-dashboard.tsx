@@ -43,6 +43,10 @@ type IssuedDocument = {
   client_name: string | null;
   total_amount: number | string | null;
   payment_status: string | null;
+  outstanding_amount: number | string;
+  available_to_reconcile: number | string;
+  collection_status: string;
+  is_collectible: boolean;
 };
 
 type ReceivedDocument = {
@@ -157,6 +161,7 @@ function executionSourceLabel(source: string) {
   return {
     payment_batch: "Orden de pago",
     bank_reconciliation: "Conciliación bancaria",
+    manual_receipt: "Cobro registrado",
     legacy_import: "Registro histórico",
   }[source] || source;
 }
@@ -184,6 +189,7 @@ export function TreasuryDashboard({
   const [selectedDocumentId, setSelectedDocumentId] = useState("");
   const [matchAmount, setMatchAmount] = useState("");
   const [notes, setNotes] = useState("");
+  const [reconciliationAttemptId, setReconciliationAttemptId] = useState("");
   const [saving, setSaving] = useState(false);
   const [accountEditorOpen, setAccountEditorOpen] = useState(false);
   const [accountDraft, setAccountDraft] = useState({ name: "", bankName: "", accountNumberMasked: "", currencyCode: "CLP", openingBalance: "0", openingBalanceDate: "" });
@@ -298,15 +304,13 @@ export function TreasuryDashboard({
     return documents
       .map((document) => {
         const available =
-          document.kind === "direct"
+          document.kind === "issued" || document.kind === "direct"
             ? amount(document.available_to_reconcile ?? 0)
-            : Math.abs(amount(document.total_amount));
+            : Math.abs(amount(document.total_amount)) -
+              (matchedByDocument.get(document.id) ?? 0);
         return {
           ...document,
-          remaining: Math.max(
-            0,
-            available - (matchedByDocument.get(document.id) ?? 0),
-          ),
+          remaining: Math.max(0, available),
         };
       })
       .filter((document) => document.remaining > 0);
@@ -329,26 +333,35 @@ export function TreasuryDashboard({
     setSelectedDocumentId("");
     setMatchAmount("");
     setNotes("");
+    setReconciliationAttemptId(crypto.randomUUID());
     setMessage(null);
   }
 
   async function reconcile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!organizationId || !selectedTransaction || !selectedDocument) return;
+    if (!organizationId || !selectedTransaction || !selectedDocument || !reconciliationAttemptId || saving) return;
     setSaving(true);
-    const response = await fetch("/api/treasury", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "reconcile",
-        organizationId,
-        bankTransactionId: selectedTransaction.id,
-        documentId: selectedDocument.id,
-        documentType: selectedDocument.kind,
-        matchedAmount: matchAmount,
-        notes,
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetch("/api/treasury", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reconcile",
+          organizationId,
+          bankTransactionId: selectedTransaction.id,
+          documentId: selectedDocument.id,
+          documentType: selectedDocument.kind,
+          matchedAmount: matchAmount,
+          idempotencyKey: reconciliationAttemptId,
+          notes,
+        }),
+      });
+    } catch {
+      setSaving(false);
+      setMessage("No hubo respuesta del servidor. El intento conserva su identificador para reintentarlo sin duplicar el cobro.");
+      return;
+    }
     const payload = (await response.json().catch(() => null)) as
       | { error?: string; documentPaid?: boolean }
       | null;
@@ -357,11 +370,16 @@ export function TreasuryDashboard({
       setMessage(
         payload?.error === "transaction_direction_mismatch"
           ? "El abono sólo puede conciliar ingresos y el cargo sólo pagos."
+          : payload?.error === "document_not_available_for_reconciliation"
+            ? "El documento ya no tiene monto disponible para conciliar. Actualizamos el control para evitar un cobro duplicado."
+            : payload?.error === "idempotency_conflict"
+              ? "El identificador del intento ya fue usado con otra aplicación. Cierra esta ventana y vuelve a abrir el movimiento."
           : "No fue posible conciliar. Revisa el monto disponible y vuelve a intentarlo.",
       );
       return;
     }
     setSelectedTransaction(null);
+    setReconciliationAttemptId("");
     setMessage(
       payload?.documentPaid
         ? "Movimiento conciliado y documento marcado como pagado."
