@@ -48,20 +48,22 @@ export function recognizedNetAmount(document: RevenueDocument) {
   return isCreditNoteDocument(document) ? -Math.abs(amount) : amount;
 }
 
+/** CLP is settled in whole pesos, including imported totals with VAT decimals. */
+function clpAmount(value: unknown) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? Math.round(amount) : 0;
+}
+
 /** Balance still collectible after all registered partial payments. */
 export function outstandingDocumentBalance(
   document: RevenueDocument,
   paidAmount = 0,
 ) {
-  const documentAmount = Number(
+  const documentAmount = clpAmount(
     document.totalAmount ?? recognizedNetAmount(document),
   );
-  const paid = Number(paidAmount);
-  return Math.max(
-    0,
-    (Number.isFinite(documentAmount) ? documentAmount : 0) -
-      (Number.isFinite(paid) ? paid : 0),
-  );
+  const paid = clpAmount(paidAmount);
+  return Math.max(0, documentAmount - paid);
 }
 
 /**
@@ -73,15 +75,11 @@ export function outstandingBalanceBreakdown(
   paidAmount = 0,
 ) {
   const balance = outstandingDocumentBalance(document, paidAmount);
-  const netAmount = Number(document.netAmount ?? 0);
-  const paid = Number(paidAmount);
+  const netAmount = clpAmount(document.netAmount ?? 0);
+  const paid = clpAmount(paidAmount);
   const netPending = Math.min(
     balance,
-    Math.max(
-      0,
-      (Number.isFinite(netAmount) ? netAmount : 0) -
-        (Number.isFinite(paid) ? paid : 0),
-    ),
+    Math.max(0, netAmount - paid),
   );
 
   return {

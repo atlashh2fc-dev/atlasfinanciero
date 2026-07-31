@@ -2527,7 +2527,9 @@ export function FinanceDashboard() {
     0,
   );
   const editingDocumentTotal = Number(editingRecord?.totalAmount ?? 0);
-  const editingOutstandingAmount = Math.max(0, editingDocumentTotal - editingPaidAmount);
+  const editingOutstandingAmount = editingRecord
+    ? outstandingDocumentBalance(editingRecord, editingPaidAmount)
+    : 0;
   const editingPaymentStateIsDerived =
     editDraft.status === "Abonada" || editDraft.status === "Pagada";
 
