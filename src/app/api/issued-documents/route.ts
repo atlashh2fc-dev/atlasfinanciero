@@ -20,6 +20,7 @@ const createRoles = new Set(["administrator", "finance", "operations", "data_ent
 const updateRoles = new Set(["administrator", "finance", "operations"]);
 const paymentConditions = new Set(["advance", "post_service"]);
 const paymentStatuses = new Set(["Pendiente", "Abonada", "Pagada", "Factorizada", "Pagada al factoring", "Recomprada al factoring", "Anulada", "Nota de crédito"]);
+const derivedPaymentStatuses = new Set(["Abonada", "Pagada"]);
 const documentTypes = new Set(["Factura afecta", "Factura exenta", "Nota de crédito", "Nota de débito"]);
 
 function readText(value: unknown, maxLength: number, required = false) {
@@ -105,11 +106,9 @@ export async function POST(request: NextRequest) {
   const upload = form.get("file");
   const paymentProof = form.get("paymentProof");
   const requiresPaymentCondition = documentType?.startsWith("Factura");
-  if (!invoiceNumber || !issueDate || !documentType || !issuerName || !documentTypes.has(documentType) || !paymentStatuses.has(status ?? "") || status === "Abonada" || !isUuid(clientId) || (contactId && !isUuid(contactId)) || typeof netAmount !== "number" || (requiresPaymentCondition && (!paymentCondition || !dueDate)) || (upload !== null && !(upload instanceof File))) return NextResponse.json({ error: "invalid_document" }, { status: 400 });
+  if (!invoiceNumber || !issueDate || !documentType || !issuerName || !documentTypes.has(documentType) || !paymentStatuses.has(status ?? "") || derivedPaymentStatuses.has(status ?? "") || !isUuid(clientId) || (contactId && !isUuid(contactId)) || typeof netAmount !== "number" || (requiresPaymentCondition && (!paymentCondition || !dueDate)) || (upload !== null && !(upload instanceof File))) return NextResponse.json({ error: "invalid_document" }, { status: 400 });
   if (upload instanceof File && (upload.size === 0 || upload.size > 52_428_800 || !new Set(["application/pdf", "image/jpeg", "image/png"]).has(upload.type))) return NextResponse.json({ error: "invalid_document_attachment" }, { status: 400 });
-  if (paymentProof !== null && !(paymentProof instanceof File)) return NextResponse.json({ error: "invalid_payment_proof" }, { status: 400 });
-  if (paymentProof instanceof File && (paymentProof.size === 0 || paymentProof.size > 52_428_800 || !new Set(["application/pdf", "image/jpeg", "image/png"]).has(paymentProof.type))) return NextResponse.json({ error: "invalid_payment_proof" }, { status: 400 });
-  if (status === "Pagada" && !(paymentProof instanceof File)) return NextResponse.json({ error: "payment_proof_required" }, { status: 400 });
+  if (paymentProof !== null) return NextResponse.json({ error: "payment_must_be_registered_as_installment" }, { status: 409 });
 
   const { data: memberships, error: membershipsError } = await supabase
     .from("organization_memberships")
@@ -148,7 +147,7 @@ export async function POST(request: NextRequest) {
       { status: 403 },
     );
   }
-  if (membership.role === "data_entry" && (status !== "Pendiente" || paymentProof instanceof File)) {
+  if (membership.role === "data_entry" && status !== "Pendiente") {
     return NextResponse.json({ error: "data_entry_documents_must_be_pending" }, { status: 403 });
   }
 
@@ -164,18 +163,9 @@ export async function POST(request: NextRequest) {
   const totalAmount = Math.round((netAmount + vatAmount) * 100) / 100;
   const safeName = upload instanceof File ? upload.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "factura" : null;
   const attachmentPath = upload instanceof File ? `${membership.organization_id}/${client.id}/${crypto.randomUUID()}-${safeName}` : null;
-  const paymentProofName = paymentProof instanceof File ? paymentProof.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "comprobante" : null;
-  const paymentProofPath = paymentProof instanceof File && paymentProofName ? `${membership.organization_id}/issued-payments/${crypto.randomUUID()}-${paymentProofName}` : null;
   if (upload instanceof File && attachmentPath) {
     const { error } = await supabase.storage.from("issued-document-files").upload(attachmentPath, upload, { contentType: upload.type, upsert: false });
     if (error) return NextResponse.json({ error: "unable_to_upload_document_attachment" }, { status: 409 });
-  }
-  if (paymentProof instanceof File && paymentProofPath) {
-    const { error } = await supabase.storage.from("issued-document-files").upload(paymentProofPath, paymentProof, { contentType: paymentProof.type, upsert: false });
-    if (error) {
-      if (attachmentPath) await supabase.storage.from("issued-document-files").remove([attachmentPath]);
-      return NextResponse.json({ error: "unable_to_upload_payment_proof" }, { status: 409 });
-    }
   }
 
   const { data, error } = await supabase
@@ -201,10 +191,10 @@ export async function POST(request: NextRequest) {
       attachment_name: upload instanceof File ? upload.name.slice(0, 300) : null,
       attachment_mime_type: upload instanceof File ? upload.type : null,
       attachment_size: upload instanceof File ? upload.size : null,
-      payment_proof_path: paymentProofPath,
-      payment_proof_name: paymentProof instanceof File ? paymentProof.name.slice(0, 300) : null,
-      payment_proof_mime_type: paymentProof instanceof File ? paymentProof.type : null,
-      payment_proof_size: paymentProof instanceof File ? paymentProof.size : null,
+      payment_proof_path: null,
+      payment_proof_name: null,
+      payment_proof_mime_type: null,
+      payment_proof_size: null,
       source_file_name: upload instanceof File ? upload.name.slice(0, 300) : "Atlas Financiero",
       source_sheet_name: "Registro manual",
       source_row: 0,
@@ -215,7 +205,7 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (error) {
-    if (attachmentPath || paymentProofPath) await supabase.storage.from("issued-document-files").remove([attachmentPath, paymentProofPath].filter((path): path is string => Boolean(path)));
+    if (attachmentPath) await supabase.storage.from("issued-document-files").remove([attachmentPath]);
     return NextResponse.json(
       { error: "unable_to_create_document" },
       { status: 403 },
@@ -293,8 +283,6 @@ export async function PATCH(request: NextRequest) {
       { error: "invalid_document_update" },
       { status: 400 },
     );
-  if (paymentProof !== null && paymentProof !== undefined && (!(paymentProof instanceof File) || paymentProof.size === 0 || paymentProof.size > 52_428_800 || !new Set(["application/pdf", "image/jpeg", "image/png"]).has(paymentProof.type)))
-    return NextResponse.json({ error: "invalid_payment_proof" }, { status: 400 });
   if (
     upload !== null &&
     upload !== undefined &&
@@ -341,7 +329,7 @@ export async function PATCH(request: NextRequest) {
 
   const { data: existingDocument, error: existingDocumentError } = await supabase
     .from("issued_documents")
-    .select("organization_id, attachment_path, payment_proof_path, document_type, net_amount")
+    .select("organization_id, attachment_path, payment_proof_path, document_type, net_amount, payment_status")
     .eq("id", documentId)
     .in("organization_id", eligibleOrganizationIds)
     .maybeSingle();
@@ -350,8 +338,13 @@ export async function PATCH(request: NextRequest) {
       { error: "document_not_found_or_not_authorized" },
       { status: 403 },
     );
-  if (status === "Pagada" && !(paymentProof instanceof File) && !existingDocument.payment_proof_path)
-    return NextResponse.json({ error: "payment_proof_required" }, { status: 400 });
+  if (
+    status !== existingDocument.payment_status &&
+    (derivedPaymentStatuses.has(status) || derivedPaymentStatuses.has(existingDocument.payment_status ?? ""))
+  )
+    return NextResponse.json({ error: "payment_must_be_registered_as_installment" }, { status: 409 });
+  if (paymentProof !== null && paymentProof !== undefined)
+    return NextResponse.json({ error: "payment_must_be_registered_as_installment" }, { status: 409 });
 
   const isFactoring = ["Factorizada", "Pagada al factoring", "Recomprada al factoring"].includes(status);
   const { data: factor } = isFactoring
@@ -369,8 +362,6 @@ export async function PATCH(request: NextRequest) {
     upload instanceof File && safeName
       ? `${existingDocument.organization_id}/issued/${crypto.randomUUID()}-${safeName}`
       : null;
-  const paymentProofName = paymentProof instanceof File ? paymentProof.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "comprobante" : null;
-  const paymentProofPath = paymentProof instanceof File && paymentProofName ? `${existingDocument.organization_id}/issued-payments/${crypto.randomUUID()}-${paymentProofName}` : null;
   if (upload instanceof File && attachmentPath) {
     const { error } = await supabase.storage
       .from("issued-document-files")
@@ -381,18 +372,8 @@ export async function PATCH(request: NextRequest) {
         { status: 409 },
       );
   }
-  if (paymentProof instanceof File && paymentProofPath) {
-    const { error } = await supabase.storage.from("issued-document-files").upload(paymentProofPath, paymentProof, { contentType: paymentProof.type, upsert: false });
-    if (error) {
-      if (attachmentPath) await supabase.storage.from("issued-document-files").remove([attachmentPath]);
-      return NextResponse.json({ error: "unable_to_upload_payment_proof" }, { status: 409 });
-    }
-  }
-
   const updatePayload: Record<string, unknown> = {
     payment_status: status,
-    payment_date: paymentDate,
-    payment_method: readText(body?.paymentMethod, 80),
     payment_condition: readPaymentCondition(body?.paymentCondition),
     notes: readText(body?.notes, 2_000),
     factoring_entity: factoringEntity,
@@ -401,6 +382,10 @@ export async function PATCH(request: NextRequest) {
     factoring_settled_at: factoringSettledAt,
     factoring_recourse_at: factoringRecourseAt,
   };
+  if (!derivedPaymentStatuses.has(status)) {
+    updatePayload.payment_date = paymentDate;
+    updatePayload.payment_method = readText(body?.paymentMethod, 80);
+  }
   if (documentType) {
     const netAmount = Number(existingDocument.net_amount ?? 0);
     const vatAmount =
@@ -417,12 +402,6 @@ export async function PATCH(request: NextRequest) {
     updatePayload.attachment_mime_type = upload.type;
     updatePayload.attachment_size = upload.size;
   }
-  if (paymentProof instanceof File && paymentProofPath) {
-    updatePayload.payment_proof_path = paymentProofPath;
-    updatePayload.payment_proof_name = paymentProof.name.slice(0, 300);
-    updatePayload.payment_proof_mime_type = paymentProof.type;
-    updatePayload.payment_proof_size = paymentProof.size;
-  }
 
   const { data, error } = await supabase
     .from("issued_documents")
@@ -434,8 +413,8 @@ export async function PATCH(request: NextRequest) {
     )
     .maybeSingle();
   if (error || !data) {
-    if (attachmentPath || paymentProofPath)
-      await supabase.storage.from("issued-document-files").remove([attachmentPath, paymentProofPath].filter((path): path is string => Boolean(path)));
+    if (attachmentPath)
+      await supabase.storage.from("issued-document-files").remove([attachmentPath]);
     if (error?.message.includes("Documents can only be settled through payment_executions"))
       return NextResponse.json(
         { error: "payment_must_be_registered_as_installment" },
@@ -450,10 +429,6 @@ export async function PATCH(request: NextRequest) {
     await supabase.storage
       .from("issued-document-files")
       .remove([existingDocument.attachment_path]);
-  if (paymentProofPath && existingDocument.payment_proof_path)
-    await supabase.storage
-      .from("issued-document-files")
-      .remove([existingDocument.payment_proof_path]);
   if (isFactoring && factor) {
     const { data: existing } = await supabase.from("direct_payables").select("id").eq("factoring_issued_document_id", data.id).maybeSingle();
     if (!existing) {

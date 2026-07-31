@@ -2211,8 +2211,6 @@ export function FinanceDashboard() {
   const [factoringProviders, setFactoringProviders] = useState<FactoringProvider[]>([]);
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [editDocumentFile, setEditDocumentFile] = useState<File | null>(null);
-  const [paymentProofFile, setPaymentProofFile] = useState<File | null>(null);
-  const [editPaymentProofFile, setEditPaymentProofFile] = useState<File | null>(null);
   const [loadingDocumentSources, setLoadingDocumentSources] = useState(false);
   const [attachmentByDocument, setAttachmentByDocument] = useState<Record<string, boolean>>({});
   const [paymentProofByDocument, setPaymentProofByDocument] = useState<Record<string, boolean>>({});
@@ -2530,6 +2528,8 @@ export function FinanceDashboard() {
   );
   const editingDocumentTotal = Number(editingRecord?.totalAmount ?? 0);
   const editingOutstandingAmount = Math.max(0, editingDocumentTotal - editingPaidAmount);
+  const editingPaymentStateIsDerived =
+    editDraft.status === "Abonada" || editDraft.status === "Pagada";
 
   function updateDraft(field: keyof InvoiceDraft, value: string) {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -2551,7 +2551,6 @@ export function FinanceDashboard() {
       factoringRecourseAt: record.factoringRecourseAt ?? "",
     });
     setEditDocumentFile(null);
-    setEditPaymentProofFile(null);
     setPaymentDraft(blankPaymentDraft());
     setPaymentInstallmentProof(null);
     setFormError("");
@@ -2563,23 +2562,12 @@ export function FinanceDashboard() {
       setFormError("Indica el estado actual del documento.");
       return;
     }
-    if (
-      editDraft.status === "Pagada" &&
-      !editPaymentProofFile &&
-      !paymentProofByDocument[editingRecord.id]
-    ) {
-      setFormError(
-        "Al marcar la factura como pagada debes adjuntar el comprobante de pago.",
-      );
-      return;
-    }
     const formData = new FormData();
     formData.set("id", editingRecord.id);
     Object.entries(editDraft).forEach(([field, value]) =>
       formData.set(field, value),
     );
     if (editDocumentFile) formData.set("file", editDocumentFile);
-    if (editPaymentProofFile) formData.set("paymentProof", editPaymentProofFile);
     const response = await fetch("/api/issued-documents", {
       method: "PATCH",
       body: formData,
@@ -2589,9 +2577,7 @@ export function FinanceDashboard() {
         error?: string;
       } | null;
       setFormError(
-        payload?.error === "payment_proof_required"
-          ? "Al marcar la factura como pagada debes adjuntar el comprobante de pago."
-          : payload?.error === "payment_must_be_registered_as_installment"
+        payload?.error === "payment_must_be_registered_as_installment"
             ? "El pago debe registrarse en “Abonos y saldo”. Al ingresar el abono completo, la factura queda pagada automáticamente."
           : payload?.error === "invalid_payment_proof"
             ? "El comprobante debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
@@ -2620,7 +2606,6 @@ export function FinanceDashboard() {
     }));
     setPaymentProofByDocument((current) => ({ ...current, [updated.id]: Boolean(payload.document.payment_proof_path) }));
     setEditDocumentFile(null);
-    setEditPaymentProofFile(null);
     setEditingRecord(null);
     setFormError("");
   }
@@ -2704,12 +2689,6 @@ export function FinanceDashboard() {
       );
       return;
     }
-    if (draft.status === "Pagada" && !paymentProofFile) {
-      setFormError(
-        "Al registrar una factura como pagada debes adjuntar el comprobante de pago.",
-      );
-      return;
-    }
     const formData = new FormData();
     formData.set("invoiceNumber", draft.invoiceNumber);
     formData.set("issueDate", draft.issueDate);
@@ -2723,7 +2702,6 @@ export function FinanceDashboard() {
     formData.set("status", draft.status);
     formData.set("paymentCondition", draft.paymentCondition);
     if (documentFile) formData.set("file", documentFile);
-    if (paymentProofFile) formData.set("paymentProof", paymentProofFile);
     const response = await fetch("/api/issued-documents", {
       method: "POST",
       body: formData,
@@ -2738,7 +2716,7 @@ export function FinanceDashboard() {
           : payload?.error === "organization_selection_required"
             ? "Selecciona la empresa activa antes de registrar documentos."
             : payload?.error === "payment_proof_required"
-              ? "Al registrar una factura como pagada debes adjuntar el comprobante de pago."
+            ? "El pago debe registrarse en “Abonos y saldo” una vez creada la factura."
               : payload?.error === "invalid_payment_proof"
                 ? "El comprobante debe ser PDF, JPG o PNG y pesar como máximo 50 MB."
                 : payload?.error === "unable_to_upload_payment_proof"
@@ -2821,7 +2799,6 @@ export function FinanceDashboard() {
     if (payload.document.payment_proof_path) setPaymentProofByDocument((current) => ({ ...current, [created.id]: true }));
     setDraft(blankDraft);
     setDocumentFile(null);
-    setPaymentProofFile(null);
     setFormError("");
     setShowEntry(false);
     setActiveModule("Facturas");
@@ -3678,7 +3655,7 @@ export function FinanceDashboard() {
                     onChange={(event) =>
                       updateDraft("status", event.target.value)
                     }
-                  ><option value="Pendiente">Pendiente</option><option value="Pagada">Pagada</option><option value="Factorizada">Factorizada</option><option value="Pagada al factoring">Pagada al factoring</option><option value="Recomprada al factoring">Recomprada al factoring</option><option value="Anulada">Anulada</option><option value="Nota de crédito">Nota de crédito</option></select>
+                  ><option value="Pendiente">Pendiente</option><option value="Factorizada">Factorizada</option><option value="Pagada al factoring">Pagada al factoring</option><option value="Recomprada al factoring">Recomprada al factoring</option><option value="Anulada">Anulada</option><option value="Nota de crédito">Nota de crédito</option></select>
                 </label>
                 <label>
                   Condición del servicio (facturas) *
@@ -3740,20 +3717,6 @@ export function FinanceDashboard() {
                   <input type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" onChange={(event) => setDocumentFile(event.target.files?.[0] ?? null)} />
                   <small>PDF, JPG o PNG · máximo 50 MB</small>
                 </label>
-                {draft.status === "Pagada" && (
-                  <label>
-                    Comprobante de pago *
-                    <input
-                      type="file"
-                      required
-                      accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-                      onChange={(event) =>
-                        setPaymentProofFile(event.target.files?.[0] ?? null)
-                      }
-                    />
-                    <small>Se guarda separado de la factura · PDF, JPG o PNG · máximo 50 MB</small>
-                  </label>
-                )}
               </div>
               {formError && <p className="form-error">{formError}</p>}
               <div className="form-actions">
@@ -3839,7 +3802,7 @@ export function FinanceDashboard() {
                   Estado *
                   <select
                     value={editDraft.status}
-                    disabled={editingPayments.length > 0}
+                    disabled={editingPayments.length > 0 || editingPaymentStateIsDerived}
                     onChange={(event) =>
                       setEditDraft((current) => ({
                         ...current,
@@ -3848,8 +3811,8 @@ export function FinanceDashboard() {
                     }
                   >
                     <option value="Pendiente">Pendiente</option>
-                    <option value="Abonada" disabled>Abonada</option>
-                    <option value="Pagada">Pagada</option>
+                    {editDraft.status === "Abonada" && <option value="Abonada">Abonada</option>}
+                    {editDraft.status === "Pagada" && <option value="Pagada">Pagada</option>}
                     <option value="Factorizada">Factorizada</option>
                     <option value="Pagada al factoring">
                       Pagada al factoring
@@ -3860,7 +3823,7 @@ export function FinanceDashboard() {
                     <option value="Anulada">Anulada</option>
                     <option value="Nota de crédito">Nota de crédito</option>
                   </select>
-                  {editingPayments.length > 0 && <small>El estado se calcula automáticamente desde los abonos registrados.</small>}
+                  {(editingPayments.length > 0 || editingPaymentStateIsDerived) && <small>El estado se calcula automáticamente desde los pagos registrados.</small>}
                 </label>
                 <label>
                   Condición del servicio
@@ -3880,61 +3843,6 @@ export function FinanceDashboard() {
                     </option>
                   </select>
                 </label>
-                {!editingPayments.length && <>
-                  <label>
-                    Fecha pago directo
-                    <input
-                      type="date"
-                      value={editDraft.paymentDate}
-                      onChange={(event) =>
-                        setEditDraft((current) => ({
-                          ...current,
-                          paymentDate: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Medio de pago
-                    <input
-                      value={editDraft.paymentMethod}
-                      onChange={(event) =>
-                        setEditDraft((current) => ({
-                          ...current,
-                          paymentMethod: event.target.value,
-                        }))
-                      }
-                      placeholder="Transferencia, depósito…"
-                    />
-                  </label>
-                </>}
-                {!editingPayments.length && editDraft.status === "Pagada" && (
-                  <label>
-                    Comprobante de pago *
-                    <input
-                      type="file"
-                      required={!paymentProofByDocument[editingRecord.id]}
-                      accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-                      onChange={(event) =>
-                        setEditPaymentProofFile(event.target.files?.[0] ?? null)
-                      }
-                    />
-                    <small>
-                      {paymentProofByDocument[editingRecord.id]
-                        ? "Ya existe un comprobante. Carga otro archivo para reemplazarlo."
-                        : "Obligatorio al registrar el pago · PDF, JPG o PNG · máximo 50 MB"}
-                    </small>
-                    {paymentProofByDocument[editingRecord.id] && (
-                      <button
-                        type="button"
-                        className="text-button"
-                        onClick={() => void openPaymentProof(editingRecord.id)}
-                      >
-                        Ver comprobante actual
-                      </button>
-                    )}
-                  </label>
-                )}
                 {!editingPayments.length && [
                   "Factorizada",
                   "Pagada al factoring",
