@@ -15,16 +15,27 @@ type PayrollPerson = {
   monthlyGrossSalary: number | null;
   absenceDays: number;
   vacationDays: number;
+  workedDays: number;
+  nonWorkedDays: number;
+  workedHours: number;
+  overtimeHours: number;
+  lateMinutes: number;
+  earlyDepartureMinutes: number;
 };
 type PayrollPayload = {
   integration: { active: boolean; lastSyncAt: string | null; lastSyncStatus: string; lastPeriodMonth: string | null } | null;
-  summary: { activePeople: number; activeContracts: number; monthlyGrossTotal: number; averageGross: number; absenceDays: number; vacationDays: number; periodYear: number };
+  summary: { activePeople: number; activeContracts: number; monthlyGrossTotal: number; averageGross: number; officialPayrollTotal: number | null; officialPayrollAvailable: boolean; officialPayrollStatus: string; absenceDays: number; vacationDays: number; workedDays: number; nonWorkedDays: number; workedHours: number; overtimeHours: number; lateMinutes: number; employeesWithAttendance: number; periodYear: number; periodMonth: number };
   costCenters: Array<{ name: string; amount: number }>;
   persons: PayrollPerson[];
 };
 
 const money = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 const amount = new Intl.NumberFormat("es-CL", { maximumFractionDigits: 1 });
+const monthFormatter = new Intl.DateTimeFormat("es-CL", { month: "long", timeZone: "UTC" });
+
+function monthName(month: number) {
+  return monthFormatter.format(new Date(Date.UTC(2026, month - 1, 1)));
+}
 
 function formatDate(value: string | null) {
   if (!value) return "Aún sin sincronización";
@@ -43,16 +54,17 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
   const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [year, setYear] = useState(() => new Date().getFullYear());
+  const [month, setMonth] = useState(() => new Date().getMonth() + 1);
   const [expandedAreas, setExpandedAreas] = useState<Set<string>>(() => new Set());
 
   const load = useCallback(async () => {
     if (!organizationId) return;
     setLoading(true);
-    const response = await fetch(`/api/integrations/peoplework/summary?organizationId=${encodeURIComponent(organizationId)}&year=${year}`);
+    const response = await fetch(`/api/integrations/peoplework/summary?organizationId=${encodeURIComponent(organizationId)}&year=${year}&month=${month}`);
     if (response.ok) setPayload(await response.json() as PayrollPayload);
     else setMessage("No fue posible cargar la información de remuneraciones con tu sesión actual.");
     setLoading(false);
-  }, [organizationId, year]);
+  }, [organizationId, year, month]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -60,11 +72,12 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
     if (!organizationId || syncing) return;
     setSyncing(true);
     setMessage(null);
-    const response = await fetch("/api/integrations/peoplework/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, year }) });
-    const result = await response.json().catch(() => null) as { error?: string; detail?: string; summary?: { employees: number; contracts: number } } | null;
+    const response = await fetch("/api/integrations/peoplework/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, year, month }) });
+    const result = await response.json().catch(() => null) as { error?: string; detail?: string; summary?: { employees: number; contracts: number; attendanceReportRows: number; attendanceMetrics: number; rejectedAttendanceEvents: number } } | null;
     if (!response.ok) setMessage(result?.detail ?? "No fue posible sincronizar PeopleWork. Revisa la configuración y vuelve a intentarlo.");
     else {
-      setMessage(`Sincronización ${year} completada: ${result?.summary?.employees ?? 0} personas y ${result?.summary?.contracts ?? 0} contratos actualizados.`);
+      const rejected = result?.summary?.rejectedAttendanceEvents ?? 0;
+      setMessage(`PeopleWork quedó conciliado para ${year}: ${result?.summary?.employees ?? 0} personas, ${result?.summary?.contracts ?? 0} contratos y ${result?.summary?.attendanceReportRows ?? 0} filas del reporte oficial de asistencia. La API pública no entregó la nómina liquidada; la base contractual se mantiene separada.${rejected ? ` ${rejected} evento(s) no pudieron asociarse.` : ""}`);
       await load();
     }
     setSyncing(false);
@@ -85,6 +98,8 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
         gross: people.reduce((total, person) => total + (person.monthlyGrossSalary ?? 0), 0),
         absences: people.reduce((total, person) => total + person.absenceDays, 0),
         vacations: people.reduce((total, person) => total + person.vacationDays, 0),
+        workedDays: people.reduce((total, person) => total + person.workedDays, 0),
+        overtimeHours: people.reduce((total, person) => total + person.overtimeHours, 0),
       }))
       .sort((left, right) => right.active - left.active || right.people.length - left.people.length || left.area.localeCompare(right.area));
   }, [payload?.persons]);
@@ -93,6 +108,10 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
   if (!payload) return <main className="dashboard"><p className="operation-message">{message ?? "No hay información disponible."}</p></main>;
 
   const { summary } = payload;
+  const selectedPeriod = `${monthName(summary.periodMonth)} de ${summary.periodYear}`;
+  const currentYear = new Date().getFullYear();
+  const currentMonth = new Date().getMonth() + 1;
+  const availableMonths = Array.from({ length: year === currentYear ? currentMonth : 12 }, (_, index) => index + 1);
 
   function toggleArea(area: string) {
     setExpandedAreas((current) => {
@@ -107,27 +126,29 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
   }
   return <main className="dashboard payroll-dashboard">
     <section className="headline">
-      <div><span className="eyebrow">PERSONAS · PEOPLEWORK</span><h1>Remuneraciones y dotación</h1><p>Contratos, personas y distribución de remuneración bruta contractual para {summary.periodYear}. El estado de resultados se consulta en Reportes.</p></div>
+      <div><span className="eyebrow">PERSONAS · PEOPLEWORK</span><h1>Dotación, asistencia y nómina</h1><p>La base contractual y la nómina liquidada de {selectedPeriod} se presentan por separado para no confundir sueldo base con costo real.</p></div>
       <div className="headline-actions">
-        <label className="period-picker">Período<select value={year} onChange={(event) => setYear(Number(event.target.value))}>{Array.from({ length: Math.min(7, new Date().getFullYear() - 2019) }, (_, index) => new Date().getFullYear() - index).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+        <label className="period-picker">Mes<select value={month} onChange={(event) => setMonth(Number(event.target.value))}>{availableMonths.map((item) => <option key={item} value={item}>{monthName(item)}</option>)}</select></label>
+        <label className="period-picker">Año<select value={year} onChange={(event) => { const nextYear = Number(event.target.value); setYear(nextYear); if (nextYear === currentYear && month > currentMonth) setMonth(currentMonth); }}>{Array.from({ length: Math.min(7, new Date().getFullYear() - 2019) }, (_, index) => new Date().getFullYear() - index).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
         <span className="refresh">{payload.integration?.lastSyncAt ? `Actualizado ${formatDate(payload.integration.lastSyncAt)}` : "Sin datos sincronizados"}</span>
-        {canSynchronize && <button className="primary-button" type="button" onClick={() => void synchronize()} disabled={syncing}>{syncing ? "Sincronizando…" : `Sincronizar ${year}`}</button>}
+        {canSynchronize && <button className="primary-button" type="button" onClick={() => void synchronize()} disabled={syncing}>{syncing ? "Conciliando PeopleWork…" : `Actualizar ${monthName(month)} ${year}`}</button>}
       </div>
     </section>
 
     {message && <p className="operation-message">{message}</p>}
 
-    <section className="kpis kpis-five" aria-label="Indicadores de remuneraciones">
+    <section className="kpis kpis-six" aria-label="Indicadores de remuneraciones y asistencia">
       <article className="kpi-card"><span>Dotación activa</span><strong>{summary.activePeople}</strong><small>Colaboradores marcados activos en PeopleWork</small></article>
       <article className="kpi-card"><span>Contratos vigentes</span><strong>{summary.activeContracts}</strong><small>Contratos sin fecha de término vencida</small></article>
-      <article className="kpi-card accent"><span>Remuneración bruta contractual</span><strong>{money.format(summary.monthlyGrossTotal)}</strong><small>Base mensual vigente; no equivale a costo pagado</small></article>
-      <article className="kpi-card"><span>Promedio contractual</span><strong>{money.format(summary.averageGross)}</strong><small>Bruto mensual por contrato vigente</small></article>
-      <article className="kpi-card"><span>Ausencias / vacaciones</span><strong>{amount.format(summary.absenceDays)} / {amount.format(summary.vacationDays)}</strong><small>Días agregados reportados en {summary.periodYear}</small></article>
+      <article className="kpi-card accent"><span>Nómina liquidada oficial</span><strong>{summary.officialPayrollTotal === null ? "No disponible" : money.format(summary.officialPayrollTotal)}</strong><small>{summary.officialPayrollTotal === null ? "PeopleWork no la expone en la API pública contratada" : `Total oficial de ${selectedPeriod}`}</small></article>
+      <article className="kpi-card"><span>Base contractual</span><strong>{money.format(summary.monthlyGrossTotal)}</strong><small>{money.format(summary.averageGross)} promedio; no equivale a la nómina liquidada</small></article>
+      <article className="kpi-card"><span>Asistencia</span><strong>{amount.format(summary.workedDays)} días</strong><small>{amount.format(summary.workedHours)} h trabajadas · {amount.format(summary.overtimeHours)} h extra · {summary.employeesWithAttendance} persona(s)</small></article>
+      <article className="kpi-card"><span>Ausencias / vacaciones</span><strong>{amount.format(summary.absenceDays)} / {amount.format(summary.vacationDays)}</strong><small>Días reportados en {selectedPeriod}</small></article>
     </section>
 
     <section className="visual-grid">
       <article className="panel payroll-chart-panel"><div className="panel-heading"><div><span className="panel-label">DISTRIBUCIÓN</span><h2>Base contractual por centro de costo</h2></div><span className="unit">CLP / mes</span></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><BarChart data={payload.costCenters.slice(0, 8)} layout="vertical" margin={{ top: 8, right: 20, left: 10, bottom: 0 }}><XAxis type="number" hide /><YAxis type="category" dataKey="name" width={120} tickLine={false} axisLine={false} tick={{ fill: "#58657a", fontSize: 11 }} /><Tooltip formatter={(value) => money.format(Number(value))} contentStyle={{ borderRadius: 10, border: "1px solid #e6e9ef" }} /><Bar dataKey="amount" radius={[0, 6, 6, 0]} fill="#20a67a" /></BarChart></ResponsiveContainer></div></article>
-      <article className="panel payroll-data-scope"><div className="panel-heading"><div><span className="panel-label">ALCANCE DEL DATO</span><h2>Lectura responsable</h2></div></div><div className="payroll-scope-list"><p><strong>Incluido:</strong> personas, contratos, centros de costo y días agregados.</p><p><strong>Histórico:</strong> se reconstruye por vigencia de contrato y remuneración bruta contractual de cada período.</p><p><strong>No disponible en el API:</strong> liquidaciones, descuentos, imposiciones y costo empleador pagado.</p></div></article>
+      <article className="panel payroll-data-scope"><div className="panel-heading"><div><span className="panel-label">ALCANCE DEL DATO</span><h2>Lectura responsable</h2></div></div><div className="payroll-scope-list"><p><strong>Sincronizado:</strong> personas, contratos, centros de costo y reporte oficial agregado de asistencia, ausencias y vacaciones.</p><p><strong>Conciliación real:</strong> cada actualización reemplaza altas, bajas y cambios del año; no conserva contratos eliminados.</p><p><strong>Nómina oficial pendiente:</strong> la API pública del tenant no publica liquidaciones, haberes, descuentos, imposiciones ni costo empleador. La base contractual nunca se usará como sustituto.</p></div></article>
     </section>
 
     <section className="table-section">
@@ -137,10 +158,10 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
         return <article className="panel payroll-area-group" key={group.area}>
           <button type="button" className="payroll-area-summary" onClick={() => toggleArea(group.area)} aria-expanded={expanded}>
             <span><strong>{group.area}</strong><small>{group.people.length} persona(s) · {group.active} activa(s) · {group.inactive} inactiva(s)</small></span>
-            <span><strong>{money.format(group.gross)}</strong><small>{amount.format(group.absences)} ausencia(s) · {amount.format(group.vacations)} vacaciones</small></span>
+            <span><strong>{money.format(group.gross)}</strong><small>{amount.format(group.workedDays)} días trabajados · {amount.format(group.overtimeHours)} h extra · {amount.format(group.absences)} ausencia(s)</small></span>
             <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
           </button>
-          {expanded && <div className="table-scroll"><table className="payroll-people-table"><thead><tr><th>Colaborador / cargo</th><th>Contrato</th><th className="money-col">Bruto contractual</th><th className="money-col">Ausencias</th><th className="money-col">Vacaciones</th><th>Estado</th></tr></thead><tbody>{group.people.map((person) => <tr key={person.id}><td><strong>{person.name}</strong><small>{person.jobTitle ?? "Sin cargo informado"} · RUT {maskRut(person.nationalIdentification)}</small></td><td>{person.contractType ?? "—"}<small>{person.contractStatus ?? "Vigencia no informada"}</small></td><td className="money-col">{person.monthlyGrossSalary === null ? "—" : money.format(person.monthlyGrossSalary)}</td><td className="money-col">{amount.format(person.absenceDays)} días</td><td className="money-col">{amount.format(person.vacationDays)} días</td><td><span className={`status ${person.active ? "paid" : "neutral"}`}>{person.active ? "Activo" : "Inactivo"}</span></td></tr>)}</tbody></table></div>}
+          {expanded && <div className="table-scroll"><table className="payroll-people-table"><thead><tr><th>Colaborador / cargo</th><th>Contrato</th><th className="money-col">Bruto contractual</th><th className="money-col">Días trabajados</th><th className="money-col">Horas extra</th><th className="money-col">Ausencias</th><th className="money-col">Vacaciones</th><th>Estado</th></tr></thead><tbody>{group.people.map((person) => <tr key={person.id}><td><strong>{person.name}</strong><small>{person.jobTitle ?? "Sin cargo informado"} · RUT {maskRut(person.nationalIdentification)}</small></td><td>{person.contractType ?? "—"}<small>{person.contractStatus ?? "Vigencia no informada"}</small></td><td className="money-col">{person.monthlyGrossSalary === null ? "—" : money.format(person.monthlyGrossSalary)}</td><td className="money-col">{amount.format(person.workedDays)} días<small>{amount.format(person.workedHours)} h</small></td><td className="money-col">{amount.format(person.overtimeHours)} h<small>{amount.format(person.lateMinutes)} min atraso</small></td><td className="money-col">{amount.format(person.absenceDays)} días</td><td className="money-col">{amount.format(person.vacationDays)} días</td><td><span className={`status ${person.active ? "paid" : "neutral"}`}>{person.active ? "Activo" : "Inactivo"}</span></td></tr>)}</tbody></table></div>}
         </article>;
       })}</div>
     </section>

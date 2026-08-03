@@ -8,6 +8,7 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test:receivables": "node --experimental-strip-types --test tests/clp.test.ts",
+    "test:peoplework": "node --experimental-strip-types --test tests/peoplework-sync.test.ts",
     "verify:crm": "node scripts/verify-crm-workspace.mjs",
     "verify:contrast": "node scripts/verify-evolution-total-contrast.mjs",
     "verify:public-market": "node scripts/verify-public-market-intelligence.mjs"

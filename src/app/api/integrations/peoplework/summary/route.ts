@@ -1,17 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isUuid, requireOrganizationFinanceAccess } from "@/lib/admin-access";
+import { isDateRangeActiveInPeriod, periodMonth } from "@/lib/peoplework/sync-utils";
 
 export const dynamic = "force-dynamic";
-
-type CostCenter = { code?: string | null; name?: string | null; percentage?: number | null };
 
 function asNumber(value: unknown) {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function isCurrentContract(contract: { end_date: string | null }) {
-  return !contract.end_date || contract.end_date >= new Date().toISOString().slice(0, 10);
 }
 
 function normalizedType(value: string | null) {
@@ -26,13 +21,16 @@ export async function GET(request: NextRequest) {
   const supabase = context.supabase;
   const yearParam = Number(request.nextUrl.searchParams.get("year"));
   const year = Number.isInteger(yearParam) && yearParam >= 2000 && yearParam <= new Date().getFullYear() ? yearParam : new Date().getFullYear();
-  const month = `${year}-01-01`;
+  const monthParam = Number(request.nextUrl.searchParams.get("month"));
+  const defaultMonth = year === new Date().getFullYear() ? new Date().getMonth() + 1 : 12;
+  const selectedMonth = Number.isInteger(monthParam) && monthParam >= 1 && monthParam <= 12 ? monthParam : defaultMonth;
+  const month = periodMonth(year, selectedMonth);
   const [integrationResult, peopleResult, contractsResult, metricsResult, payrollResult, documentsResult, receivedExpensesResult, directPayablesResult, receivablesResult, centersResult, customerLinksResult, purchaseOrdersResult, purchaseOrderBillingsResult, recurrenceRulesResult, activePlanResult] = await Promise.all([
     supabase.from("payroll_integrations").select("is_active, last_sync_at, last_sync_status, last_period_month").eq("organization_id", organizationId).eq("provider", "peoplework").maybeSingle(),
     supabase.from("payroll_people").select("id, full_name, national_identification, is_active, management_name, job_title").eq("organization_id", organizationId).eq("provider", "peoplework").order("full_name"),
     supabase.from("payroll_contracts").select("person_id, contract_status, contract_type, start_date, end_date, monthly_gross_salary, currency_code, weekly_hours, payment_schedule, management_name, job_title, cost_centers").eq("organization_id", organizationId).eq("provider", "peoplework"),
-    supabase.from("payroll_person_period_metrics").select("person_id, absence_days, vacation_days").eq("organization_id", organizationId).eq("period_month", month),
-    supabase.from("payroll_cost_lines").select("period_month, amount, cost_center_code").eq("organization_id", organizationId).gte("period_month", `${year}-01-01`).lte("period_month", `${year}-12-01`),
+    supabase.from("payroll_person_period_metrics").select("person_id, absence_days, vacation_days, worked_days, non_worked_days, worked_minutes, overtime_minutes, late_minutes, early_departure_minutes").eq("organization_id", organizationId).eq("period_month", month),
+    supabase.from("payroll_cost_lines").select("period_month, amount, cost_center_code, cost_center_name, data_basis").eq("organization_id", organizationId).gte("period_month", `${year}-01-01`).lte("period_month", `${year}-12-01`),
     supabase.from("issued_documents").select("issue_date, document_type, net_amount, counterparty_id, cost_center_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
     supabase.from("received_documents").select("issue_date, document_type, net_amount, cost_center_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
     supabase.from("direct_payables").select("issue_date, total_amount, cost_center_id, currency_code").eq("organization_id", organizationId).in("status", ["approved", "paid"]).is("asset_financing_installment_id", null).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
@@ -53,31 +51,38 @@ export async function GET(request: NextRequest) {
 
   const people = peopleResult.data ?? [];
   const activePeople = people.filter((person) => person.is_active);
-  const contracts = (contractsResult.data ?? []).filter(isCurrentContract);
-  const contractByPerson = new Map<string, typeof contracts[number]>();
-  for (const contract of contracts) contractByPerson.set(contract.person_id, contract);
+  const contractByPerson = new Map<string, (typeof contractsResult.data)[number]>();
+  for (const contract of contractsResult.data ?? []) {
+    if (!isDateRangeActiveInPeriod({ start_date: contract.start_date, end_date: contract.end_date }, month)) continue;
+    const current = contractByPerson.get(contract.person_id);
+    const currentStart = current?.start_date ?? "0000-01-01";
+    const nextStart = contract.start_date ?? "0000-01-01";
+    if (!current || nextStart >= currentStart) contractByPerson.set(contract.person_id, contract);
+  }
+  const contracts = [...contractByPerson.values()];
   const metricByPerson = new Map((metricsResult.data ?? []).map((metric) => [metric.person_id, metric]));
-  const monthlyGrossTotal = contracts.reduce((total, contract) => total + asNumber(contract.monthly_gross_salary), 0);
+  const contractualCosts = (payrollResult.data ?? []).filter((line) => line.data_basis === "contractual_estimate");
+  const officialPayrollCosts = (payrollResult.data ?? []).filter((line) => line.data_basis === "official_payroll");
+  const monthlyContractualCosts = contractualCosts.filter((line) => line.period_month.slice(0, 10) === month);
+  const monthlyOfficialPayroll = officialPayrollCosts.filter((line) => line.period_month.slice(0, 10) === month);
+  const monthlyGrossTotal = monthlyContractualCosts.reduce((total, line) => total + asNumber(line.amount), 0);
+  const officialPayrollTotal = monthlyOfficialPayroll.length ? monthlyOfficialPayroll.reduce((total, line) => total + asNumber(line.amount), 0) : null;
   const averageGross = contracts.length ? monthlyGrossTotal / contracts.length : 0;
   const absenceDays = (metricsResult.data ?? []).reduce((total, metric) => total + asNumber(metric.absence_days), 0);
   const vacationDays = (metricsResult.data ?? []).reduce((total, metric) => total + asNumber(metric.vacation_days), 0);
+  const workedDays = (metricsResult.data ?? []).reduce((total, metric) => total + asNumber(metric.worked_days), 0);
+  const nonWorkedDays = (metricsResult.data ?? []).reduce((total, metric) => total + asNumber(metric.non_worked_days), 0);
+  const workedHours = (metricsResult.data ?? []).reduce((total, metric) => total + asNumber(metric.worked_minutes), 0) / 60;
+  const overtimeHours = (metricsResult.data ?? []).reduce((total, metric) => total + asNumber(metric.overtime_minutes), 0) / 60;
+  const lateMinutes = (metricsResult.data ?? []).reduce((total, metric) => total + asNumber(metric.late_minutes), 0);
+  const employeesWithAttendance = (metricsResult.data ?? []).filter((metric) => asNumber(metric.worked_days) > 0 || asNumber(metric.non_worked_days) > 0).length;
 
   const centerTotals = new Map<string, { name: string; amount: number }>();
-  for (const contract of contracts) {
-    const centers = Array.isArray(contract.cost_centers) ? contract.cost_centers as CostCenter[] : [];
-    if (!centers.length) {
-      const key = "sin-centro";
-      const current = centerTotals.get(key) ?? { name: "Sin centro asignado", amount: 0 };
-      current.amount += asNumber(contract.monthly_gross_salary);
-      centerTotals.set(key, current);
-      continue;
-    }
-    for (const center of centers) {
-      const key = center.code || center.name || "sin-centro";
-      const current = centerTotals.get(key) ?? { name: center.name || center.code || "Sin centro asignado", amount: 0 };
-      current.amount += asNumber(contract.monthly_gross_salary) * (asNumber(center.percentage) || 100) / 100;
-      centerTotals.set(key, current);
-    }
+  for (const line of monthlyContractualCosts) {
+    const key = line.cost_center_code || line.cost_center_name || "sin-centro";
+    const current = centerTotals.get(key) ?? { name: line.cost_center_name || line.cost_center_code || "Sin centro asignado", amount: 0 };
+    current.amount += asNumber(line.amount);
+    centerTotals.set(key, current);
   }
 
   const persons = people.map((person) => {
@@ -95,11 +100,17 @@ export async function GET(request: NextRequest) {
       monthlyGrossSalary: contract ? asNumber(contract.monthly_gross_salary) : null,
       absenceDays: metrics ? asNumber(metrics.absence_days) : 0,
       vacationDays: metrics ? asNumber(metrics.vacation_days) : 0,
+      workedDays: metrics ? asNumber(metrics.worked_days) : 0,
+      nonWorkedDays: metrics ? asNumber(metrics.non_worked_days) : 0,
+      workedHours: metrics ? asNumber(metrics.worked_minutes) / 60 : 0,
+      overtimeHours: metrics ? asNumber(metrics.overtime_minutes) / 60 : 0,
+      lateMinutes: metrics ? asNumber(metrics.late_minutes) : 0,
+      earlyDepartureMinutes: metrics ? asNumber(metrics.early_departure_minutes) : 0,
     };
   });
   const months = Array.from({ length: 12 }, (_, index) => `${year}-${String(index + 1).padStart(2, "0")}`);
   const payrollByMonth = new Map<string, number>();
-  for (const item of payrollResult.data ?? []) payrollByMonth.set(item.period_month.slice(0, 7), (payrollByMonth.get(item.period_month.slice(0, 7)) ?? 0) + asNumber(item.amount));
+  for (const item of officialPayrollCosts) payrollByMonth.set(item.period_month.slice(0, 7), (payrollByMonth.get(item.period_month.slice(0, 7)) ?? 0) + asNumber(item.amount));
   const revenueByMonth = new Map<string, number>();
   for (const document of documentsResult.data ?? []) {
     if (!document.issue_date) continue;
@@ -110,7 +121,8 @@ export async function GET(request: NextRequest) {
     const key = document.issue_date.slice(0, 7);
     revenueByMonth.set(key, (revenueByMonth.get(key) ?? 0) + amount);
   }
-  const expenseByMonth = new Map<string, number>();
+  const receivedExpenseByMonth = new Map<string, number>();
+  const directExpenseByMonth = new Map<string, number>();
   for (const document of receivedExpensesResult.data ?? []) {
     if (!document.issue_date) continue;
     const type = normalizedType(document.document_type);
@@ -118,12 +130,12 @@ export async function GET(request: NextRequest) {
     const net = asNumber(document.net_amount);
     const amount = type.includes("nota de credito") ? -Math.abs(net) : net;
     const key = document.issue_date.slice(0, 7);
-    expenseByMonth.set(key, (expenseByMonth.get(key) ?? 0) + amount);
+    receivedExpenseByMonth.set(key, (receivedExpenseByMonth.get(key) ?? 0) + amount);
   }
   for (const payable of directPayablesResult.data ?? []) {
     if (!payable.issue_date || payable.currency_code !== "CLP") continue;
     const key = payable.issue_date.slice(0, 7);
-    expenseByMonth.set(key, (expenseByMonth.get(key) ?? 0) + asNumber(payable.total_amount));
+    directExpenseByMonth.set(key, (directExpenseByMonth.get(key) ?? 0) + asNumber(payable.total_amount));
   }
   const planByPeriod = new Map<string, { revenue: number; expense: number }>();
   for (const line of budgetLinesResult.data ?? []) {
@@ -136,7 +148,9 @@ export async function GET(request: NextRequest) {
   const currentMonthStart = new Date().toISOString().slice(0, 8) + "01";
   const incomeStatement = months.map((period) => {
     const revenue = revenueByMonth.get(period) ?? 0;
-    const expenses = expenseByMonth.get(period) ?? 0;
+    const receivedExpenses = receivedExpenseByMonth.get(period) ?? 0;
+    const directExpenses = directExpenseByMonth.get(period) ?? 0;
+    const expenses = receivedExpenses + directExpenses;
     const payroll = payrollByMonth.get(period) ?? 0;
     const plan = planByPeriod.get(period);
     const budgetRevenue = plan ? plan.revenue : null;
@@ -145,13 +159,13 @@ export async function GET(request: NextRequest) {
     const forecastRevenue = budgetRevenue === null ? null : isClosedPeriod ? revenue : budgetRevenue;
     const forecastExpense = budgetExpense === null ? null : isClosedPeriod ? expenses : budgetExpense;
     const forecastResult = forecastExpense === null || forecastRevenue === null ? null : forecastRevenue - payroll - forecastExpense;
-    return { period, revenue, expenses, payroll, operatingResultBeforeOtherExpenses: revenue - payroll - expenses, payrollAvailable: payrollByMonth.has(period), budgetRevenue, budgetExpense, budgetResult: budgetRevenue === null || budgetExpense === null ? null : budgetRevenue - budgetExpense, forecastRevenue, forecastExpense, forecastResult, isClosedPeriod };
+    return { period, revenue, expenses, receivedExpenses, directExpenses, payroll, operatingResultBeforeOtherExpenses: revenue - payroll - expenses, payrollAvailable: payrollByMonth.has(period), budgetRevenue, budgetExpense, budgetResult: budgetRevenue === null || budgetExpense === null ? null : budgetRevenue - budgetExpense, forecastRevenue, forecastExpense, forecastResult, isClosedPeriod };
   });
   const centerById = new Map((centersResult.data ?? []).map((center) => [center.id, center]));
   const centerPerformance = new Map<string, { code: string; name: string; revenue: number; payroll: number; expenses: number }>();
   for (const center of centersResult.data ?? []) centerPerformance.set(center.id, { code: center.code, name: center.name, revenue: 0, payroll: 0, expenses: 0 });
   const centerByCode = new Map((centersResult.data ?? []).map((center) => [center.code, center.id]));
-  for (const line of payrollResult.data ?? []) {
+  for (const line of officialPayrollCosts) {
     if (!line.cost_center_code) continue;
     const centerId = centerByCode.get(line.cost_center_code);
     const target = centerId ? centerPerformance.get(centerId) : null;
@@ -209,7 +223,7 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     integration: integrationResult.data ? { active: integrationResult.data.is_active, lastSyncAt: integrationResult.data.last_sync_at, lastSyncStatus: integrationResult.data.last_sync_status, lastPeriodMonth: integrationResult.data.last_period_month } : null,
-    summary: { activePeople: activePeople.length, activeContracts: contracts.length, monthlyGrossTotal, averageGross, absenceDays, vacationDays, periodYear: year },
+    summary: { activePeople: activePeople.length, activeContracts: contracts.length, monthlyGrossTotal, averageGross, officialPayrollTotal, officialPayrollAvailable: officialPayrollTotal !== null, officialPayrollStatus: officialPayrollTotal === null ? "peoplework_public_api_unavailable" : "official", absenceDays, vacationDays, workedDays, nonWorkedDays, workedHours, overtimeHours, lateMinutes, employeesWithAttendance, periodYear: year, periodMonth: selectedMonth },
     costCenters: [...centerTotals.values()].sort((a, b) => b.amount - a.amount),
     persons,
     incomeStatement,
