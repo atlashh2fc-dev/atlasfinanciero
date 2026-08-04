@@ -370,6 +370,9 @@ export async function POST(request: NextRequest) {
 
   if (error || !data) {
     if (attachmentPath) await context.supabase.storage.from("received-document-files").remove([attachmentPath]);
+    if (error?.code === "23505" && error.message.includes("received_documents_business_identity_key")) {
+      return NextResponse.json({ error: "duplicate_received_document" }, { status: 409 });
+    }
     return NextResponse.json({ error: "unable_to_create_cost_entry" }, { status: 409 });
   }
   return NextResponse.json({ document: data }, { status: 201 });

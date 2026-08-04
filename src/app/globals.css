@@ -2784,7 +2784,15 @@ td small {
 .data-entry-form-panel .data-entry-wide-field { grid-column: 1 / -1; }
 .data-entry-form-panel textarea { min-height: 74px; resize: vertical; border: 1px solid #dfe5ed; border-radius: 7px; padding: 9px 10px; color: #26334a; font: inherit; outline-color: #6c79e5; }
 .data-entry-history { padding: 26px; border: 1px solid #dfe7f3; box-shadow: 0 14px 34px #253c650d; }
-.data-entry-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 16px; }
+.data-entry-history-tools { display: flex; align-items: center; gap: 16px; margin-top: 22px; }
+.data-entry-history-search { position: relative; width: min(100%, 560px); }
+.data-entry-history-search > svg { position: absolute; top: 50%; left: 13px; width: 17px; height: 17px; color: #7d8ba1; pointer-events: none; transform: translateY(-50%); }
+.data-entry-history-search input { width: 100%; height: 42px; border: 1px solid #d9e1ec; border-radius: 10px; padding: 0 76px 0 40px; background: #fff; color: #293c5d; font: inherit; font-size: 12px; outline: none; transition: border-color .15s ease, box-shadow .15s ease; }
+.data-entry-history-search input::placeholder { color: #97a3b4; }
+.data-entry-history-search input:focus { border-color: #6978dc; box-shadow: 0 0 0 3px #6978dc1a; }
+.data-entry-history-search button { position: absolute; top: 50%; right: 11px; border: 0; padding: 4px; background: transparent; color: #596bd0; font: inherit; font-size: 10px; font-weight: 800; cursor: pointer; transform: translateY(-50%); }
+.data-entry-history-result-count { margin-left: auto; color: #8290a3; font-size: 11px; white-space: nowrap; }
+.data-entry-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 16px; }
 .data-entry-filters button { display: inline-flex; align-items: center; gap: 7px; border: 1px solid #dfe5ef; border-radius: 99px; padding: 7px 11px; background: #fff; color: #687791; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
 .data-entry-filters button span { display: grid; min-width: 19px; height: 19px; place-items: center; border-radius: 99px; background: #eef2f8; color: #75829a; font-size: 9px; }
 .data-entry-filters button.is-active { border-color: #6978dc; background: #eef0ff; color: #4d5ec9; }
@@ -2822,6 +2830,9 @@ td small {
 @media (max-width: 620px) {
   .data-entry-header, .data-entry-history-heading { display: grid; gap: 15px; }
   .data-entry-header .secondary-button, .data-entry-history-heading .secondary-button { justify-self: start; }
+  .data-entry-history-tools { align-items: stretch; flex-direction: column; gap: 8px; }
+  .data-entry-history-search { width: 100%; }
+  .data-entry-history-result-count { margin-left: 0; }
   .data-entry-form-panel, .data-entry-history, .data-entry-support-panel { padding: 18px; }
   .data-entry-form-panel .form-grid, .data-entry-target-preview { grid-template-columns: 1fr; }
 }

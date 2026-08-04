@@ -5,3 +5,5 @@ node_modules/
 !.env.example
 .vscode/
 .vercel/
+.DS_Store
+tmp/

@@ -18,6 +18,10 @@ const today = () => new Date().toISOString().slice(0, 10);
 const label = (item: Counterparty) => item.trade_name?.trim() || item.legal_name;
 const money = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 const displayDate = (value: string | null) => value ? new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${value.slice(0, 10)}T12:00:00`)) : "—";
+const searchable = (value: string | number | null | undefined) => String(value ?? "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLocaleLowerCase("es-CL");
 
 const kindLabels: Record<EntryKind, string> = { sale: "Factura", cost: "Costo", collection: "Cobro", support: "Respaldo" };
 const filterLabels: { value: HistoryFilter; label: string }[] = [
@@ -61,6 +65,7 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [view, setView] = useState<View>("history");
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>("all");
+  const [historySearch, setHistorySearch] = useState("");
   const [supportTarget, setSupportTarget] = useState("");
 
   const load = useCallback(async () => {
@@ -77,7 +82,24 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
     return () => { active = false; };
   }, [load]);
 
-  const filteredEntries = useMemo(() => historyFilter === "all" ? data.entries : data.entries.filter((entry) => entry.kind === historyFilter), [data.entries, historyFilter]);
+  const categoryEntries = useMemo(() => historyFilter === "all" ? data.entries : data.entries.filter((entry) => entry.kind === historyFilter), [data.entries, historyFilter]);
+  const filteredEntries = useMemo(() => {
+    const terms = searchable(historySearch).trim().split(/\s+/).filter(Boolean);
+    if (!terms.length) return categoryEntries;
+    return categoryEntries.filter((entry) => {
+      const haystack = searchable([
+        kindLabels[entry.kind],
+        entry.number,
+        entry.documentType,
+        entry.counterpart,
+        entry.issuedOn,
+        entry.amount,
+        entry.amount === null ? null : money.format(Number(entry.amount)),
+        reviewStatus(entry),
+      ].filter(Boolean).join(" "));
+      return terms.every((term) => haystack.includes(term));
+    });
+  }, [categoryEntries, historySearch]);
   const selectedReference = useMemo(() => {
     const [kind, id] = supportTarget.split(":");
     return data.references.find((item) => item.kind === kind && item.id === id) ?? null;
@@ -130,7 +152,12 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
       await load();
       setView("history"); setHistoryFilter("cost");
       setMessage("Costo registrado. Ya aparece en el historial.");
-    } else setMessage("No se pudo registrar el costo. Revisa los campos obligatorios.");
+    } else {
+      const payload = await response.json().catch(() => null) as { error?: string } | null;
+      setMessage(payload?.error === "duplicate_received_document"
+        ? "Esta factura ya está registrada para el mismo proveedor, tipo y folio."
+        : "No se pudo registrar el costo. Revisa los campos obligatorios.");
+    }
     setSavingCost(false);
   }
 
@@ -198,9 +225,17 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
         <header className="headline data-entry-header"><div><span className="eyebrow">OPERACIÓN · DOCUMENTOS</span><h1>{viewName}</h1><p>{view === "history" ? "Consulta facturas, cobros, costos y respaldos por categoría. Esta vista no contiene indicadores ni resultados consolidados." : view === "support" ? "Carga un comprobante o documento y vincúlalo a una factura o a un cobro ya registrado." : view === "benefits" ? "Actualiza la tipificación, responsable, documentos y gestiones de cada postulación." : "Registra facturas de venta y documentos de costo para revisión de Finanzas."}</p></div>{view === "history" ? <button type="button" className="primary-button" onClick={() => startSupport()}>Adjuntar respaldo</button> : <button type="button" className="secondary-button" onClick={() => selectView("history")}>Volver al historial</button>}</header>
         {message && <p className="operation-message" role="status">{message}</p>}
         {loading ? <section className="panel data-entry-loading">Cargando historial…</section> : view === "benefits" ? <BenefitsWorkflow organizationId={organizationId} compact /> : view === "history" ? <section className="panel data-entry-history">
-          <div className="data-entry-history-heading"><div><span className="panel-label">REGISTRO OPERATIVO</span><h2>Movimientos y documentos</h2><p>Usa las categorías para encontrar un registro y adjuntar su respaldo.</p></div><button type="button" className="secondary-button" onClick={() => void load()}>Actualizar</button></div>
+          <div className="data-entry-history-heading"><div><span className="panel-label">REGISTRO OPERATIVO</span><h2>Movimientos y documentos</h2><p>Busca por persona, empresa, folio, tipo o estado y combina el resultado con las categorías.</p></div><button type="button" className="secondary-button" onClick={() => void load()}>Actualizar</button></div>
+          <div className="data-entry-history-tools">
+            <div className="data-entry-history-search">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>
+              <input type="search" value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Buscar cliente, proveedor, folio o estado…" aria-label="Buscar en el historial" />
+              {historySearch && <button type="button" onClick={() => setHistorySearch("")} aria-label="Limpiar búsqueda">Limpiar</button>}
+            </div>
+            <span className="data-entry-history-result-count" aria-live="polite">{historySearch.trim() ? `${filteredEntries.length} de ${categoryEntries.length} registros` : `${categoryEntries.length} registros`}</span>
+          </div>
           <div className="data-entry-filters" aria-label="Filtrar historial">{filterLabels.map((filter) => <button key={filter.value} type="button" className={historyFilter === filter.value ? "is-active" : ""} onClick={() => setHistoryFilter(filter.value)}>{filter.label}<span>{filter.value === "all" ? data.entries.length : data.entries.filter((entry) => entry.kind === filter.value).length}</span></button>)}</div>
-          <div className="table-scroll data-entry-table"><table><thead><tr><th>Categoría</th><th>Referencia</th><th>Cliente / proveedor</th><th>Fecha</th><th>Monto</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{filteredEntries.map((entry) => <tr key={`${entry.kind}-${entry.id}`}><td><span className={`data-entry-kind is-${entry.kind}`}>{kindLabels[entry.kind]}</span></td><td><strong>{entry.number || "Sin folio"}</strong><small>{entry.documentType || "Documento"}</small></td><td>{entry.counterpart || "Sin contraparte"}</td><td>{displayDate(entry.issuedOn)}</td><td>{entry.amount === null ? "—" : money.format(Number(entry.amount))}</td><td><span className={`status ${entry.kind === "support" || entry.kind === "collection" || entry.status === "Pagada" ? "paid" : "pending"}`}>{reviewStatus(entry)}</span>{entry.kind === "collection" && entry.existingProof && <small>Con comprobante original</small>}</td><td><div className="data-entry-row-actions">{entry.hasAttachment && <button type="button" className="text-button" onClick={() => void openAttachment(entry)} disabled={openingFile === `${entry.kind}:${entry.id}`}>{openingFile === `${entry.kind}:${entry.id}` ? "Abriendo…" : "Ver archivo"}</button>}{(entry.kind === "sale" || entry.kind === "collection") && <button type="button" className="text-button" onClick={() => startSupport(entry)}>Adjuntar respaldo</button>}{!entry.hasAttachment && entry.kind === "cost" && <span className="data-entry-empty">Sin adjunto</span>}</div></td></tr>)}{!filteredEntries.length && <tr><td colSpan={7}><div className="data-entry-empty-state"><strong>No hay registros en esta categoría.</strong><span>Puedes cambiar el filtro o registrar un nuevo documento.</span></div></td></tr>}</tbody></table></div>
+          <div className="table-scroll data-entry-table"><table><thead><tr><th>Categoría</th><th>Referencia</th><th>Cliente / proveedor</th><th>Fecha</th><th>Monto</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{filteredEntries.map((entry) => <tr key={`${entry.kind}-${entry.id}`}><td><span className={`data-entry-kind is-${entry.kind}`}>{kindLabels[entry.kind]}</span></td><td><strong>{entry.number || "Sin folio"}</strong><small>{entry.documentType || "Documento"}</small></td><td>{entry.counterpart || "Sin contraparte"}</td><td>{displayDate(entry.issuedOn)}</td><td>{entry.amount === null ? "—" : money.format(Number(entry.amount))}</td><td><span className={`status ${entry.kind === "support" || entry.kind === "collection" || entry.status === "Pagada" ? "paid" : "pending"}`}>{reviewStatus(entry)}</span>{entry.kind === "collection" && entry.existingProof && <small>Con comprobante original</small>}</td><td><div className="data-entry-row-actions">{entry.hasAttachment && <button type="button" className="text-button" onClick={() => void openAttachment(entry)} disabled={openingFile === `${entry.kind}:${entry.id}`}>{openingFile === `${entry.kind}:${entry.id}` ? "Abriendo…" : "Ver archivo"}</button>}{(entry.kind === "sale" || entry.kind === "collection") && <button type="button" className="text-button" onClick={() => startSupport(entry)}>Adjuntar respaldo</button>}{!entry.hasAttachment && entry.kind === "cost" && <span className="data-entry-empty">Sin adjunto</span>}</div></td></tr>)}{!filteredEntries.length && <tr><td colSpan={7}><div className="data-entry-empty-state"><strong>{historySearch.trim() ? "No encontramos coincidencias." : "No hay registros en esta categoría."}</strong><span>{historySearch.trim() ? "Prueba con otro nombre, folio o categoría." : "Puedes cambiar el filtro o registrar un nuevo documento."}</span></div></td></tr>}</tbody></table></div>
         </section> : view === "support" ? <section className="panel data-entry-support-panel">
           <div className="panel-heading"><div><span className="panel-label">VINCULAR DOCUMENTO</span><h2>Nuevo respaldo</h2><p>El archivo se agrega como respaldo; no modifica el monto ni el estado del registro.</p></div></div>
           <form className="admin-form data-entry-support-form" onSubmit={(event) => void submitSupport(event)}>
