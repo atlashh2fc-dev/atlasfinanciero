@@ -4798,3 +4798,180 @@ td small {
     grid-template-columns: 1fr;
   }
 }
+
+/* Cotizador: costos, precio de venta y rentabilidad en una sola vista. */
+.quotation-workspace {
+  --quote-ink: #1d2d49;
+  --quote-muted: #77859a;
+  --quote-green: #118862;
+}
+.quotation-headline { align-items: center; }
+.quotation-tabs {
+  display: flex;
+  gap: 5px;
+  margin: -5px 0 18px;
+  padding: 4px;
+  width: fit-content;
+  border: 1px solid #e0e6ee;
+  border-radius: 10px;
+  background: #eef2f6;
+}
+.quotation-tabs button {
+  border: 0;
+  border-radius: 7px;
+  padding: 8px 12px;
+  background: transparent;
+  color: #67758b;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.quotation-tabs button.active { background: #fff; color: #33435e; box-shadow: 0 2px 8px #283b5614; }
+.quotation-tabs button span { margin-left: 5px; color: #8d99aa; font-size: 9px; }
+.quote-meta-panel { margin-bottom: 16px; }
+.quote-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.5fr) minmax(190px, 1.2fr) repeat(4, minmax(120px, .7fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.quote-meta-grid label,
+.quote-line-fields label,
+.quote-notes-panel label {
+  display: grid;
+  gap: 6px;
+  color: #617087;
+  font-size: 10px;
+  font-weight: 750;
+}
+.quote-meta-grid input,
+.quote-meta-grid select,
+.quote-line-fields input,
+.quote-line-fields select,
+.quote-notes-panel textarea,
+.quote-add-controls select,
+.quote-line-name {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #dce3ec;
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: #fff;
+  color: #2c3b55;
+  font: inherit;
+  font-size: 11px;
+  outline-color: #5968df;
+}
+.quote-meta-grid label small { color: #96a1b0; font-size: 9px; font-weight: 500; }
+.quote-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+.quote-main-column { display: grid; gap: 16px; min-width: 0; }
+.quote-add-panel { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.quote-add-panel h2 { margin-top: 4px; }
+.quote-add-controls { display: grid; grid-template-columns: minmax(230px, 1fr) auto auto; gap: 8px; flex: 1; max-width: 720px; }
+.quote-add-controls select { padding: 10px; }
+.quote-lines-panel .panel-heading { align-items: center; }
+.quote-empty { display: grid; place-items: center; min-height: 190px; padding: 25px; text-align: center; }
+.quote-empty strong { color: #4b5b73; font-size: 13px; }
+.quote-empty span { max-width: 480px; color: #8a97a8; font-size: 11px; line-height: 1.5; }
+.quote-line-list { display: grid; gap: 10px; margin-top: 15px; }
+.quote-line-card {
+  display: grid;
+  grid-template-columns: minmax(180px, .8fr) minmax(460px, 2fr) 170px;
+  gap: 14px;
+  align-items: end;
+  padding: 13px;
+  border: 1px solid #e2e7ef;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #fff, #fafbfe);
+}
+.quote-line-top { display: flex; align-items: flex-start; gap: 8px; }
+.quote-line-top > div { flex: 1; min-width: 0; }
+.quote-category {
+  display: block;
+  margin-bottom: 5px;
+  color: #6878c8;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .55px;
+  text-transform: uppercase;
+}
+.quote-line-name { border-color: transparent; background: transparent; padding: 5px 0; color: #2a3954; font-size: 12px; font-weight: 750; }
+.quote-line-name:focus { padding-inline: 7px; border-color: #ccd4ee; background: #fff; }
+.quote-remove { border: 0; border-radius: 50%; width: 24px; height: 24px; background: #f2f4f8; color: #8792a2; cursor: pointer; font-size: 16px; }
+.quote-line-fields { display: grid; grid-template-columns: 1fr .72fr .8fr 1fr .72fr; gap: 7px; }
+.quote-line-fields input,
+.quote-line-fields select { padding: 7px 8px; }
+.quote-line-result { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; padding: 9px 10px; border-radius: 8px; background: #f0f4f7; }
+.quote-line-result span { color: #7c8999; font-size: 9px; }
+.quote-line-result b,
+.quote-line-result strong { display: block; margin-top: 3px; color: #4c5b70; font-size: 11px; }
+.quote-line-result strong { color: var(--quote-green); }
+.quote-line-result small { grid-column: 1 / -1; color: #9ba5b2; font-size: 8px; text-align: right; }
+.quote-notes-panel textarea { min-height: 95px; resize: vertical; }
+.quote-summary-card {
+  position: sticky;
+  top: 88px;
+  padding: 21px;
+  border-radius: 13px;
+  background: linear-gradient(145deg, #1c2c49, #253b5d);
+  box-shadow: 0 18px 38px #1b2b4829;
+  color: #fff;
+}
+.quote-summary-card .panel-label { color: #93a7c6; }
+.quote-summary-card h2 { margin: 7px 0 19px; color: #fff; font-size: 17px; }
+.quote-summary-section { padding: 14px 0; border-top: 1px solid #ffffff17; }
+.quote-summary-section > span { display: block; margin-bottom: 10px; color: #aebdd2; font-size: 10px; font-weight: 750; }
+.quote-summary-section > div { display: flex; align-items: baseline; justify-content: space-between; margin-top: 5px; }
+.quote-summary-section small { color: #879ab8; font-size: 9px; }
+.quote-summary-section b { color: #cbd5e5; font-size: 11px; }
+.quote-summary-section .sale strong { color: #77e0b8; font-size: 14px; }
+.quote-contract-total { display: grid; gap: 5px; margin: 4px -7px 13px; padding: 15px; border-radius: 10px; background: #ffffff0e; }
+.quote-contract-total span { color: #aebdd2; font-size: 9px; }
+.quote-contract-total strong { color: #fff; font-size: 24px; letter-spacing: -.5px; }
+.quote-contract-total small { color: #8ea0bb; font-size: 9px; }
+.quote-profit { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding-top: 14px; border-top: 1px solid #ffffff17; }
+.quote-profit span { display: block; color: #95a7c2; font-size: 9px; }
+.quote-profit strong { display: block; margin-top: 4px; color: #fff; font-size: 13px; }
+.quote-profit > b { padding: 6px 8px; border-radius: 7px; background: #1eaa7852; color: #90ebc9; font-size: 10px; }
+.quote-history-panel .panel-heading p,
+.quote-catalog-panel .panel-heading p { margin: 6px 0 16px; color: #7d8a9d; font-size: 11px; }
+.quote-history-panel td small { display: block; margin-top: 3px; color: #96a1b0; font-size: 9px; }
+.quote-catalog-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 8px; }
+.quote-catalog-grid article { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; min-height: 125px; padding: 14px; border: 1px solid #e2e7ef; border-radius: 10px; background: #fbfcfe; }
+.quote-catalog-grid article.inactive { opacity: .55; }
+.quote-catalog-grid h3 { margin: 0 0 5px; color: #2f3e58; font-size: 13px; }
+.quote-catalog-grid article > div > small { color: #8d99aa; font-size: 9px; }
+.quote-catalog-grid article > div:nth-child(2) { text-align: right; }
+.quote-catalog-grid article > div:nth-child(2) span { display: block; color: #8a96a8; font-size: 8px; }
+.quote-catalog-grid article > div:nth-child(2) strong { display: block; margin: 4px 0; color: #31415b; font-size: 15px; }
+.quote-catalog-grid article .secondary-button { grid-column: 1 / -1; justify-self: end; padding: 6px 10px; font-size: 9px; }
+.quote-catalog-modal { width: min(720px, 100%); }
+.primary-button:disabled,
+.secondary-button:disabled,
+.quote-remove:disabled { opacity: .48; cursor: not-allowed; }
+
+@media (max-width: 1320px) {
+  .quote-meta-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .quote-line-card { grid-template-columns: minmax(170px, .75fr) minmax(390px, 2fr); }
+  .quote-line-result { grid-column: 1 / -1; }
+}
+@media (max-width: 1080px) {
+  .quote-layout { grid-template-columns: 1fr; }
+  .quote-summary-card { position: static; }
+  .quote-catalog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .quotation-headline,
+  .quote-add-panel { align-items: stretch; flex-direction: column; }
+  .quotation-headline .headline-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .quotation-tabs { width: 100%; overflow-x: auto; }
+  .quotation-tabs button { white-space: nowrap; }
+  .quote-meta-grid,
+  .quote-add-controls,
+  .quote-line-card,
+  .quote-line-fields,
+  .quote-catalog-grid { grid-template-columns: 1fr; }
+  .quote-line-result { grid-column: auto; }
+  .quote-summary-card { margin-bottom: 20px; }
+}

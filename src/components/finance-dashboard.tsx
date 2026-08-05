@@ -45,6 +45,7 @@ import { PlatformSuperAdminDashboard } from "@/components/platform-super-admin-d
 import { AccountingWorkbench } from "@/components/accounting-workbench";
 import { BenefitsHub } from "@/components/benefits-hub";
 import { MailInbox } from "@/components/mail-inbox";
+import { QuotationBuilder } from "@/components/quotation-builder";
 import {
   isActiveIssuedInvoice,
   isCreditNoteDocument,
@@ -95,6 +96,8 @@ const modulePreviews: Record<Module, string> = {
     "Borradores desde servicios contratados, revisión financiera y vínculo con la emisión real.",
   "CRM y clientes":
     "Resumen, pipeline, clientes 360, contratos, proyectos y evolución comercial en un workspace integrado.",
+  Cotizador:
+    "Costos, margen y valor de venta para SaaS, BPO, infraestructura, IA, setup y células de desarrollo.",
   "Mercado Público":
     "Búsqueda oficial de licitaciones ChileCompra y conversión trazable a oportunidades del CRM.",
   "Fondos y beneficios":
@@ -140,6 +143,7 @@ type Module =
   | "Proyecciones"
   | "Planificación financiera"
   | "CRM y clientes"
+  | "Cotizador"
   | "Mercado Público"
   | "Fondos y beneficios"
   | "Cuentas por cobrar"
@@ -177,6 +181,7 @@ const navigationGroups: NavigationGroup[] = [
     label: "INGRESOS",
     items: [
       "CRM y clientes",
+      "Cotizador",
       "Mercado Público",
       "Fondos y beneficios",
       "Prefacturación",
@@ -244,6 +249,7 @@ function NavigationItemIcon({ item }: { item: Module }) {
   if (item === "Inicio") return <svg {...iconProps}><path d="m4 11 8-7 8 7v9H4z" /><path d="M9 20v-5h6v5" /></svg>;
   if (item === "Gestión 360") return <svg {...iconProps}><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></svg>;
   if (item === "CRM y clientes" || item === "Remuneraciones") return <svg {...iconProps}><circle cx="9" cy="8" r="3" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0m2-10a3 3 0 0 1 0 6m1.5-8a3 3 0 0 1 0 5" /></svg>;
+  if (item === "Cotizador") return <svg {...iconProps}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M8 7h8M8 11h2m3 0h3m-8 4h2m3 0h3m-8 3h8" /></svg>;
   if (item === "Mercado Público") return <svg {...iconProps}><circle cx="10.5" cy="10.5" r="5.5" /><path d="m15 15 4.5 4.5M7 10.5h7M10.5 7v7" /></svg>;
   if (item === "Fondos y beneficios") return <svg {...iconProps}><path d="M12 3v18M16 7.5c-.7-1-2-1.5-4-1.5-2.3 0-4 1.1-4 3s1.7 3 4 3 4 1.1 4 3-1.7 3-4 3c-2 0-3.3-.5-4-1.5" /><path d="M4 20h16" /></svg>;
   if (item === "Prefacturación") return <svg {...iconProps}><path d="M6 3h9l4 4v14H6z" /><path d="M14 3v5h5M9 14l5-5 2 2-5 5-3 1z" /></svg>;
@@ -3138,6 +3144,11 @@ export function FinanceDashboard() {
         ) : activeModule === "CRM y clientes" ? (
           <CustomerModule
             records={records}
+            organizationId={access?.membership.organizationId ?? null}
+            canManage={hasEditPermission}
+          />
+        ) : activeModule === "Cotizador" ? (
+          <QuotationBuilder
             organizationId={access?.membership.organizationId ?? null}
             canManage={hasEditPermission}
           />
