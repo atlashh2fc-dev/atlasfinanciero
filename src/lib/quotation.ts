@@ -1,5 +1,12 @@
 export type QuoteBillingPeriod = "one_time" | "monthly";
 
+export type QuoteCostBreakdown = {
+  catalogItemId: string;
+  name: string;
+  quantity: number;
+  unitCost: number;
+};
+
 export type QuoteLine = {
   id: string;
   catalogItemId: string | null;
@@ -10,7 +17,18 @@ export type QuoteLine = {
   quantity: number;
   unitCost: number;
   marginPercent: number;
+  costBreakdown?: QuoteCostBreakdown[];
 };
+
+export function calculateCatalogUnitCost(directUnitCost: number, components: QuoteCostBreakdown[]) {
+  if (!Number.isFinite(directUnitCost) || directUnitCost < 0) throw new RangeError("Direct cost must be non-negative");
+  const componentCost = components.reduce((total, component) => {
+    if (!Number.isFinite(component.quantity) || component.quantity <= 0) throw new RangeError("Component quantity must be positive");
+    if (!Number.isFinite(component.unitCost) || component.unitCost < 0) throw new RangeError("Component cost must be non-negative");
+    return total + component.quantity * component.unitCost;
+  }, 0);
+  return Math.round((directUnitCost + componentCost) * 10_000) / 10_000;
+}
 
 export function salePriceFromMargin(unitCost: number, marginPercent: number) {
   if (!Number.isFinite(unitCost) || unitCost < 0) throw new RangeError("Unit cost must be non-negative");

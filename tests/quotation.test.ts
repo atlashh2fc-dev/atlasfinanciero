@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { calculateQuote, salePriceFromMargin, type QuoteLine } from "../src/lib/quotation.ts";
+import { calculateCatalogUnitCost, calculateQuote, salePriceFromMargin, type QuoteLine } from "../src/lib/quotation.ts";
+
+test("catalog product cost combines direct cost and shared infrastructure or AI resources", () => {
+  assert.equal(calculateCatalogUnitCost(100, [
+    { catalogItemId: "vercel", name: "Vercel", quantity: 1, unitCost: 250 },
+    { catalogItemId: "gpt", name: "IA GPT", quantity: 2, unitCost: 75 },
+    { catalogItemId: "mercury", name: "Mercury (IA gratis)", quantity: 1, unitCost: 0 },
+  ]), 500);
+});
 
 test("sale price uses gross margin over the final sale value", () => {
   assert.equal(salePriceFromMargin(700, 30), 1000);
