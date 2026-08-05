@@ -297,9 +297,12 @@ export function TreasuryDashboard({
   const [executionsModalOpen, setExecutionsModalOpen] = useState(false);
   const [executionYear, setExecutionYear] = useState(() => String(new Date().getFullYear()));
   const [loanEditorOpen, setLoanEditorOpen] = useState(false);
+  const [loanError, setLoanError] = useState<string | null>(null);
   const [repaymentLoan, setRepaymentLoan] = useState<CompanyLoan | null>(null);
   const [loanDraft, setLoanDraft] = useState({
     borrowerCounterpartyId: "",
+    newBorrowerLegalName: "",
+    newBorrowerTaxId: "",
     bankAccountId: "",
     contractDate: new Date().toISOString().slice(0, 10),
     disbursementDate: new Date().toISOString().slice(0, 10),
@@ -347,7 +350,9 @@ export function TreasuryDashboard({
   }, [data?.accounts, selectedImportAccountId]);
 
   useEffect(() => {
-    const clpAccount = data?.accounts.find((account) => account.currency_code === "CLP");
+    const clpAccount = data?.accounts.find(
+      (account) => account.is_active && account.currency_code.toUpperCase() === "CLP",
+    );
     if (!clpAccount) return;
     setLoanDraft((current) => current.bankAccountId ? current : { ...current, bankAccountId: clpAccount.id });
     setRepaymentDraft((current) => current.bankAccountId ? current : { ...current, bankAccountId: clpAccount.id });
@@ -592,9 +597,13 @@ export function TreasuryDashboard({
 
   function openLoanEditor() {
     const today = new Date().toISOString().slice(0, 10);
-    const clpAccount = data?.accounts.find((account) => account.currency_code === "CLP");
+    const clpAccount = data?.accounts.find(
+      (account) => account.is_active && account.currency_code.toUpperCase() === "CLP",
+    );
     setLoanDraft({
-      borrowerCounterpartyId: data?.counterparties[0]?.id ?? "",
+      borrowerCounterpartyId: data?.counterparties[0]?.id ?? "__new__",
+      newBorrowerLegalName: "",
+      newBorrowerTaxId: "",
       bankAccountId: clpAccount?.id ?? "",
       contractDate: today,
       disbursementDate: today,
@@ -607,6 +616,7 @@ export function TreasuryDashboard({
       stampTaxStatus: "review",
     });
     setLoanEditorOpen(true);
+    setLoanError(null);
     setMessage(null);
   }
 
@@ -614,15 +624,59 @@ export function TreasuryDashboard({
     event.preventDefault();
     if (!organizationId || saving) return;
     setSaving(true);
+    setLoanError(null);
+    let borrowerCounterpartyId = loanDraft.borrowerCounterpartyId;
+    if (borrowerCounterpartyId === "__new__") {
+      const borrowerResponse = await fetch("/api/customer-profiles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_profile",
+          organizationId,
+          profile: {
+            legalName: loanDraft.newBorrowerLegalName,
+            taxId: loanDraft.newBorrowerTaxId,
+            isActive: true,
+          },
+          contacts: [],
+        }),
+      });
+      const borrowerPayload = await borrowerResponse.json().catch(() => null) as { id?: string; error?: string } | null;
+      if (!borrowerResponse.ok || !borrowerPayload?.id) {
+        setSaving(false);
+        setLoanError(
+          borrowerPayload?.error === "unable_to_create_customer_profile"
+            ? "No pudimos crear la empresa. Revisa si ese RUT ya existe en el maestro de clientes."
+            : "No fue posible crear la empresa deudora. Revisa su razón social y RUT.",
+        );
+        return;
+      }
+      borrowerCounterpartyId = borrowerPayload.id;
+      const newCounterparty: Counterparty = {
+        id: borrowerCounterpartyId,
+        legal_name: loanDraft.newBorrowerLegalName.trim(),
+        trade_name: null,
+        tax_id: loanDraft.newBorrowerTaxId.trim() || null,
+      };
+      setData((current) => current
+        ? { ...current, counterparties: [...current.counterparties, newCounterparty] }
+        : current);
+      setLoanDraft((current) => ({ ...current, borrowerCounterpartyId }));
+    }
     const response = await fetch("/api/company-loans", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "create_loan", organizationId, ...loanDraft }),
+      body: JSON.stringify({
+        action: "create_loan",
+        organizationId,
+        ...loanDraft,
+        borrowerCounterpartyId,
+      }),
     });
     const payload = await response.json().catch(() => null) as { error?: string; detail?: string } | null;
     setSaving(false);
     if (!response.ok) {
-      setMessage(payload?.detail || "No fue posible registrar el préstamo. Revisa empresa, fechas, monto y cuenta bancaria.");
+      setLoanError(payload?.detail || "No fue posible registrar el préstamo. Revisa empresa, fechas, monto y cuenta bancaria.");
       return;
     }
     setLoanEditorOpen(false);
@@ -714,6 +768,9 @@ export function TreasuryDashboard({
 
   const clpPosition = accountPositions.filter((account) => account.currency_code === "CLP").reduce((total, account) => total + account.position, 0);
   const nonClpAccounts = accountPositions.filter((account) => account.currency_code !== "CLP");
+  const activeClpAccounts = (data?.accounts ?? []).filter(
+    (account) => account.is_active && account.currency_code.toUpperCase() === "CLP",
+  );
   const loanPortfolio = data?.companyLoans ?? [];
   const outstandingLoanPrincipal = loanPortfolio.reduce(
     (total, loan) => total + amount(loan.principal_outstanding),
@@ -747,7 +804,7 @@ export function TreasuryDashboard({
         </div>
         {canManage && (
           <div className="headline-actions">
-            <button type="button" className="secondary-button" onClick={openLoanEditor} disabled={!data?.accounts.some((account) => account.currency_code === "CLP") || !data?.counterparties.length}>Registrar préstamo</button>
+            <button type="button" className="secondary-button" onClick={openLoanEditor}>Registrar préstamo</button>
             <button type="button" className="secondary-button" onClick={() => setAccountEditorOpen(true)}>Nueva cuenta</button>
             <button type="button" className="primary-button" onClick={() => document.getElementById("cargar-cartola")?.scrollIntoView({ behavior: "smooth", block: "start" })} disabled={!data?.accounts.length}>Cargar cartola</button>
           </div>
@@ -795,7 +852,7 @@ export function TreasuryDashboard({
               {overdueLoans.length ? ` · ${overdueLoans.length} vencido(s)` : ""}
             </p>
           </div>
-          {canManage && <button type="button" className="primary-button" onClick={openLoanEditor} disabled={!data?.accounts.some((account) => account.currency_code === "CLP") || !data?.counterparties.length}>Registrar préstamo</button>}
+          {canManage && <button type="button" className="primary-button" onClick={openLoanEditor}>Registrar préstamo</button>}
         </div>
         <div className="table-scroll">
           <table>
@@ -1035,9 +1092,31 @@ export function TreasuryDashboard({
               <button type="button" className="close-button" onClick={() => setLoanEditorOpen(false)} aria-label="Cerrar">×</button>
             </div>
             <form onSubmit={saveLoan}>
+              {loanError && <p className="form-error">{loanError}</p>}
+              {!activeClpAccounts.length && (
+                <div className="form-error">
+                  <p>Necesitas una cuenta bancaria activa en CLP para registrar el desembolso.</p>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      setLoanEditorOpen(false);
+                      setAccountEditorOpen(true);
+                    }}
+                  >
+                    Crear cuenta CLP
+                  </button>
+                </div>
+              )}
               <div className="form-grid">
-                <label>Empresa deudora *<select required value={loanDraft.borrowerCounterpartyId} onChange={(event) => setLoanDraft({ ...loanDraft, borrowerCounterpartyId: event.target.value })}><option value="">Selecciona una empresa</option>{data?.counterparties.map((counterparty) => <option key={counterparty.id} value={counterparty.id}>{counterparty.trade_name || counterparty.legal_name}{counterparty.tax_id ? ` · ${counterparty.tax_id}` : ""}</option>)}</select></label>
-                <label>Cuenta de salida Genesis *<select required value={loanDraft.bankAccountId} onChange={(event) => setLoanDraft({ ...loanDraft, bankAccountId: event.target.value })}><option value="">Selecciona una cuenta CLP</option>{data?.accounts.filter((account) => account.currency_code === "CLP").map((account) => <option key={account.id} value={account.id}>{account.name} · {account.bank_name || "Banco no informado"}</option>)}</select></label>
+                <label>Empresa deudora *<select required value={loanDraft.borrowerCounterpartyId} onChange={(event) => setLoanDraft({ ...loanDraft, borrowerCounterpartyId: event.target.value })}><option value="">Selecciona una empresa</option>{data?.counterparties.map((counterparty) => <option key={counterparty.id} value={counterparty.id}>{counterparty.trade_name || counterparty.legal_name}{counterparty.tax_id ? ` · ${counterparty.tax_id}` : ""}</option>)}<option value="__new__">＋ Registrar empresa nueva</option></select></label>
+                <label>Cuenta de salida Genesis *<select required value={loanDraft.bankAccountId} onChange={(event) => setLoanDraft({ ...loanDraft, bankAccountId: event.target.value })}><option value="">Selecciona una cuenta CLP</option>{activeClpAccounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.bank_name || "Banco no informado"}</option>)}</select></label>
+                {loanDraft.borrowerCounterpartyId === "__new__" && (
+                  <>
+                    <label>Razón social deudora *<input required maxLength={250} value={loanDraft.newBorrowerLegalName} onChange={(event) => setLoanDraft({ ...loanDraft, newBorrowerLegalName: event.target.value })} placeholder="Ej. Empresa Inversiones SpA" /></label>
+                    <label>RUT empresa deudora *<input required maxLength={40} value={loanDraft.newBorrowerTaxId} onChange={(event) => setLoanDraft({ ...loanDraft, newBorrowerTaxId: event.target.value })} placeholder="Ej. 76.123.456-7" /></label>
+                  </>
+                )}
                 <label>Fecha del contrato *<input required type="date" value={loanDraft.contractDate} onChange={(event) => setLoanDraft({ ...loanDraft, contractDate: event.target.value })} /></label>
                 <label>Fecha de desembolso *<input required type="date" min={loanDraft.contractDate} value={loanDraft.disbursementDate} onChange={(event) => setLoanDraft({ ...loanDraft, disbursementDate: event.target.value, maturityDate: event.target.value > loanDraft.maturityDate ? "" : loanDraft.maturityDate })} /></label>
                 <label>Vencimiento final *<input required type="date" min={loanDraft.disbursementDate} value={loanDraft.maturityDate} onChange={(event) => setLoanDraft({ ...loanDraft, maturityDate: event.target.value })} /></label>
@@ -1049,7 +1128,7 @@ export function TreasuryDashboard({
                 <label><span>Relación entre empresas</span><span><input type="checkbox" checked={loanDraft.relatedParty} onChange={(event) => setLoanDraft({ ...loanDraft, relatedParty: event.target.checked })} /> Es una parte relacionada</span></label>
               </div>
               <p className="form-note">Hasta 12 meses se presenta inicialmente como préstamo por cobrar corriente; sobre 12 meses, como no corriente. La reclasificación posterior debe revisarse en cada cierre.</p>
-              <div className="form-actions"><button type="button" className="secondary-button" onClick={() => setLoanEditorOpen(false)}>Cancelar</button><button type="submit" className="primary-button" disabled={saving}>{saving ? "Registrando…" : "Registrar préstamo"}</button></div>
+              <div className="form-actions"><button type="button" className="secondary-button" onClick={() => setLoanEditorOpen(false)}>Cancelar</button><button type="submit" className="primary-button" disabled={saving || !activeClpAccounts.length}>{saving ? "Registrando…" : "Registrar préstamo"}</button></div>
             </form>
           </section>
         </div>
