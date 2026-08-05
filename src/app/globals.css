@@ -4137,6 +4137,62 @@ td small {
   min-height: 92px;
   resize: vertical;
 }
+.table-action-stack {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.allocation-split-list {
+  display: grid;
+  gap: 10px;
+  padding: 20px 0;
+}
+.allocation-split-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px auto;
+  align-items: end;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e0e6f0;
+  border-radius: 9px;
+  background: #f9fbfe;
+}
+.allocation-split-row label {
+  display: grid;
+  gap: 6px;
+  color: #526077;
+  font-size: 11px;
+  font-weight: 700;
+}
+.allocation-split-row select,
+.allocation-split-row input {
+  width: 100%;
+  border: 1px solid #d9e1ed;
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: #fff;
+  color: #26334a;
+  font: inherit;
+  font-size: 12px;
+}
+.allocation-split-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.allocation-split-summary strong {
+  font-size: 13px;
+}
+.allocation-split-summary .is-balanced { color: #23825f; }
+.allocation-split-summary .is-unbalanced { color: #b65061; }
+@media (max-width: 720px) {
+  .allocation-split-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+}
 .recovery-link-panel {
   margin-bottom: 18px;
 }

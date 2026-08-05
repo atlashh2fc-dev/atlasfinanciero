@@ -25,6 +25,34 @@ type BankTransaction = {
   reconciliation_status: "pending" | "partially_reconciled" | "reconciled";
 };
 
+type CostCenter = {
+  id: string;
+  code: string;
+  name: string;
+  is_active: boolean;
+};
+
+type AccountCostCenterAllocation = {
+  id: string;
+  bank_account_id: string;
+  cost_center_id: string;
+  allocation_percentage: number | string;
+};
+
+type TransactionCostCenterAllocation = {
+  id: string;
+  bank_transaction_id: string;
+  cost_center_id: string;
+  allocation_percentage: number | string;
+  allocated_amount: number | string;
+  source: "account_default" | "manual";
+};
+
+type CostCenterAllocationDraft = {
+  costCenterId: string;
+  allocationPercentage: string;
+};
+
 type ReconciliationMatch = {
   id: string;
   bank_transaction_id: string;
@@ -172,6 +200,9 @@ type TreasuryPayload = {
   counterparties: Counterparty[];
   companyLoans: CompanyLoan[];
   loanCashEvents: LoanCashEvent[];
+  costCenters: CostCenter[];
+  accountCostCenterAllocations: AccountCostCenterAllocation[];
+  transactionCostCenterAllocations: TransactionCostCenterAllocation[];
 };
 
 const money = new Intl.NumberFormat("es-CL", {
@@ -298,6 +329,10 @@ export function TreasuryDashboard({
   const [executionYear, setExecutionYear] = useState(() => String(new Date().getFullYear()));
   const [loanEditorOpen, setLoanEditorOpen] = useState(false);
   const [loanError, setLoanError] = useState<string | null>(null);
+  const [allocationAccount, setAllocationAccount] = useState<BankAccount | null>(null);
+  const [allocationTransaction, setAllocationTransaction] = useState<BankTransaction | null>(null);
+  const [allocationDraft, setAllocationDraft] = useState<CostCenterAllocationDraft[]>([]);
+  const [allocationError, setAllocationError] = useState<string | null>(null);
   const [repaymentLoan, setRepaymentLoan] = useState<CompanyLoan | null>(null);
   const [loanDraft, setLoanDraft] = useState({
     borrowerCounterpartyId: "",
@@ -595,6 +630,105 @@ export function TreasuryDashboard({
     await loadTreasury();
   }
 
+  function allocationRows(
+    allocations: Array<AccountCostCenterAllocation | TransactionCostCenterAllocation>,
+  ): CostCenterAllocationDraft[] {
+    const rows = allocations.map((allocation) => ({
+      costCenterId: allocation.cost_center_id,
+      allocationPercentage: String(amount(allocation.allocation_percentage)),
+    }));
+    if (rows.length) return rows;
+    const firstCenter = data?.costCenters[0];
+    return firstCenter
+      ? [{ costCenterId: firstCenter.id, allocationPercentage: "100" }]
+      : [];
+  }
+
+  function openAccountAllocations(account: BankAccount) {
+    const allocations = (data?.accountCostCenterAllocations ?? [])
+      .filter((allocation) => allocation.bank_account_id === account.id);
+    setAllocationAccount(account);
+    setAllocationTransaction(null);
+    setAllocationDraft(allocationRows(allocations));
+    setAllocationError(null);
+  }
+
+  function openTransactionAllocations(transaction: BankTransaction) {
+    const transactionAllocations = (data?.transactionCostCenterAllocations ?? [])
+      .filter((allocation) => allocation.bank_transaction_id === transaction.id);
+    const accountAllocations = (data?.accountCostCenterAllocations ?? [])
+      .filter((allocation) => allocation.bank_account_id === transaction.bank_account_id);
+    setAllocationAccount(null);
+    setAllocationTransaction(transaction);
+    setAllocationDraft(allocationRows(
+      transactionAllocations.length ? transactionAllocations : accountAllocations,
+    ));
+    setAllocationError(null);
+  }
+
+  function addAllocationRow() {
+    const used = new Set(allocationDraft.map((allocation) => allocation.costCenterId));
+    const available = data?.costCenters.find((center) => !used.has(center.id));
+    if (!available) return;
+    setAllocationDraft((current) => [
+      ...current,
+      { costCenterId: available.id, allocationPercentage: "" },
+    ]);
+  }
+
+  async function saveCostCenterAllocations(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!organizationId || saving || (!allocationAccount && !allocationTransaction)) return;
+    const normalized = allocationDraft.map((allocation) => ({
+      costCenterId: allocation.costCenterId,
+      allocationPercentage: Number(allocation.allocationPercentage),
+    }));
+    const total = normalized.reduce((sum, allocation) => sum + allocation.allocationPercentage, 0);
+    if (
+      !normalized.length
+      || normalized.some((allocation) =>
+        !allocation.costCenterId
+        || !Number.isFinite(allocation.allocationPercentage)
+        || allocation.allocationPercentage <= 0
+        || allocation.allocationPercentage > 100)
+      || new Set(normalized.map((allocation) => allocation.costCenterId)).size !== normalized.length
+      || Math.abs(total - 100) >= 0.001
+    ) {
+      setAllocationError("Usa centros distintos y porcentajes positivos que sumen exactamente 100%.");
+      return;
+    }
+    setSaving(true);
+    setAllocationError(null);
+    const response = await fetch("/api/treasury", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: allocationAccount
+          ? "save_account_cost_centers"
+          : "save_transaction_cost_centers",
+        organizationId,
+        bankAccountId: allocationAccount?.id,
+        bankTransactionId: allocationTransaction?.id,
+        allocations: normalized,
+      }),
+    });
+    const payload = await response.json().catch(() => null) as { error?: string; detail?: string } | null;
+    setSaving(false);
+    if (!response.ok) {
+      setAllocationError(payload?.detail || "No fue posible guardar la distribución por centro de costo.");
+      return;
+    }
+    const targetIsAccount = Boolean(allocationAccount);
+    setAllocationAccount(null);
+    setAllocationTransaction(null);
+    setMessage(
+      targetIsAccount
+        ? "Distribución guardada. Los movimientos nuevos y los anteriores sin imputación heredarán estos centros de costo."
+        : "Distribución del movimiento actualizada.",
+    );
+    await loadTreasury();
+  }
+
   function openLoanEditor() {
     const today = new Date().toISOString().slice(0, 10);
     const clpAccount = data?.accounts.find(
@@ -771,6 +905,32 @@ export function TreasuryDashboard({
   const activeClpAccounts = (data?.accounts ?? []).filter(
     (account) => account.is_active && account.currency_code.toUpperCase() === "CLP",
   );
+  const costCenterById = new Map((data?.costCenters ?? []).map((center) => [center.id, center]));
+  const cashflowByCostCenter = useMemo(() => {
+    const transactionById = new Map((data?.transactions ?? []).map((transaction) => [transaction.id, transaction]));
+    const totals = new Map<string, { income: number; expense: number; movements: Set<string> }>();
+    for (const allocation of data?.transactionCostCenterAllocations ?? []) {
+      const transaction = transactionById.get(allocation.bank_transaction_id);
+      if (!transaction) continue;
+      const current = totals.get(allocation.cost_center_id) ?? {
+        income: 0,
+        expense: 0,
+        movements: new Set<string>(),
+      };
+      const signedAmount = amount(transaction.amount) * amount(allocation.allocation_percentage) / 100;
+      if (signedAmount >= 0) current.income += signedAmount;
+      else current.expense += Math.abs(signedAmount);
+      current.movements.add(transaction.id);
+      totals.set(allocation.cost_center_id, current);
+    }
+    return [...totals.entries()]
+      .map(([costCenterId, totalsByCenter]) => ({
+        costCenterId,
+        ...totalsByCenter,
+        net: totalsByCenter.income - totalsByCenter.expense,
+      }))
+      .sort((left, right) => Math.abs(right.net) - Math.abs(left.net));
+  }, [data?.transactionCostCenterAllocations, data?.transactions]);
   const loanPortfolio = data?.companyLoans ?? [];
   const outstandingLoanPrincipal = loanPortfolio.reduce(
     (total, loan) => total + amount(loan.principal_outstanding),
@@ -790,6 +950,13 @@ export function TreasuryDashboard({
   const executionsToVerify = (data?.paymentExecutions ?? []).filter(
     (execution) => execution.status !== "reconciled" && execution.executed_on.startsWith(`${executionYear}-`),
   );
+  const allocationDraftTotal = allocationDraft.reduce(
+    (sum, allocation) => sum + amount(allocation.allocationPercentage),
+    0,
+  );
+  const unusedCostCenterCount = (data?.costCenters ?? []).filter(
+    (center) => !allocationDraft.some((allocation) => allocation.costCenterId === center.id),
+  ).length;
 
   return (
     <main className="dashboard">
@@ -925,6 +1092,45 @@ export function TreasuryDashboard({
       <section className="table-section">
         <div className="table-heading">
           <div>
+            <span className="panel-label">LECTURA AUTOMÁTICA · INGRESOS Y EGRESOS</span>
+            <h2>Flujo por centro de costo</h2>
+            <p>Distribución de los últimos movimientos bancarios cargados según la imputación guardada en cada movimiento.</p>
+          </div>
+        </div>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Centro de costo</th>
+                <th className="money-col">Ingresos</th>
+                <th className="money-col">Egresos</th>
+                <th className="money-col">Flujo neto</th>
+                <th className="money-col">Movimientos</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cashflowByCostCenter.length ? cashflowByCostCenter.map((row) => {
+                const center = costCenterById.get(row.costCenterId);
+                return (
+                  <tr key={row.costCenterId}>
+                    <td><strong>{center?.code || "Centro no disponible"}</strong><small>{center?.name || "Revisa la configuración"}</small></td>
+                    <td className="money-col">{money.format(row.income)}</td>
+                    <td className="money-col is-negative">−{money.format(row.expense)}</td>
+                    <td className={`money-col ${row.net < 0 ? "is-negative" : ""}`}>{row.net < 0 ? "−" : ""}{money.format(Math.abs(row.net))}</td>
+                    <td className="money-col">{row.movements.size}</td>
+                  </tr>
+                );
+              }) : (
+                <tr><td colSpan={5}>Configura los centros de costo de una cuenta bancaria para activar esta lectura automática.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="table-section">
+        <div className="table-heading">
+          <div>
             <span className="panel-label">POSICIÓN BANCARIA</span>
             <h2>Saldos por cuenta</h2>
             <p>
@@ -940,25 +1146,36 @@ export function TreasuryDashboard({
                 <th>Cuenta</th>
                 <th>Banco</th>
                 <th>Moneda</th>
+                <th>Centros de costo</th>
                 <th className="money-col">Movimientos</th>
                 <th className="money-col">Posición</th>
+                <th>Acción</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={5}>Cargando posición bancaria…</td></tr>
+                <tr><td colSpan={7}>Cargando posición bancaria…</td></tr>
               ) : accountPositions.length ? (
-                accountPositions.map((account) => (
-                  <tr key={account.id}>
-                    <td><strong>{account.name}</strong><small>{account.account_number_masked || "Sin número informado"}</small></td>
-                    <td>{account.bank_name || "—"}</td>
-                    <td>{account.currency_code}</td>
-                    <td className="money-col">{account.movements}</td>
-                    <td className={`money-col ${account.position < 0 ? "is-negative" : ""}`}>{formatAmount(account.position, account.currency_code)}</td>
-                  </tr>
-                ))
+                accountPositions.map((account) => {
+                  const allocations = (data?.accountCostCenterAllocations ?? [])
+                    .filter((allocation) => allocation.bank_account_id === account.id);
+                  return (
+                    <tr key={account.id}>
+                      <td><strong>{account.name}</strong><small>{account.account_number_masked || "Sin número informado"}</small></td>
+                      <td>{account.bank_name || "—"}</td>
+                      <td>{account.currency_code}</td>
+                      <td>{allocations.length ? allocations.map((allocation) => {
+                        const center = costCenterById.get(allocation.cost_center_id);
+                        return <small key={allocation.id}>{center?.code || "Centro"} · {amount(allocation.allocation_percentage)}%</small>;
+                      }) : <span className="status neutral">Sin configurar</span>}</td>
+                      <td className="money-col">{account.movements}</td>
+                      <td className={`money-col ${account.position < 0 ? "is-negative" : ""}`}>{formatAmount(account.position, account.currency_code)}</td>
+                      <td>{canManage ? <button type="button" className="secondary-button" onClick={() => openAccountAllocations(account)}>Configurar centros</button> : "—"}</td>
+                    </tr>
+                  );
+                })
               ) : (
-                <tr><td colSpan={5}>Aún no hay cuentas bancarias configuradas.</td></tr>
+                <tr><td colSpan={7}>Aún no hay cuentas bancarias configuradas.</td></tr>
               )}
             </tbody>
           </table>
@@ -985,6 +1202,7 @@ export function TreasuryDashboard({
                 <th>Fecha / cuenta</th>
                 <th>Movimiento</th>
                 <th>Referencia</th>
+                <th>Centros de costo</th>
                 <th className="money-col">Monto</th>
                 <th>Estado</th>
                 <th>Acción</th>
@@ -992,25 +1210,31 @@ export function TreasuryDashboard({
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={6}>Cargando movimientos…</td></tr>
+                <tr><td colSpan={7}>Cargando movimientos…</td></tr>
               ) : pendingTransactions.length ? (
                 pendingTransactions.map((transaction) => {
                   const account = accountPositions.find((item) => item.id === transaction.bank_account_id);
                   const remaining = Math.max(0, Math.abs(amount(transaction.amount)) - (matchedByTransaction.get(transaction.id) ?? 0));
                   const currencyCode = account?.currency_code || "CLP";
+                  const allocations = (data?.transactionCostCenterAllocations ?? [])
+                    .filter((allocation) => allocation.bank_transaction_id === transaction.id);
                   return (
                     <tr key={transaction.id}>
                       <td><strong>{displayDate(transaction.booked_on)}</strong><small>{account?.name || "Cuenta no disponible"}</small></td>
-                      <td><strong>{transaction.description}</strong><small>Disponible: {formatAmount(remaining, currencyCode)}</small></td>
+                      <td><strong>{transaction.description}</strong><small>{amount(transaction.amount) < 0 ? "Egreso" : "Ingreso"} · disponible {formatAmount(remaining, currencyCode)}</small></td>
                       <td>{transaction.reference || "—"}</td>
+                      <td>{allocations.length ? allocations.map((allocation) => {
+                        const center = costCenterById.get(allocation.cost_center_id);
+                        return <small key={allocation.id}>{center?.code || "Centro"} · {amount(allocation.allocation_percentage)}%</small>;
+                      }) : <span className="status neutral">Sin imputar</span>}</td>
                       <td className={`money-col ${amount(transaction.amount) < 0 ? "is-negative" : ""}`}>{amount(transaction.amount) < 0 ? "−" : "+"}{formatAmount(Math.abs(amount(transaction.amount)), currencyCode)}</td>
                       <td><span className={reconciliationClass(transaction.reconciliation_status)}>{reconciliationLabel(transaction.reconciliation_status)}</span></td>
-                      <td>{canManage ? <button type="button" className="secondary-button" onClick={() => openReconciliation(transaction)}>Conciliar</button> : "Sin permiso de edición"}</td>
+                      <td>{canManage ? <div className="table-action-stack"><button type="button" className="secondary-button" onClick={() => openTransactionAllocations(transaction)}>Centro de costo</button><button type="button" className="secondary-button" onClick={() => openReconciliation(transaction)}>Conciliar</button></div> : "Sin permiso de edición"}</td>
                     </tr>
                   );
                 })
               ) : (
-                <tr><td colSpan={6}>No hay movimientos pendientes de conciliación.</td></tr>
+                <tr><td colSpan={7}>No hay movimientos pendientes de conciliación.</td></tr>
               )}
             </tbody>
           </table>
@@ -1074,6 +1298,117 @@ export function TreasuryDashboard({
               <div className="form-actions">
                 <button type="button" className="secondary-button" onClick={() => setSelectedTransaction(null)}>Cancelar</button>
                 <button type="submit" className="primary-button" disabled={saving || !selectedDocument || selectedAppliedAmount <= 0 || selectedAppliedAmount > selectedTransactionRemaining || selectedAppliedAmount > selectedDocument.remaining}>{saving ? "Conciliando…" : "Aplicar conciliación"}</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {(allocationAccount || allocationTransaction) && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="entry-modal collection-modal" role="dialog" aria-modal="true" aria-labelledby="cost-center-allocation-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">{allocationAccount ? "CONFIGURACIÓN DE CUENTA" : "IMPUTACIÓN DE MOVIMIENTO"}</span>
+                <h2 id="cost-center-allocation-title">
+                  {allocationAccount ? allocationAccount.name : allocationTransaction?.description}
+                </h2>
+                <p>
+                  {allocationAccount
+                    ? "Distribuye automáticamente los ingresos y egresos de esta cuenta. Los porcentajes deben sumar 100%."
+                    : "Ajusta sólo este movimiento; la configuración predeterminada de la cuenta no cambia."}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="close-button"
+                onClick={() => {
+                  setAllocationAccount(null);
+                  setAllocationTransaction(null);
+                }}
+                aria-label="Cerrar"
+              >
+                ×
+              </button>
+            </div>
+            <form onSubmit={saveCostCenterAllocations}>
+              {allocationError && <p className="form-error">{allocationError}</p>}
+              {data?.costCenters.length ? (
+                <div className="allocation-split-list">
+                  {allocationDraft.map((allocation, index) => (
+                    <div className="allocation-split-row" key={`${allocation.costCenterId}-${index}`}>
+                      <label>
+                        Centro de costo *
+                        <select
+                          required
+                          value={allocation.costCenterId}
+                          onChange={(event) => setAllocationDraft((current) => current.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, costCenterId: event.target.value } : item))}
+                        >
+                          <option value="">Selecciona un centro</option>
+                          {data.costCenters.map((center) => (
+                            <option
+                              key={center.id}
+                              value={center.id}
+                              disabled={allocationDraft.some((item, itemIndex) =>
+                                itemIndex !== index && item.costCenterId === center.id)}
+                            >
+                              {center.code} · {center.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Porcentaje *
+                        <input
+                          required
+                          type="number"
+                          min="0.01"
+                          max="100"
+                          step="0.01"
+                          value={allocation.allocationPercentage}
+                          onChange={(event) => setAllocationDraft((current) => current.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, allocationPercentage: event.target.value } : item))}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={allocationDraft.length === 1}
+                        onClick={() => setAllocationDraft((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                      >
+                        Quitar
+                      </button>
+                    </div>
+                  ))}
+                  <div className="allocation-split-summary">
+                    <button type="button" className="secondary-button" onClick={addAllocationRow} disabled={!unusedCostCenterCount}>Añadir centro</button>
+                    <strong className={Math.abs(allocationDraftTotal - 100) < 0.001 ? "is-balanced" : "is-unbalanced"}>
+                      Total {new Intl.NumberFormat("es-CL", { maximumFractionDigits: 2 }).format(allocationDraftTotal)}%
+                    </strong>
+                  </div>
+                </div>
+              ) : (
+                <p className="form-error">Primero crea al menos un centro de costo en el módulo “Centros de costo”.</p>
+              )}
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setAllocationAccount(null);
+                    setAllocationTransaction(null);
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={saving || !allocationDraft.length || Math.abs(allocationDraftTotal - 100) >= 0.001}
+                >
+                  {saving ? "Guardando…" : "Guardar distribución"}
+                </button>
               </div>
             </form>
           </section>

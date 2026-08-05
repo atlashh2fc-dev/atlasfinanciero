@@ -14,6 +14,7 @@ Aplicación web en Next.js, TypeScript, Tailwind CSS y Recharts para sustituir l
 - La capa de remuneraciones incorpora una integración preparada para PeopleWork: configuración sin secretos en base de datos, ejecuciones auditables y costos agregados por período, categoría y centro de costo. No persiste liquidaciones ni información personal de colaboradores.
 - Cuentas por cobrar incorpora ciclos de facturación recurrente: sólo Finanzas o Administrador pueden confirmar una recurrencia; cada ciclo debe quedar listo a más tardar el día 2, abre alerta preventiva y escala a vencida si permanece pendiente. Un trabajo diario en Supabase mantiene las alertas activas.
 - Tesorería incorpora una cartera separada de préstamos otorgados a empresas. El contrato no se trata como factura ni cuenta por pagar: el desembolso y cada devolución se concilian contra la cartola y generan asientos automáticos que separan capital e intereses.
+- Cada cuenta bancaria puede distribuirse entre uno o más centros de costo con porcentajes que suman 100%. Los movimientos importados heredan esa distribución como una copia histórica para leer ingresos y egresos por centro, con ajuste manual por movimiento.
 - Hay modelos, RLS, bitácora e importaciones para documentos, terceros, forecast y archivos fuente. El primer usuario administrador aún debe ser definido explícitamente antes de habilitar escritura real desde la interfaz.
 
 ## Ejecutar

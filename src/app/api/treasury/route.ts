@@ -17,6 +17,8 @@ type ReconcileRequest = {
   idempotencyKey?: unknown;
   notes?: unknown;
   account?: unknown;
+  bankAccountId?: unknown;
+  allocations?: unknown;
   loanPrincipalAmount?: unknown;
   loanInterestAmount?: unknown;
 };
@@ -46,6 +48,33 @@ function readNotes(value: unknown) {
   const notes = value.trim();
   return notes.length <= 2_000 ? notes || null : null;
 }
+
+function readCostCenterAllocations(value: unknown) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 50) return null;
+  const allocations = value.map((item) => {
+    const record = item && typeof item === "object" ? item as Record<string, unknown> : null;
+    const costCenterId = record?.costCenterId;
+    const allocationPercentage = typeof record?.allocationPercentage === "number"
+      ? record.allocationPercentage
+      : Number(record?.allocationPercentage);
+    if (
+      !isUuid(costCenterId)
+      || !Number.isFinite(allocationPercentage)
+      || allocationPercentage <= 0
+      || allocationPercentage > 100
+    ) return null;
+    return {
+      cost_center_id: costCenterId,
+      allocation_percentage: Math.round(allocationPercentage * 100) / 100,
+    };
+  });
+  if (allocations.some((allocation) => allocation === null)) return null;
+  const valid = allocations as Array<{ cost_center_id: string; allocation_percentage: number }>;
+  if (new Set(valid.map((allocation) => allocation.cost_center_id)).size !== valid.length) return null;
+  const total = valid.reduce((sum, allocation) => sum + allocation.allocation_percentage, 0);
+  return Math.abs(total - 100) < 0.001 ? valid : null;
+}
+
 function text(value: unknown, maxLength: number, required = false) {
   if (typeof value !== "string") return required ? null : null;
   const result = value.trim();
@@ -145,6 +174,9 @@ export async function GET(request: NextRequest) {
     counterpartiesResult,
     loansResult,
     loanEventsResult,
+    costCentersResult,
+    accountCostCentersResult,
+    transactionCostCentersResult,
   ] =
     await Promise.all([
       context.supabase
@@ -218,6 +250,23 @@ export async function GET(request: NextRequest) {
         .neq("status", "cancelled")
         .order("scheduled_on", { ascending: false })
         .limit(1_000),
+      context.supabase
+        .from("cost_centers")
+        .select("id, code, name, is_active")
+        .eq("organization_id", organizationId)
+        .eq("is_active", true)
+        .order("code"),
+      context.supabase
+        .from("bank_account_cost_center_allocations")
+        .select("id, bank_account_id, cost_center_id, allocation_percentage")
+        .eq("organization_id", organizationId)
+        .order("allocation_percentage", { ascending: false }),
+      context.supabase
+        .from("bank_transaction_cost_center_allocations")
+        .select("id, bank_transaction_id, cost_center_id, allocation_percentage, allocated_amount, source")
+        .eq("organization_id", organizationId)
+        .order("created_at", { ascending: false })
+        .limit(5_000),
     ]);
 
   if (
@@ -231,7 +280,10 @@ export async function GET(request: NextRequest) {
     executionsResult.error ||
     counterpartiesResult.error ||
     loansResult.error ||
-    loanEventsResult.error
+    loanEventsResult.error ||
+    costCentersResult.error ||
+    accountCostCentersResult.error ||
+    transactionCostCentersResult.error
   )
     return NextResponse.json({ error: "unable_to_load_treasury" }, { status: 500 });
 
@@ -263,6 +315,9 @@ export async function GET(request: NextRequest) {
     counterparties: counterpartiesResult.data ?? [],
     companyLoans: loansResult.data ?? [],
     loanCashEvents: loanEventsResult.data ?? [],
+    costCenters: costCentersResult.data ?? [],
+    accountCostCenterAllocations: accountCostCentersResult.data ?? [],
+    transactionCostCenterAllocations: transactionCostCentersResult.data ?? [],
   });
 }
 
@@ -420,6 +475,36 @@ export async function POST(request: NextRequest) {
     if (error || !saved)
       return NextResponse.json({ error: "unable_to_save_bank_account" }, { status: 409 });
     return NextResponse.json({ account: saved });
+  }
+
+  if (body?.action === "save_account_cost_centers") {
+    const bankAccountId = body.bankAccountId;
+    const allocations = readCostCenterAllocations(body.allocations);
+    if (!isUuid(bankAccountId) || !allocations)
+      return NextResponse.json({ error: "invalid_cost_center_allocations" }, { status: 400 });
+    const { data, error } = await context.supabase.rpc("set_bank_account_cost_center_allocations", {
+      p_organization_id: organizationId,
+      p_bank_account_id: bankAccountId,
+      p_allocations: allocations,
+    });
+    if (error)
+      return NextResponse.json({ error: "unable_to_save_cost_center_allocations", detail: error.message }, { status: 409 });
+    return NextResponse.json({ allocations: data });
+  }
+
+  if (body?.action === "save_transaction_cost_centers") {
+    const bankTransactionId = body.bankTransactionId;
+    const allocations = readCostCenterAllocations(body.allocations);
+    if (!isUuid(bankTransactionId) || !allocations)
+      return NextResponse.json({ error: "invalid_cost_center_allocations" }, { status: 400 });
+    const { data, error } = await context.supabase.rpc("set_bank_transaction_cost_center_allocations", {
+      p_organization_id: organizationId,
+      p_bank_transaction_id: bankTransactionId,
+      p_allocations: allocations,
+    });
+    if (error)
+      return NextResponse.json({ error: "unable_to_save_cost_center_allocations", detail: error.message }, { status: 409 });
+    return NextResponse.json({ allocations: data });
   }
 
   const bankTransactionId = body?.bankTransactionId;
