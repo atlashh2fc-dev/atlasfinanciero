@@ -6,6 +6,7 @@ import {
   summarizePaymentWeeks,
   upcomingFridays,
 } from "@/lib/payment-schedule";
+import { CostCenterPicker } from "@/components/cost-center-picker";
 
 type PurchaseRequest = {
   id: string;
@@ -963,6 +964,10 @@ export function ProcureToPayWorkbench({
   }
   async function createRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!request.costCenterId) {
+      setMessage("Selecciona un centro de costo para crear la solicitud.");
+      return;
+    }
     if (await post({ action: "create_purchase_request", ...request })) {
       setRequest({
         requestNumber: "",
@@ -1072,6 +1077,10 @@ export function ProcureToPayWorkbench({
   async function createDirectPayable(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!organizationId) return;
+    if (!directPayable.costCenterId) {
+      setMessage("Selecciona un centro de costo para crear la cuenta por pagar.");
+      return;
+    }
     setSaving(true);
     const response = await fetch("/api/procure-to-pay", {
       method: "POST",
@@ -1168,6 +1177,10 @@ export function ProcureToPayWorkbench({
   }
   async function createFinancingPlan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!financing.costCenterId) {
+      setMessage("Selecciona un centro de costo para crear el financiamiento.");
+      return;
+    }
     if (await post({ action: "create_asset_financing_plan", ...financing })) {
       setFinancing({
         planKind: "asset_financing",
@@ -2112,26 +2125,14 @@ export function ProcureToPayWorkbench({
                 }
               />
             </label>
-            <label>
-              Centro de costo *
-              <select
-                required
-                value={request.costCenterId}
-                onChange={(event) =>
-                  setRequest((current) => ({
-                    ...current,
-                    costCenterId: event.target.value,
-                  }))
-                }
-              >
-                <option value="">Selecciona un centro</option>
-                {data?.costCenters.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.code} · {item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <CostCenterPicker
+              required
+              centers={data?.costCenters ?? []}
+              value={request.costCenterId}
+              onChange={(costCenterId) =>
+                setRequest((current) => ({ ...current, costCenterId }))
+              }
+            />
             <label>
               Proveedor
               <select
@@ -2251,26 +2252,14 @@ export function ProcureToPayWorkbench({
             className="admin-form p2p-compact-form"
             onSubmit={createDirectPayable}
           >
-            <label>
-              Centro de costo *
-              <select
-                required
-                value={directPayable.costCenterId}
-                onChange={(event) =>
-                  setDirectPayable((current) => ({
-                    ...current,
-                    costCenterId: event.target.value,
-                  }))
-                }
-              >
-                <option value="">Selecciona un centro</option>
-                {data?.costCenters.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.code} · {item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <CostCenterPicker
+              required
+              centers={data?.costCenters ?? []}
+              value={directPayable.costCenterId}
+              onChange={(costCenterId) =>
+                setDirectPayable((current) => ({ ...current, costCenterId }))
+              }
+            />
             <label>
               Proveedor
               <select
@@ -2526,26 +2515,14 @@ export function ProcureToPayWorkbench({
                 placeholder="Ej. CRED-2026-01"
               />
             </label>
-            <label>
-              Centro de costo *
-              <select
-                required
-                value={financing.costCenterId}
-                onChange={(event) =>
-                  setFinancing((current) => ({
-                    ...current,
-                    costCenterId: event.target.value,
-                  }))
-                }
-              >
-                <option value="">Selecciona un centro</option>
-                {data?.costCenters.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.code} · {item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <CostCenterPicker
+              required
+              centers={data?.costCenters ?? []}
+              value={financing.costCenterId}
+              onChange={(costCenterId) =>
+                setFinancing((current) => ({ ...current, costCenterId }))
+              }
+            />
             <label>
               {financing.planKind === "credit" ? "Acreedor" : "Proveedor"}
               <select
