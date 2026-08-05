@@ -2621,7 +2621,44 @@ td small {
 .p2p-inline-action { display:flex; align-items:center; gap:8px; margin-top:12px; }
 .p2p-inline-action select { min-width:0; min-height:38px; flex:1; border:1px solid #d8e0ec; border-radius:8px; padding:0 10px; color:#40506b; background:#fff; }
 .p2p-detail-items { min-width:620px; margin-top:12px; }
+.p2p-weekly-schedule { margin-bottom:16px; padding:16px; border:1px solid #dce5f2; border-radius:12px; background:linear-gradient(135deg,#f9fbff,#f2f6ff); }
+.p2p-weekly-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:14px; }
+.p2p-weekly-heading h3,.p2p-payment-alerts h3 { margin:4px 0; color:#30405c; font-size:16px; }
+.p2p-weekly-heading p { margin:0; color:#718099; font-size:11px; }
+.p2p-weekly-heading > strong { color:#4054c5; font-size:20px; white-space:nowrap; }
+.p2p-week-grid { display:grid; grid-template-columns:repeat(3,minmax(210px,1fr)); gap:10px; overflow-x:auto; padding-bottom:3px; }
+.p2p-week-card { display:grid; gap:7px; min-width:210px; padding:13px; border:1px solid #dce4f0; border-radius:10px; background:#ffffffd9; box-shadow:0 5px 16px #3143650a; }
+.p2p-week-card.is-unscheduled { border-style:dashed; background:#fffaf0; }
+.p2p-week-card > span { color:#718097; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }
+.p2p-week-card > strong { color:#2f3e58; font-size:18px; }
+.p2p-week-card > small { color:#8390a3; font-size:10px; }
+.p2p-week-card dl { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:5px; margin:0; }
+.p2p-week-card dl div { min-width:0; }
+.p2p-week-card dt { color:#95a0b1; font-size:8px; font-weight:800; text-transform:uppercase; }
+.p2p-week-card dd { margin:3px 0 0; color:#5b6980; font-size:9px; font-weight:800; overflow-wrap:anywhere; }
+.p2p-week-card .text-button { justify-self:start; padding:0; font-size:10px; }
+.p2p-week-load { height:6px; overflow:hidden; border-radius:99px; background:#e9edf5; }
+.p2p-week-load i { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,#6c7be6,#40ad82); transition:width .2s ease; }
+.p2p-payment-alerts { display:flex; align-items:flex-start; gap:16px; margin-bottom:16px; padding:14px; border:1px solid #eadfbf; border-radius:11px; background:#fffaf0; }
+.p2p-payment-alerts > div:first-child { min-width:210px; }
+.p2p-payment-alert-list { display:grid; grid-template-columns:repeat(3,minmax(170px,1fr)); gap:8px; flex:1; }
+.p2p-payment-alert-list article { padding:10px; border:1px solid #eadfbf; border-radius:9px; background:#fff; }
+.p2p-payment-alert-list article.is-execution_required { border-color:#efc4b9; background:#fff7f5; }
+.p2p-payment-alert-list article.is-approval_required { border-color:#ddd4ad; background:#fffdf5; }
+.p2p-payment-alert-list span { display:block; color:#9a7427; font-size:8px; font-weight:900; letter-spacing:.04em; }
+.p2p-payment-alert-list strong { display:block; margin-top:5px; color:#3d4b62; font-size:14px; }
+.p2p-payment-alert-list p { margin:3px 0 0; color:#7e899a; font-size:9px; }
+.p2p-reschedule-box { display:grid; grid-template-columns:1.2fr 1fr 1.5fr auto; align-items:end; gap:9px; margin-top:12px; padding:12px; border:1px solid #dbe3f1; border-radius:10px; background:#f6f8fd; }
+.p2p-reschedule-box > div { align-self:center; }
+.p2p-reschedule-box > div strong,.p2p-reschedule-box > div small { display:block; }
+.p2p-reschedule-box > div small { margin-top:3px; color:#818da1; font-size:9px; }
+.p2p-reschedule-box label { display:grid; gap:4px; color:#77849a; font-size:9px; font-weight:800; text-transform:uppercase; }
+.p2p-reschedule-box input,.p2p-reschedule-box select { min-width:0; height:36px; border:1px solid #d5deeb; border-radius:7px; padding:0 8px; background:#fff; color:#40506a; font-size:10px; }
+.p2p-reschedule-history { margin-top:10px; padding:11px; border-left:3px solid #7d8ce4; background:#f7f8ff; }
+.p2p-reschedule-history > strong { color:#48566d; font-size:11px; }
+.p2p-reschedule-history p { margin:5px 0 0; color:#77849a; font-size:9px; }
 @media (max-width: 900px) { .p2p-navigation { align-items:stretch; flex-direction:column; } .p2p-global-filters { justify-content:flex-start; } .p2p-detail-grid { grid-template-columns:1fr; } .p2p-selection-bar { align-items:stretch; flex-direction:column; } .p2p-payment-batch-form { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width: 900px) { .p2p-week-grid { grid-template-columns:repeat(2,minmax(210px,1fr)); } .p2p-payment-alerts { flex-direction:column; } .p2p-payment-alert-list { width:100%; grid-template-columns:1fr; } .p2p-reschedule-box { grid-template-columns:1fr; align-items:stretch; } }
 .p2p-link-state { color: #4a9b73 !important; font-weight: 700; }
 .p2p-link-control {
   display: grid;

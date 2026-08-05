@@ -12,7 +12,8 @@ export async function GET(request: NextRequest) {
   const context = await requireOrganizationExpenseReadAccess(organizationId);
   if (context.error || !context.supabase) return NextResponse.json({ error: context.error }, { status: context.status });
   const from = `${year}-01-01`; const to = `${year}-12-31`; const today = new Date().toISOString().slice(0, 10);
-  const [issued, received, direct, directPayments, approvals, executions, billingAlerts] = await Promise.all([
+  await context.supabase.rpc("refresh_payment_schedule_alerts", { p_organization_id: organizationId });
+  const [issued, received, direct, directPayments, approvals, executions, billingAlerts, paymentScheduleAlerts] = await Promise.all([
     context.supabase.from("issued_document_receivable_balances").select("issued_document_id, document_number, client_name, issue_date, due_date, outstanding_amount, collection_status, cost_center_id").eq("organization_id", organizationId).gte("issue_date", from).lte("issue_date", to).limit(1000),
     context.supabase.from("received_documents").select("id, document_number, supplier_name, issue_date, due_date, total_amount, payment_status, cost_center_id").eq("organization_id", organizationId).gte("issue_date", from).lte("issue_date", to).limit(1000),
     context.supabase.from("direct_payables").select("id, payable_number, supplier_name, issue_date, due_date, total_amount, status, cost_center_id").eq("organization_id", organizationId).gte("issue_date", from).lte("issue_date", to).limit(1000),
@@ -20,8 +21,9 @@ export async function GET(request: NextRequest) {
     context.supabase.from("approval_requests").select("id, title, target_type, amount, currency_code, submitted_at").eq("organization_id", organizationId).eq("status", "submitted").order("submitted_at", { ascending: false }).limit(50),
     context.supabase.from("payment_executions").select("id, direction, amount, executed_on, payment_reference").eq("organization_id", organizationId).neq("status", "reconciled").gte("executed_on", from).lte("executed_on", to).order("executed_on", { ascending: false }).limit(500),
     context.supabase.from("billing_alerts").select("id, alert_type, last_detected_at").eq("organization_id", organizationId).eq("status", "open").order("last_detected_at", { ascending: false }).limit(50),
+    context.supabase.from("payment_schedule_alerts").select("id, scheduled_for, alert_type, item_count, total_amount, status_counts, last_detected_at").eq("organization_id", organizationId).eq("status", "open").order("scheduled_for").limit(50),
   ]);
-  if ([issued, received, direct, directPayments, approvals, executions, billingAlerts].some((result) => result.error)) return NextResponse.json({ error: "unable_to_load_management_center" }, { status: 500 });
+  if ([issued, received, direct, directPayments, approvals, executions, billingAlerts, paymentScheduleAlerts].some((result) => result.error)) return NextResponse.json({ error: "unable_to_load_management_center" }, { status: 500 });
   const paidByDirectPayable = new Map<string, number>();
   (directPayments.data ?? []).forEach((payment) => {
     if (!payment.direct_payable_id) return;
@@ -48,6 +50,7 @@ export async function GET(request: NextRequest) {
       approvals: approvals.data ?? [],
       executions: executions.data ?? [],
       billingAlerts: billingAlerts.data ?? [],
+      paymentScheduleAlerts: paymentScheduleAlerts.data ?? [],
       missingCostCenter: [...issuedRows, ...receivedRows, ...directRows].filter((item) => !item.cost_center_id).length,
     },
   });

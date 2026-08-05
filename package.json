@@ -10,6 +10,7 @@
     "test:receivables": "node --experimental-strip-types --test tests/clp.test.ts",
     "test:peoplework": "node --experimental-strip-types --test tests/peoplework-sync.test.ts",
     "test:quotation": "node --experimental-strip-types --test tests/quotation.test.ts",
+    "test:payment-schedule": "node --experimental-strip-types --test tests/payment-schedule.test.ts",
     "verify:crm": "node scripts/verify-crm-workspace.mjs",
     "verify:contrast": "node scripts/verify-evolution-total-contrast.mjs",
     "verify:public-market": "node scripts/verify-public-market-intelligence.mjs"

@@ -75,6 +75,10 @@ function date(value: unknown) {
     ? value
     : null;
 }
+function isFriday(value: string) {
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.getUTCDay() === 5;
+}
 function month(value: unknown) {
   const parsed = date(value);
   return parsed?.slice(8) === "01" ? parsed : null;
@@ -319,6 +323,11 @@ export async function GET(request: NextRequest) {
       { status: context.status },
     );
 
+  if (["administrator", "finance", "auditor"].includes(context.membership?.role ?? ""))
+    await context.supabase.rpc("refresh_payment_schedule_alerts", {
+      p_organization_id: organizationId,
+    });
+
   const [
     requests,
     orders,
@@ -334,6 +343,8 @@ export async function GET(request: NextRequest) {
     suppliers,
     bankAccounts,
     costCenters,
+    paymentScheduleAlerts,
+    paymentRescheduleEvents,
   ] = await Promise.all([
     context.supabase
       .from("purchase_requests")
@@ -436,6 +447,22 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId)
       .eq("is_active", true)
       .order("code"),
+    context.supabase
+      .from("payment_schedule_alerts")
+      .select(
+        "id, scheduled_for, alert_type, status, item_count, total_amount, status_counts, first_detected_at, last_detected_at",
+      )
+      .eq("organization_id", organizationId)
+      .eq("status", "open")
+      .order("scheduled_for"),
+    context.supabase
+      .from("payment_reschedule_events")
+      .select(
+        "id, payment_batch_item_id, received_document_id, direct_payable_id, from_payment_batch_id, to_payment_batch_id, from_scheduled_for, to_scheduled_for, amount, reason, moved_at",
+      )
+      .eq("organization_id", organizationId)
+      .order("moved_at", { ascending: false })
+      .limit(200),
   ]);
   if (
     [
@@ -453,6 +480,8 @@ export async function GET(request: NextRequest) {
       suppliers,
       bankAccounts,
       costCenters,
+      paymentScheduleAlerts,
+      paymentRescheduleEvents,
     ].some((result) => result.error)
   )
     return NextResponse.json(
@@ -699,6 +728,8 @@ export async function GET(request: NextRequest) {
     suppliers: suppliers.data ?? [],
     bankAccounts: bankAccounts.data ?? [],
     costCenters: costCenters.data ?? [],
+    paymentScheduleAlerts: paymentScheduleAlerts.data ?? [],
+    paymentRescheduleEvents: paymentRescheduleEvents.data ?? [],
   });
 }
 
@@ -1498,6 +1529,7 @@ export async function POST(request: NextRequest) {
     const directPayableAmounts = paymentAmounts(body?.directPayableAmounts);
     if (
       !scheduledFor ||
+      !isFriday(scheduledFor) ||
       !itemCategories ||
       !documentIds ||
       !directPayableIds ||
@@ -1857,7 +1889,12 @@ export async function PATCH(request: NextRequest) {
   const organizationId = body?.organizationId;
   const id = body?.id;
   const action = paymentWorkflowAction(body?.action);
-  if (!isUuid(organizationId) || !isUuid(id) || typeof action !== "string")
+  const requiresId = action !== "reschedule_payment_items";
+  if (
+    !isUuid(organizationId) ||
+    typeof action !== "string" ||
+    (requiresId && !isUuid(id))
+  )
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   const financeOnly = [
     "submit_payment_batch",
@@ -1866,6 +1903,7 @@ export async function PATCH(request: NextRequest) {
     "submit_direct_payable",
     "set_direct_payable_beneficiary",
     "submit_asset_financing_plan",
+    "reschedule_payment_items",
   ].includes(action);
   const context = financeOnly
     ? await requireOrganizationFinanceAccess(organizationId)
@@ -1875,6 +1913,44 @@ export async function PATCH(request: NextRequest) {
       { error: context.error },
       { status: context.status },
     );
+  if (action === "reschedule_payment_items") {
+    const itemIds = Array.isArray(body?.itemIds) ? body.itemIds : null;
+    const scheduledFor = date(body?.scheduledFor);
+    const reason = text(body?.reason, 500, true);
+    if (
+      !itemIds ||
+      !itemIds.length ||
+      itemIds.length > 250 ||
+      !itemIds.every(isUuid) ||
+      !scheduledFor ||
+      !isFriday(scheduledFor) ||
+      !reason
+    )
+      return NextResponse.json(
+        { error: "invalid_payment_reschedule" },
+        { status: 400 },
+      );
+    const { data, error } = await context.supabase.rpc(
+      "move_payment_batch_items",
+      {
+        p_organization_id: organizationId,
+        p_item_ids: itemIds,
+        p_scheduled_for: scheduledFor,
+        p_reason: reason,
+      },
+    );
+    if (error)
+      return NextResponse.json(
+        { error: "unable_to_reschedule_payment_items", detail: error.message },
+        { status: 409 },
+      );
+    await context.supabase.rpc("refresh_payment_schedule_alerts", {
+      p_organization_id: organizationId,
+    });
+    return NextResponse.json({ result: data });
+  }
+  if (!isUuid(id))
+    return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   if (action === "set_direct_payable_beneficiary") {
     const beneficiaryName = text(body?.beneficiaryName, 300, true);
     if (!beneficiaryName)

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 type Module = "Cuentas por cobrar" | "Cuentas por pagar" | "Aprobaciones" | "Tesorería" | "Recurrentes" | "Imputaciones pendientes";
 type Item = { id: string; document_number?: string | null; payable_number?: string; client_name?: string | null; supplier_name?: string; due_date?: string | null; total_amount?: number | string; };
-type Payload = { year: string; controls: { overdueReceivables: Item[]; overdueReceivableCount: number; overduePayables: Item[]; overduePayableCount: number; approvals: Array<{ id: string; title: string; target_type: string; amount: number | string; currency_code: string; submitted_at: string }>; executions: Array<{ id: string; direction: string; amount: number | string; executed_on: string; payment_reference: string | null }>; billingAlerts: Array<{ id: string; alert_type: string; last_detected_at: string }>; missingCostCenter: number; } };
+type Payload = { year: string; controls: { overdueReceivables: Item[]; overdueReceivableCount: number; overduePayables: Item[]; overduePayableCount: number; approvals: Array<{ id: string; title: string; target_type: string; amount: number | string; currency_code: string; submitted_at: string }>; executions: Array<{ id: string; direction: string; amount: number | string; executed_on: string; payment_reference: string | null }>; billingAlerts: Array<{ id: string; alert_type: string; last_detected_at: string }>; paymentScheduleAlerts: Array<{ id: string; scheduled_for: string; alert_type: string; item_count: number; total_amount: number | string; last_detected_at: string }>; missingCostCenter: number; } };
 const money = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 const date = (value: string | null | undefined) => value ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium" }).format(new Date(`${value}T00:00:00`)) : "—";
 
@@ -18,6 +18,7 @@ export function ManagementCenter({ organizationId, onNavigate }: { organizationI
     { label: "Pagos vencidos", value: controls.overduePayableCount, detail: "Obligaciones aprobadas o recibidas", module: "Cuentas por pagar", tone: "danger" },
     { label: "Aprobaciones", value: controls.approvals.length, detail: "Decisiones pendientes", module: "Aprobaciones" },
     { label: "Ejecutado sin cartola", value: controls.executions.length, detail: "Control bancario pendiente", module: "Tesorería" },
+    { label: "Próximos pagos", value: controls.paymentScheduleAlerts.length, detail: controls.paymentScheduleAlerts.length ? `${money.format(controls.paymentScheduleAlerts.reduce((sum, alert) => sum + Number(alert.total_amount ?? 0), 0))} en semanas activas` : "Sin alertas semanales", module: "Cuentas por pagar" },
     { label: "Imputaciones pendientes", value: controls.missingCostCenter, detail: "Registros sin centro de costo", module: "Imputaciones pendientes" },
     { label: "Alertas de facturación", value: controls.billingAlerts.length, detail: "Ciclos recurrentes abiertos", module: "Recurrentes" },
   ] : [];

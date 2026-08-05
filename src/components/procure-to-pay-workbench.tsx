@@ -1,6 +1,11 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  nextFriday,
+  summarizePaymentWeeks,
+  upcomingFridays,
+} from "@/lib/payment-schedule";
 
 type PurchaseRequest = {
   id: string;
@@ -168,6 +173,27 @@ type Account = {
   account_number_masked: string | null;
 };
 type CostCenter = { id: string; code: string; name: string };
+type PaymentScheduleAlert = {
+  id: string;
+  scheduled_for: string;
+  alert_type: "upcoming_week" | "approval_required" | "execution_required";
+  status: string;
+  item_count: number;
+  total_amount: number | string;
+  status_counts: Record<string, number>;
+  last_detected_at: string;
+};
+type PaymentRescheduleEvent = {
+  id: string;
+  payment_batch_item_id: string | null;
+  from_payment_batch_id: string | null;
+  to_payment_batch_id: string | null;
+  from_scheduled_for: string;
+  to_scheduled_for: string;
+  amount: number | string;
+  reason: string;
+  moved_at: string;
+};
 type Payload = {
   purchaseRequests: PurchaseRequest[];
   purchaseOrders: PurchaseOrder[];
@@ -182,6 +208,8 @@ type Payload = {
   suppliers: Supplier[];
   bankAccounts: Account[];
   costCenters: CostCenter[];
+  paymentScheduleAlerts: PaymentScheduleAlert[];
+  paymentRescheduleEvents: PaymentRescheduleEvent[];
 };
 const money = new Intl.NumberFormat("es-CL", {
   style: "currency",
@@ -401,7 +429,7 @@ export function ProcureToPayWorkbench({
   });
   const [batch, setBatch] = useState({
     bankAccountId: "",
-    scheduledFor: today(),
+    scheduledFor: nextFriday(today()),
     notes: "",
     documentIds: [] as string[],
     directPayableIds: [] as string[],
@@ -410,6 +438,11 @@ export function ProcureToPayWorkbench({
   const [cashFlowCategories, setCashFlowCategories] = useState<
     Record<string, "operating" | "investing" | "financing">
   >({});
+  const [reschedule, setReschedule] = useState({
+    itemIds: [] as string[],
+    scheduledFor: nextFriday(today(), false),
+    reason: "Reprogramación de flujo semanal",
+  });
   const [paymentConfirmation, setPaymentConfirmation] = useState<{
     batch: PaymentBatch;
     paidOn: string;
@@ -455,6 +488,15 @@ export function ProcureToPayWorkbench({
         ? ((detail.item as DirectPayable).beneficiary_name ?? "")
         : "",
     );
+  }, [detail]);
+  useEffect(() => {
+    if (detail?.kind !== "batch") return;
+    const scheduledFor = (detail.item as PaymentBatch).scheduled_for;
+    setReschedule({
+      itemIds: [],
+      scheduledFor: nextFriday(scheduledFor, false),
+      reason: "Reprogramación de flujo semanal",
+    });
   }, [detail]);
   useEffect(() => {
     function closeModal(event: KeyboardEvent) {
@@ -689,6 +731,36 @@ export function ProcureToPayWorkbench({
     }
     return suppliers;
   }, [data?.paymentBatchItems]);
+  const paymentWeekDates = useMemo(() => upcomingFridays(8, today()), []);
+  const paymentWeeks = useMemo(
+    () =>
+      summarizePaymentWeeks(
+        data?.paymentBatches ?? [],
+        data?.paymentBatchItems ?? [],
+        paymentWeekDates,
+      ),
+    [data?.paymentBatches, data?.paymentBatchItems, paymentWeekDates],
+  );
+  const openPaymentAlerts = useMemo(
+    () => data?.paymentScheduleAlerts ?? [],
+    [data?.paymentScheduleAlerts],
+  );
+  const maxWeeklyAmount = Math.max(
+    1,
+    ...paymentWeeks.map((week) => week.totalAmount),
+  );
+  const unscheduledTotal = useMemo(
+    () =>
+      paymentEligibleDocuments.reduce(
+        (sum, document) => sum + amount(document.total_amount),
+        0,
+      ) +
+      paymentEligibleDirectPayables.reduce(
+        (sum, payable) => sum + payableOutstandingAmount(payable),
+        0,
+      ),
+    [paymentEligibleDocuments, paymentEligibleDirectPayables],
+  );
   const visibleFinancing = useMemo(
     () =>
       (data?.financingPlans ?? []).filter(
@@ -1143,24 +1215,8 @@ export function ProcureToPayWorkbench({
     {
       const proposalNumber = result.payload?.proposal?.proposalNumber;
       const proposalId = result.payload?.proposal?.id;
-      let sentForApproval = false;
       let createdBatch: PaymentBatch | undefined;
       if (proposalId && organizationId) {
-        setSaving(true);
-        try {
-          const response = await fetch("/api/procure-to-pay", {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              organizationId,
-              id: proposalId,
-              action: "submit_payment_batch",
-            }),
-          });
-          sentForApproval = response.ok;
-        } finally {
-          setSaving(false);
-        }
         const next = await load();
         createdBatch = next?.paymentBatches.find(
           (item) => item.id === proposalId,
@@ -1168,7 +1224,7 @@ export function ProcureToPayWorkbench({
       }
       setBatch({
         bankAccountId: "",
-        scheduledFor: today(),
+        scheduledFor: nextFriday(today()),
         notes: "",
         documentIds: [],
         directPayableIds: [],
@@ -1182,13 +1238,9 @@ export function ProcureToPayWorkbench({
       setStateFilter("all");
       if (createdBatch) setDetail({ kind: "batch", item: createdBatch });
       setMessage(
-        sentForApproval
-          ? proposalNumber
-            ? `Propuesta ${proposalNumber} creada y enviada a aprobación. Cuando quede autorizada, carga el comprobante desde esta misma bandeja.`
-            : "Propuesta creada y enviada a aprobación. Cuando quede autorizada, carga el comprobante desde esta misma bandeja."
-          : proposalNumber
-            ? `Propuesta ${proposalNumber} creada como borrador. No fue posible enviarla a aprobación automáticamente; ábrela para reintentar.`
-            : "Propuesta creada como borrador. No fue posible enviarla a aprobación automáticamente; ábrela para reintentar.",
+        proposalNumber
+          ? `Propuesta ${proposalNumber} guardada para el viernes ${displayDate(batch.scheduledFor)}. Puedes mover sus pagos mientras siga en planificación.`
+          : `Semana de pago guardada para el viernes ${displayDate(batch.scheduledFor)} como planificación editable.`,
       );
     }
   }
@@ -1240,6 +1292,53 @@ export function ProcureToPayWorkbench({
           ?.scrollIntoView({ behavior: "smooth", block: "start" }),
       0,
     );
+  }
+  function toggleRescheduleItem(id: string) {
+    setReschedule((current) => ({
+      ...current,
+      itemIds: current.itemIds.includes(id)
+        ? current.itemIds.filter((item) => item !== id)
+        : [...current.itemIds, id],
+    }));
+  }
+  async function rescheduleSelectedPayments() {
+    if (!organizationId || !reschedule.itemIds.length) return;
+    setSaving(true);
+    try {
+      const response = await fetch("/api/procure-to-pay", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationId,
+          action: "reschedule_payment_items",
+          itemIds: reschedule.itemIds,
+          scheduledFor: reschedule.scheduledFor,
+          reason: reschedule.reason,
+        }),
+      });
+      if (!response.ok) {
+        setMessage(
+          "No fue posible mover los pagos. Solo se pueden reprogramar semanas que todavía están en planificación.",
+        );
+        return;
+      }
+      const moved = reschedule.itemIds.length;
+      const target = reschedule.scheduledFor;
+      setDetail(null);
+      setReschedule({
+        itemIds: [],
+        scheduledFor: nextFriday(target, false),
+        reason: "Reprogramación de flujo semanal",
+      });
+      await load();
+      setMessage(
+        `${moved} pago(s) movido(s) al viernes ${displayDate(target)}. Los totales semanales fueron actualizados.`,
+      );
+    } catch {
+      setMessage("No fue posible reprogramar por un problema de conexión.");
+    } finally {
+      setSaving(false);
+    }
   }
   function beginOrder(requestId: string) {
     setOrderDraft({
@@ -1752,7 +1851,80 @@ export function ProcureToPayWorkbench({
             </>
           )}
           {tab === "proposals" && (
-            <div className="table-scroll">
+            <>
+              <section className="p2p-weekly-schedule" aria-label="Carga semanal de pagos">
+                <div className="p2p-weekly-heading">
+                  <div>
+                    <span className="panel-label">AGENDA DE TESORERÍA</span>
+                    <h3>Carga de pagos por viernes</h3>
+                    <p>Los borradores se pueden mover. Al cerrar una semana, envíala a aprobación desde su expediente.</p>
+                  </div>
+                  <strong>{money.format(paymentWeeks.reduce((sum, week) => sum + week.totalAmount, 0))}</strong>
+                </div>
+                <div className="p2p-week-grid">
+                  <article className="p2p-week-card is-unscheduled">
+                    <span>Sin programar</span>
+                    <strong>{money.format(unscheduledTotal)}</strong>
+                    <small>{paymentEligibleDocuments.length + paymentEligibleDirectPayables.length} deuda(s) elegible(s)</small>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => setTab("payables")}
+                    >
+                      Seleccionar deudas
+                    </button>
+                  </article>
+                  {paymentWeeks.map((week) => (
+                    <article className="p2p-week-card" key={week.scheduledFor}>
+                      <span>Viernes {displayDate(week.scheduledFor)}</span>
+                      <strong>{money.format(week.totalAmount)}</strong>
+                      <small>{week.itemCount} pago(s) seleccionado(s)</small>
+                      <div className="p2p-week-load" aria-label="Carga relativa de la semana">
+                        <i style={{ width: `${Math.max(week.totalAmount ? 5 : 0, (week.totalAmount / maxWeeklyAmount) * 100)}%` }} />
+                      </div>
+                      <dl>
+                        <div><dt>Planificación</dt><dd>{money.format(week.draftAmount)}</dd></div>
+                        <div><dt>Por aprobar</dt><dd>{money.format(week.reviewAmount)}</dd></div>
+                        <div><dt>Autorizado</dt><dd>{money.format(week.approvedAmount + week.processingAmount)}</dd></div>
+                      </dl>
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => {
+                          setBatch((current) => ({ ...current, scheduledFor: week.scheduledFor }));
+                          setTab("payables");
+                        }}
+                      >
+                        Agregar pagos
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              </section>
+              {openPaymentAlerts.length > 0 && (
+                <section className="p2p-payment-alerts" aria-label="Notificaciones de pagos próximos">
+                  <div>
+                    <span className="panel-label">NOTIFICACIONES</span>
+                    <h3>Próximos pagos que requieren atención</h3>
+                  </div>
+                  <div className="p2p-payment-alert-list">
+                    {openPaymentAlerts.map((alert) => (
+                      <article key={alert.id} className={`is-${alert.alert_type}`}>
+                        <span>
+                          {alert.alert_type === "approval_required"
+                            ? "APROBACIÓN PENDIENTE"
+                            : alert.alert_type === "execution_required"
+                              ? "EJECUCIÓN PENDIENTE"
+                              : "PRÓXIMO VIERNES"}
+                        </span>
+                        <strong>{money.format(amount(alert.total_amount))}</strong>
+                        <p>{alert.item_count} pago(s) · programado {displayDate(alert.scheduled_for)}</p>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+              <div className="table-scroll">
               <table className="p2p-dense-table">
                 <thead>
                   <tr>
@@ -1836,7 +2008,8 @@ export function ProcureToPayWorkbench({
                   )}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )}
           {tab === "financing" && (
             <div className="table-scroll">
@@ -2730,7 +2903,7 @@ export function ProcureToPayWorkbench({
               <p>
                 {isPreparingSelectedPayments
                   ? "Revisa los documentos que seleccionaste. Para cambiar la selección, vuelve a la bandeja de cuentas por pagar."
-                  : "Incluye documentos elegibles y cuentas directas que ya fueron aprobadas."} La propuesta se enviará a aprobación al crearla; el número se asigna automáticamente.
+                  : "Incluye documentos elegibles y cuentas directas que ya fueron aprobadas."} La semana queda como planificación editable; el número se asigna automáticamente y tú decides cuándo enviarla a aprobación.
               </p>
             </div>
             <span className="unit">{money.format(selectedTotal)}</span>
@@ -2753,10 +2926,9 @@ export function ProcureToPayWorkbench({
             onSubmit={createBatch}
           >
             <label>
-              Fecha de pago *
-              <input
+              Viernes de pago *
+              <select
                 required
-                type="date"
                 value={batch.scheduledFor}
                 onChange={(event) =>
                   setBatch((current) => ({
@@ -2764,7 +2936,13 @@ export function ProcureToPayWorkbench({
                     scheduledFor: event.target.value,
                   }))
                 }
-              />
+              >
+                {upcomingFridays(12, today()).map((friday) => (
+                  <option key={friday} value={friday}>
+                    Viernes {displayDate(friday)}
+                  </option>
+                ))}
+              </select>
             </label>
             <label>
               Cuenta bancaria
@@ -2952,7 +3130,7 @@ export function ProcureToPayWorkbench({
               }
               type="submit"
             >
-              Crear y enviar a aprobación
+              Guardar en agenda semanal
             </button>
           </form>
         </section>
@@ -3120,6 +3298,7 @@ export function ProcureToPayWorkbench({
                   <table className="p2p-dense-table p2p-detail-items">
                     <thead>
                       <tr>
+                        {detail.item.status === "draft" && <th>Mover</th>}
                         <th>Proveedor / documento</th>
                         <th>Vencimiento</th>
                         <th>IAS 7</th>
@@ -3133,6 +3312,16 @@ export function ProcureToPayWorkbench({
                         )
                         .map((line) => (
                           <tr key={line.id}>
+                            {detail.item.status === "draft" && (
+                              <td>
+                                <input
+                                  aria-label={`Mover ${line.supplier_name_current || line.supplier_name_snapshot}`}
+                                  type="checkbox"
+                                  checked={reschedule.itemIds.includes(line.id)}
+                                  onChange={() => toggleRescheduleItem(line.id)}
+                                />
+                              </td>
+                            )}
                             <td>
                               <strong>{line.supplier_name_current || line.supplier_name_snapshot}</strong>
                               <small>
@@ -3149,6 +3338,80 @@ export function ProcureToPayWorkbench({
                     </tbody>
                   </table>
                 </div>
+                {detail.item.status === "draft" && canManagePayments && (
+                  <div className="p2p-reschedule-box">
+                    <div>
+                      <strong>Mover pagos seleccionados</strong>
+                      <small>La deuda conserva su expediente, monto, IAS 7 e historial.</small>
+                    </div>
+                    <label>
+                      Nuevo viernes
+                      <select
+                        value={reschedule.scheduledFor}
+                        onChange={(event) =>
+                          setReschedule((current) => ({
+                            ...current,
+                            scheduledFor: event.target.value,
+                          }))
+                        }
+                      >
+                        {upcomingFridays(12, today())
+                          .filter((friday) => friday !== detail.item.scheduled_for)
+                          .map((friday) => (
+                            <option key={friday} value={friday}>
+                              Viernes {displayDate(friday)}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <label>
+                      Motivo
+                      <input
+                        value={reschedule.reason}
+                        maxLength={500}
+                        onChange={(event) =>
+                          setReschedule((current) => ({
+                            ...current,
+                            reason: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={
+                        saving ||
+                        !reschedule.itemIds.length ||
+                        reschedule.reason.trim().length < 3
+                      }
+                      onClick={() => void rescheduleSelectedPayments()}
+                    >
+                      Mover {reschedule.itemIds.length || ""} pago(s)
+                    </button>
+                  </div>
+                )}
+                {(data?.paymentRescheduleEvents ?? []).some(
+                  (event) =>
+                    event.from_payment_batch_id === detail.item.id ||
+                    event.to_payment_batch_id === detail.item.id,
+                ) && (
+                  <div className="p2p-reschedule-history">
+                    <strong>Historial de reprogramaciones</strong>
+                    {(data?.paymentRescheduleEvents ?? [])
+                      .filter(
+                        (event) =>
+                          event.from_payment_batch_id === detail.item.id ||
+                          event.to_payment_batch_id === detail.item.id,
+                      )
+                      .slice(0, 8)
+                      .map((event) => (
+                        <p key={event.id}>
+                          {displayDate(event.from_scheduled_for)} → {displayDate(event.to_scheduled_for)} · {money.format(amount(event.amount))} · {event.reason}
+                        </p>
+                      ))}
+                  </div>
+                )}
                 {(detail.item as PaymentBatch).payment_proof_signed_url && (
                   <p>
                     <strong>Comprobante:</strong>{" "}
