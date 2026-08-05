@@ -11,6 +11,12 @@ test("catalog product cost combines direct cost and shared infrastructure or AI 
   ]), 500);
 });
 
+test("a product can use only its prorated share of a global infrastructure bill", () => {
+  assert.equal(calculateCatalogUnitCost(0, [
+    { catalogItemId: "vercel", name: "Vercel", quantity: 1, unitCost: 25 },
+  ]), 25);
+});
+
 test("sale price uses gross margin over the final sale value", () => {
   assert.equal(salePriceFromMargin(700, 30), 1000);
   assert.equal(salePriceFromMargin(0, 70), 0);

@@ -4832,7 +4832,7 @@ td small {
 .quote-meta-panel { margin-bottom: 16px; }
 .quote-meta-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 1.5fr) minmax(190px, 1.2fr) repeat(4, minmax(120px, .7fr));
+  grid-template-columns: minmax(160px, .8fr) minmax(220px, 1.5fr) minmax(190px, 1.2fr) repeat(4, minmax(120px, .7fr));
   gap: 12px;
   margin-top: 16px;
 }
@@ -4864,6 +4864,7 @@ td small {
   outline-color: #5968df;
 }
 .quote-meta-grid label small { color: #96a1b0; font-size: 9px; font-weight: 500; }
+.quote-meta-grid input:read-only { background: #f3f6f9; color: #536178; font-weight: 750; }
 .quote-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
 .quote-main-column { display: grid; gap: 16px; min-width: 0; }
 .quote-add-panel { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
@@ -4986,11 +4987,12 @@ td small {
 .quote-cost-model-heading h3 { margin: 0; color: #34445f; font-size: 14px; }
 .quote-cost-model-heading p { margin: 4px 0 0; color: #8995a6; font-size: 9px; }
 .quote-cost-model-list { display: grid; gap: 8px; margin-bottom: 18px; }
-.quote-cost-model-list article { display: grid; grid-template-columns: 1.5fr .55fr .7fr .9fr .65fr 26px; gap: 8px; align-items: end; padding: 10px; border: 1px solid #e1e6ee; border-radius: 9px; background: #fbfcfe; }
+.quote-cost-model-list article { display: grid; grid-template-columns: 1.5fr .55fr 1fr .65fr 26px; gap: 8px; align-items: end; padding: 10px; border: 1px solid #e1e6ee; border-radius: 9px; background: #fbfcfe; }
 .quote-cost-model-list label { display: grid; gap: 5px; color: #68768b; font-size: 9px; font-weight: 750; }
 .quote-cost-model-list input,
 .quote-cost-model-list select { width: 100%; min-width: 0; border: 1px solid #dce3ec; border-radius: 7px; padding: 8px; background: #fff; color: #30405a; font: inherit; font-size: 10px; }
 .quote-cost-model-list input:disabled { background: #eef2f6; color: #6f7c90; }
+.quote-cost-model-list label small { color: #8c98a9; font-size: 8px; font-weight: 500; }
 .quote-cost-model-subtotal { padding: 7px 8px; border-radius: 7px; background: #edf4f1; }
 .quote-cost-model-subtotal span { display: block; color: #7a8b84; font-size: 8px; }
 .quote-cost-model-subtotal strong { display: block; margin-top: 3px; color: #16805f; font-size: 11px; }
