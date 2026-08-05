@@ -17,6 +17,8 @@ type ReconcileRequest = {
   idempotencyKey?: unknown;
   notes?: unknown;
   account?: unknown;
+  loanPrincipalAmount?: unknown;
+  loanInterestAmount?: unknown;
 };
 
 type StatementRow = {
@@ -31,6 +33,11 @@ type StatementRow = {
 function readAmount(value: unknown) {
   const amount = typeof value === "number" ? value : Number(value);
   return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+function readWholeNonNegativeAmount(value: unknown) {
+  const amount = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(amount) && amount >= 0 ? amount : null;
 }
 
 function readNotes(value: unknown) {
@@ -126,7 +133,19 @@ export async function GET(request: NextRequest) {
   if (context.error || !context.supabase)
     return NextResponse.json({ error: context.error }, { status: context.status });
 
-  const [accountsResult, transactionsResult, matchesResult, issuedResult, receivedResult, directPayablesResult, importsResult, executionsResult] =
+  const [
+    accountsResult,
+    transactionsResult,
+    matchesResult,
+    issuedResult,
+    receivedResult,
+    directPayablesResult,
+    importsResult,
+    executionsResult,
+    counterpartiesResult,
+    loansResult,
+    loanEventsResult,
+  ] =
     await Promise.all([
       context.supabase
         .from("bank_accounts")
@@ -143,7 +162,7 @@ export async function GET(request: NextRequest) {
         .limit(250),
       context.supabase
         .from("bank_reconciliation_matches")
-        .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, matched_amount, matched_on, notes")
+        .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, loan_cash_event_id, loan_principal_amount, loan_interest_amount, accounting_entry_id, matched_amount, matched_on, notes")
         .eq("organization_id", organizationId)
         .order("created_at", { ascending: false })
         .limit(500),
@@ -179,6 +198,26 @@ export async function GET(request: NextRequest) {
         .eq("organization_id", organizationId)
         .order("executed_on", { ascending: false })
         .limit(500),
+      context.supabase
+        .from("counterparties")
+        .select("id, legal_name, trade_name, tax_id")
+        .eq("organization_id", organizationId)
+        .eq("is_active", true)
+        .order("legal_name")
+        .limit(500),
+      context.supabase
+        .from("company_loans")
+        .select("id, loan_number, borrower_counterparty_id, disbursement_bank_account_id, contract_date, disbursement_date, maturity_date, principal_amount, currency_code, annual_interest_rate, receivable_account_code, agreement_reference, purpose, related_party, stamp_tax_status, status, disbursed_amount, principal_repaid, interest_collected, principal_outstanding, created_at")
+        .eq("organization_id", organizationId)
+        .order("loan_number", { ascending: false })
+        .limit(500),
+      context.supabase
+        .from("company_loan_cash_events")
+        .select("id, loan_id, bank_account_id, event_type, scheduled_on, principal_amount, interest_amount, total_amount, status, notes, created_at")
+        .eq("organization_id", organizationId)
+        .neq("status", "cancelled")
+        .order("scheduled_on", { ascending: false })
+        .limit(1_000),
     ]);
 
   if (
@@ -189,7 +228,10 @@ export async function GET(request: NextRequest) {
     receivedResult.error ||
     directPayablesResult.error ||
     importsResult.error ||
-    executionsResult.error
+    executionsResult.error ||
+    counterpartiesResult.error ||
+    loansResult.error ||
+    loanEventsResult.error
   )
     return NextResponse.json({ error: "unable_to_load_treasury" }, { status: 500 });
 
@@ -218,6 +260,9 @@ export async function GET(request: NextRequest) {
     })),
     statementImports: importsResult.data ?? [],
     paymentExecutions: executionsResult.data ?? [],
+    counterparties: counterpartiesResult.data ?? [],
+    companyLoans: loansResult.data ?? [],
+    loanCashEvents: loanEventsResult.data ?? [],
   });
 }
 
@@ -380,7 +425,7 @@ export async function POST(request: NextRequest) {
   const bankTransactionId = body?.bankTransactionId;
   const documentId = body?.documentId;
   const documentType = body?.documentType;
-  const matchedAmount = documentType === "issued"
+  const matchedAmount = documentType === "issued" || documentType === "loan"
     ? parseWholeClpAmount(body?.matchedAmount)
     : readAmount(body?.matchedAmount);
   const idempotencyKey = body?.idempotencyKey;
@@ -390,7 +435,7 @@ export async function POST(request: NextRequest) {
     !isUuid(bankTransactionId) ||
     !isUuid(documentId) ||
     !isUuid(idempotencyKey) ||
-    (documentType !== "issued" && documentType !== "received" && documentType !== "direct") ||
+    (documentType !== "issued" && documentType !== "received" && documentType !== "direct" && documentType !== "loan") ||
     !matchedAmount ||
     (body?.notes !== undefined &&
       body?.notes !== null &&
@@ -400,7 +445,7 @@ export async function POST(request: NextRequest) {
 
   const priorMatchResult = await context.supabase
     .from("bank_reconciliation_matches")
-    .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, matched_amount, matched_on, notes, idempotency_key")
+    .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, loan_cash_event_id, loan_principal_amount, loan_interest_amount, accounting_entry_id, matched_amount, matched_on, notes, idempotency_key")
     .eq("organization_id", organizationId)
     .eq("idempotency_key", idempotencyKey)
     .maybeSingle();
@@ -411,6 +456,8 @@ export async function POST(request: NextRequest) {
     const priorDocumentId =
       documentType === "issued"
         ? priorMatch.issued_document_id
+        : documentType === "loan"
+          ? priorMatch.loan_cash_event_id
         : documentType === "direct"
           ? priorMatch.direct_payable_id
           : priorMatch.received_document_id;
@@ -424,7 +471,7 @@ export async function POST(request: NextRequest) {
 
   const { data: transaction, error: transactionError } = await context.supabase
     .from("bank_transactions")
-    .select("id, amount, booked_on")
+    .select("id, bank_account_id, amount, booked_on")
     .eq("id", bankTransactionId)
     .eq("organization_id", organizationId)
     .maybeSingle();
@@ -436,6 +483,130 @@ export async function POST(request: NextRequest) {
     ((documentType === "received" || documentType === "direct") && Number(transaction.amount) >= 0)
   )
     return NextResponse.json({ error: "transaction_direction_mismatch" }, { status: 400 });
+
+  if (documentType === "loan") {
+    const loanPrincipalAmount = readWholeNonNegativeAmount(body?.loanPrincipalAmount);
+    const loanInterestAmount = readWholeNonNegativeAmount(body?.loanInterestAmount);
+    if (
+      loanPrincipalAmount === null ||
+      loanInterestAmount === null ||
+      loanPrincipalAmount + loanInterestAmount !== matchedAmount
+    ) {
+      return NextResponse.json({ error: "invalid_loan_allocation" }, { status: 400 });
+    }
+    const { data: loanEvent, error: loanEventError } = await context.supabase
+      .from("company_loan_cash_events")
+      .select("id, loan_id, bank_account_id, event_type, principal_amount, interest_amount, total_amount, status")
+      .eq("id", documentId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+    if (loanEventError || !loanEvent) {
+      return NextResponse.json({ error: "loan_cash_event_not_found" }, { status: 404 });
+    }
+    if (
+      loanEvent.status === "cancelled" ||
+      loanEvent.bank_account_id !== transaction.bank_account_id ||
+      (loanEvent.event_type === "disbursement" && Number(transaction.amount) >= 0) ||
+      (loanEvent.event_type === "repayment" && Number(transaction.amount) <= 0) ||
+      (loanEvent.event_type === "disbursement" && (loanInterestAmount !== 0 || loanPrincipalAmount !== matchedAmount))
+    ) {
+      return NextResponse.json({ error: "transaction_direction_mismatch" }, { status: 400 });
+    }
+    const { data: eventMatches, error: eventMatchesError } = await context.supabase
+      .from("bank_reconciliation_matches")
+      .select("loan_principal_amount, loan_interest_amount")
+      .eq("organization_id", organizationId)
+      .eq("loan_cash_event_id", documentId);
+    if (eventMatchesError) {
+      return NextResponse.json({ error: "unable_to_check_loan_balance" }, { status: 500 });
+    }
+    const alreadyPrincipal = (eventMatches ?? []).reduce(
+      (sum, match) => sum + Number(match.loan_principal_amount ?? 0),
+      0,
+    );
+    const alreadyInterest = (eventMatches ?? []).reduce(
+      (sum, match) => sum + Number(match.loan_interest_amount ?? 0),
+      0,
+    );
+    if (
+      alreadyPrincipal + loanPrincipalAmount > Number(loanEvent.principal_amount) ||
+      alreadyInterest + loanInterestAmount > Number(loanEvent.interest_amount)
+    ) {
+      return NextResponse.json({ error: "loan_event_not_available_for_reconciliation" }, { status: 409 });
+    }
+    const loanMatchPayload = {
+      organization_id: organizationId,
+      bank_transaction_id: bankTransactionId,
+      loan_cash_event_id: documentId,
+      loan_principal_amount: loanPrincipalAmount,
+      loan_interest_amount: loanInterestAmount,
+      matched_amount: matchedAmount,
+      matched_on: transaction.booked_on,
+      idempotency_key: idempotencyKey,
+      notes,
+    };
+    let loanMatch = priorMatch;
+    let loanMatchError: { code?: string; message?: string } | null = null;
+    if (!loanMatch) {
+      const insertResult = await context.supabase
+        .from("bank_reconciliation_matches")
+        .insert(loanMatchPayload)
+        .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, loan_cash_event_id, loan_principal_amount, loan_interest_amount, accounting_entry_id, matched_amount, matched_on, notes, idempotency_key")
+        .single();
+      loanMatch = insertResult.data;
+      loanMatchError = insertResult.error;
+    }
+    if (loanMatchError?.code === "23505") {
+      const existing = await context.supabase
+        .from("bank_reconciliation_matches")
+        .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, loan_cash_event_id, loan_principal_amount, loan_interest_amount, accounting_entry_id, matched_amount, matched_on, notes, idempotency_key")
+        .eq("organization_id", organizationId)
+        .eq("idempotency_key", idempotencyKey)
+        .maybeSingle();
+      loanMatch = existing.data;
+      loanMatchError = existing.error;
+    }
+    if (
+      loanMatchError ||
+      !loanMatch ||
+      loanMatch.bank_transaction_id !== bankTransactionId ||
+      loanMatch.loan_cash_event_id !== documentId ||
+      Number(loanMatch.matched_amount) !== matchedAmount ||
+      Number(loanMatch.loan_principal_amount) !== loanPrincipalAmount ||
+      Number(loanMatch.loan_interest_amount) !== loanInterestAmount
+    ) {
+      return NextResponse.json(
+        { error: "unable_to_reconcile_loan", detail: loanMatchError?.message ?? null },
+        { status: 409 },
+      );
+    }
+    const [{ data: updatedLoan }, { data: updatedEvent }, { data: updatedTransaction }] = await Promise.all([
+      context.supabase
+        .from("company_loans")
+        .select("id, status, disbursed_amount, principal_repaid, interest_collected, principal_outstanding")
+        .eq("id", loanEvent.loan_id)
+        .eq("organization_id", organizationId)
+        .single(),
+      context.supabase
+        .from("company_loan_cash_events")
+        .select("id, status")
+        .eq("id", documentId)
+        .eq("organization_id", organizationId)
+        .single(),
+      context.supabase
+        .from("bank_transactions")
+        .select("reconciliation_status")
+        .eq("id", bankTransactionId)
+        .eq("organization_id", organizationId)
+        .single(),
+    ]);
+    return NextResponse.json({
+      match: loanMatch,
+      loan: updatedLoan,
+      loanEvent: updatedEvent,
+      transactionStatus: updatedTransaction?.reconciliation_status,
+    });
+  }
 
   const documentTable = documentType === "issued" ? "issued_document_receivable_balances" : documentType === "direct" ? "direct_payables" : "received_documents";
   const { data: document, error: documentError } = await context.supabase
@@ -485,7 +656,7 @@ export async function POST(request: NextRequest) {
     const insertResult = await context.supabase
       .from("bank_reconciliation_matches")
       .insert(matchPayload)
-      .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, matched_amount, matched_on, notes, idempotency_key")
+      .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, loan_cash_event_id, loan_principal_amount, loan_interest_amount, accounting_entry_id, matched_amount, matched_on, notes, idempotency_key")
       .single();
     match = insertResult.data;
     matchError = insertResult.error;
@@ -494,7 +665,7 @@ export async function POST(request: NextRequest) {
   if (matchError?.code === "23505") {
     const existing = await context.supabase
       .from("bank_reconciliation_matches")
-      .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, matched_amount, matched_on, notes, idempotency_key")
+      .select("id, bank_transaction_id, issued_document_id, received_document_id, direct_payable_id, loan_cash_event_id, loan_principal_amount, loan_interest_amount, accounting_entry_id, matched_amount, matched_on, notes, idempotency_key")
       .eq("organization_id", organizationId)
       .eq("idempotency_key", idempotencyKey)
       .maybeSingle();

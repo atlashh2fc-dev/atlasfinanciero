@@ -31,6 +31,10 @@ type ReconciliationMatch = {
   issued_document_id: string | null;
   received_document_id: string | null;
   direct_payable_id: string | null;
+  loan_cash_event_id: string | null;
+  loan_principal_amount: number | string;
+  loan_interest_amount: number | string;
+  accounting_entry_id: string | null;
   matched_amount: number | string;
   matched_on: string;
   notes: string | null;
@@ -93,6 +97,62 @@ type PaymentExecution = {
   direct_payable_id?: string | null;
 };
 
+type Counterparty = {
+  id: string;
+  legal_name: string;
+  trade_name: string | null;
+  tax_id: string | null;
+};
+
+type CompanyLoan = {
+  id: string;
+  loan_number: number | string;
+  borrower_counterparty_id: string;
+  disbursement_bank_account_id: string;
+  contract_date: string;
+  disbursement_date: string;
+  maturity_date: string;
+  principal_amount: number | string;
+  currency_code: "CLP";
+  annual_interest_rate: number | string;
+  receivable_account_code: "110230" | "120300";
+  agreement_reference: string | null;
+  purpose: string | null;
+  related_party: boolean;
+  stamp_tax_status: "review" | "pending" | "paid" | "not_applicable";
+  status: "ready" | "disbursed" | "partially_repaid" | "repaid" | "overdue" | "cancelled";
+  disbursed_amount: number | string;
+  principal_repaid: number | string;
+  interest_collected: number | string;
+  principal_outstanding: number | string;
+  created_at: string;
+};
+
+type LoanCashEvent = {
+  id: string;
+  loan_id: string;
+  bank_account_id: string;
+  event_type: "disbursement" | "repayment";
+  scheduled_on: string;
+  principal_amount: number | string;
+  interest_amount: number | string;
+  total_amount: number | string;
+  status: "pending" | "partially_reconciled" | "reconciled" | "cancelled";
+  notes: string | null;
+  created_at: string;
+};
+
+type ReconciliationTarget = {
+  id: string;
+  kind: "issued" | "received" | "direct" | "loan";
+  document_number: string | null;
+  name: string;
+  remaining: number;
+  loanEvent?: LoanCashEvent;
+  principalRemaining?: number;
+  interestRemaining?: number;
+};
+
 type StatementPreview = {
   accountName: string;
   validRows: number;
@@ -109,6 +169,9 @@ type TreasuryPayload = {
   directPayables: DirectPayable[];
   statementImports: StatementImport[];
   paymentExecutions: PaymentExecution[];
+  counterparties: Counterparty[];
+  companyLoans: CompanyLoan[];
+  loanCashEvents: LoanCashEvent[];
 };
 
 const money = new Intl.NumberFormat("es-CL", {
@@ -174,6 +237,37 @@ function executionStatusLabel(status: string) {
   }[status] || status;
 }
 
+function loanReference(loan: CompanyLoan) {
+  return `PRE-${String(loan.loan_number).padStart(6, "0")}`;
+}
+
+function loanStatus(loan: CompanyLoan) {
+  if (
+    !["repaid", "cancelled", "ready"].includes(loan.status) &&
+    loan.maturity_date < new Date().toISOString().slice(0, 10) &&
+    amount(loan.principal_outstanding) > 0
+  ) return "overdue";
+  return loan.status;
+}
+
+function loanStatusLabel(status: ReturnType<typeof loanStatus>) {
+  return {
+    ready: "Por desembolsar",
+    disbursed: "Vigente",
+    partially_repaid: "Con devoluciones",
+    repaid: "Pagado",
+    overdue: "Vencido",
+    cancelled: "Cancelado",
+  }[status];
+}
+
+function loanStatusClass(status: ReturnType<typeof loanStatus>) {
+  if (status === "repaid") return "status paid";
+  if (status === "overdue" || status === "cancelled") return "status cancelled";
+  if (status === "ready") return "status neutral";
+  return "status pending";
+}
+
 export function TreasuryDashboard({
   organizationId,
   canManage,
@@ -188,6 +282,8 @@ export function TreasuryDashboard({
     useState<BankTransaction | null>(null);
   const [selectedDocumentId, setSelectedDocumentId] = useState("");
   const [matchAmount, setMatchAmount] = useState("");
+  const [loanPrincipalMatch, setLoanPrincipalMatch] = useState("");
+  const [loanInterestMatch, setLoanInterestMatch] = useState("");
   const [notes, setNotes] = useState("");
   const [reconciliationAttemptId, setReconciliationAttemptId] = useState("");
   const [saving, setSaving] = useState(false);
@@ -200,6 +296,28 @@ export function TreasuryDashboard({
   const [importingStatement, setImportingStatement] = useState(false);
   const [executionsModalOpen, setExecutionsModalOpen] = useState(false);
   const [executionYear, setExecutionYear] = useState(() => String(new Date().getFullYear()));
+  const [loanEditorOpen, setLoanEditorOpen] = useState(false);
+  const [repaymentLoan, setRepaymentLoan] = useState<CompanyLoan | null>(null);
+  const [loanDraft, setLoanDraft] = useState({
+    borrowerCounterpartyId: "",
+    bankAccountId: "",
+    contractDate: new Date().toISOString().slice(0, 10),
+    disbursementDate: new Date().toISOString().slice(0, 10),
+    maturityDate: "",
+    principalAmount: "",
+    annualInterestRate: "0",
+    agreementReference: "",
+    purpose: "",
+    relatedParty: false,
+    stampTaxStatus: "review",
+  });
+  const [repaymentDraft, setRepaymentDraft] = useState({
+    bankAccountId: "",
+    scheduledOn: new Date().toISOString().slice(0, 10),
+    principalAmount: "",
+    interestAmount: "",
+    notes: "",
+  });
 
   async function loadTreasury() {
     if (!organizationId) {
@@ -228,6 +346,13 @@ export function TreasuryDashboard({
     if (!selectedImportAccountId && data?.accounts[0]) setSelectedImportAccountId(data.accounts[0].id);
   }, [data?.accounts, selectedImportAccountId]);
 
+  useEffect(() => {
+    const clpAccount = data?.accounts.find((account) => account.currency_code === "CLP");
+    if (!clpAccount) return;
+    setLoanDraft((current) => current.bankAccountId ? current : { ...current, bankAccountId: clpAccount.id });
+    setRepaymentDraft((current) => current.bankAccountId ? current : { ...current, bankAccountId: clpAccount.id });
+  }, [data?.accounts]);
+
   const matchedByTransaction = useMemo(() => {
     const values = new Map<string, number>();
     for (const match of data?.matches ?? []) {
@@ -242,7 +367,10 @@ export function TreasuryDashboard({
   const matchedByDocument = useMemo(() => {
     const values = new Map<string, number>();
     for (const match of data?.matches ?? []) {
-      const documentId = match.issued_document_id ?? match.received_document_id ?? match.direct_payable_id;
+      const documentId = match.issued_document_id
+        ?? match.received_document_id
+        ?? match.direct_payable_id
+        ?? match.loan_cash_event_id;
       if (!documentId) continue;
       values.set(documentId, (values.get(documentId) ?? 0) + amount(match.matched_amount));
     }
@@ -289,31 +417,72 @@ export function TreasuryDashboard({
   );
 
   const selectedDocuments = useMemo(() => {
-    if (!selectedTransaction || !data) return [];
-    const documents =
-      amount(selectedTransaction.amount) > 0
-        ? data.issuedDocuments.map((document) => ({
-            ...document,
-            kind: "issued" as const,
-            name: document.client_name || "Cliente sin nombre",
-          }))
-        : [
-            ...data.receivedDocuments.map((document) => ({ ...document, kind: "received" as const, name: document.supplier_name })),
-            ...data.directPayables.filter((payable) => payable.currency_code === "CLP").map((payable) => ({ ...payable, document_number: payable.invoice_number || payable.payable_number, kind: "direct" as const, name: payable.supplier_name })),
-          ];
-    return documents
-      .map((document) => {
-        const available =
-          document.kind === "issued" || document.kind === "direct"
-            ? amount(document.available_to_reconcile ?? 0)
-            : Math.abs(amount(document.total_amount)) -
-              (matchedByDocument.get(document.id) ?? 0);
+    if (!selectedTransaction || !data) return [] as ReconciliationTarget[];
+    const isInflow = amount(selectedTransaction.amount) > 0;
+    const documentTargets: ReconciliationTarget[] = isInflow
+      ? data.issuedDocuments.map((document) => ({
+          id: document.id,
+          kind: "issued",
+          document_number: document.document_number,
+          name: document.client_name || "Cliente sin nombre",
+          remaining: Math.max(0, amount(document.available_to_reconcile)),
+        }))
+      : [
+          ...data.receivedDocuments.map((document) => ({
+            id: document.id,
+            kind: "received" as const,
+            document_number: document.document_number,
+            name: document.supplier_name,
+            remaining: Math.max(
+              0,
+              Math.abs(amount(document.total_amount)) - (matchedByDocument.get(document.id) ?? 0),
+            ),
+          })),
+          ...data.directPayables
+            .filter((payable) => payable.currency_code === "CLP")
+            .map((payable) => ({
+              id: payable.id,
+              kind: "direct" as const,
+              document_number: payable.invoice_number || payable.payable_number,
+              name: payable.supplier_name,
+              remaining: Math.max(0, amount(payable.available_to_reconcile)),
+            })),
+        ];
+    const loanTargets: ReconciliationTarget[] = data.loanCashEvents
+      .filter((event) =>
+        event.status !== "cancelled"
+        && event.status !== "reconciled"
+        && event.bank_account_id === selectedTransaction.bank_account_id
+        && (isInflow ? event.event_type === "repayment" : event.event_type === "disbursement")
+        && (event.event_type !== "repayment"
+          || amount(data.companyLoans.find((loan) => loan.id === event.loan_id)?.disbursed_amount) > 0),
+      )
+      .map((event) => {
+        const loan = data.companyLoans.find((item) => item.id === event.loan_id);
+        const borrower = data.counterparties.find((item) => item.id === loan?.borrower_counterparty_id);
+        const eventMatches = data.matches.filter((match) => match.loan_cash_event_id === event.id);
+        const principalRemaining = Math.max(
+          0,
+          amount(event.principal_amount)
+            - eventMatches.reduce((sum, match) => sum + amount(match.loan_principal_amount), 0),
+        );
+        const interestRemaining = Math.max(
+          0,
+          amount(event.interest_amount)
+            - eventMatches.reduce((sum, match) => sum + amount(match.loan_interest_amount), 0),
+        );
         return {
-          ...document,
-          remaining: Math.max(0, available),
+          id: event.id,
+          kind: "loan",
+          document_number: loan ? loanReference(loan) : "Préstamo",
+          name: borrower?.trade_name || borrower?.legal_name || "Empresa deudora",
+          remaining: principalRemaining + interestRemaining,
+          loanEvent: event,
+          principalRemaining,
+          interestRemaining,
         };
-      })
-      .filter((document) => document.remaining > 0);
+      });
+    return [...documentTargets, ...loanTargets].filter((target) => target.remaining > 0);
   }, [data, matchedByDocument, selectedTransaction]);
 
   const selectedDocument = selectedDocuments.find(
@@ -327,11 +496,16 @@ export function TreasuryDashboard({
       )
     : 0;
   const selectedTransactionCurrency = data?.accounts.find((account) => account.id === selectedTransaction?.bank_account_id)?.currency_code || "CLP";
+  const selectedAppliedAmount = selectedDocument?.kind === "loan"
+    ? amount(loanPrincipalMatch) + amount(loanInterestMatch)
+    : amount(matchAmount);
 
   function openReconciliation(transaction: BankTransaction) {
     setSelectedTransaction(transaction);
     setSelectedDocumentId("");
     setMatchAmount("");
+    setLoanPrincipalMatch("");
+    setLoanInterestMatch("");
     setNotes("");
     setReconciliationAttemptId(crypto.randomUUID());
     setMessage(null);
@@ -352,7 +526,9 @@ export function TreasuryDashboard({
           bankTransactionId: selectedTransaction.id,
           documentId: selectedDocument.id,
           documentType: selectedDocument.kind,
-          matchedAmount: matchAmount,
+          matchedAmount: selectedAppliedAmount,
+          loanPrincipalAmount: selectedDocument.kind === "loan" ? amount(loanPrincipalMatch) : 0,
+          loanInterestAmount: selectedDocument.kind === "loan" ? amount(loanInterestMatch) : 0,
           idempotencyKey: reconciliationAttemptId,
           notes,
         }),
@@ -370,6 +546,10 @@ export function TreasuryDashboard({
       setMessage(
         payload?.error === "transaction_direction_mismatch"
           ? "El abono sólo puede conciliar ingresos y el cargo sólo pagos."
+          : payload?.error === "invalid_loan_allocation"
+            ? "Separa correctamente la devolución entre capital e intereses."
+            : payload?.error === "loan_event_not_available_for_reconciliation"
+              ? "Ese desembolso o devolución ya no tiene saldo disponible. Actualizamos la cartera para evitar duplicarlo."
           : payload?.error === "document_not_available_for_reconciliation"
             ? "El documento ya no tiene monto disponible para conciliar. Actualizamos el control para evitar un cobro duplicado."
             : payload?.error === "idempotency_conflict"
@@ -381,7 +561,9 @@ export function TreasuryDashboard({
     setSelectedTransaction(null);
     setReconciliationAttemptId("");
     setMessage(
-      payload?.documentPaid
+      selectedDocument.kind === "loan"
+        ? "Movimiento conciliado con el préstamo y asiento contable generado automáticamente."
+        : payload?.documentPaid
         ? "Movimiento conciliado y documento marcado como pagado."
         : "Aplicación parcial conciliada correctamente.",
     );
@@ -405,6 +587,87 @@ export function TreasuryDashboard({
     setAccountEditorOpen(false);
     setAccountDraft({ name: "", bankName: "", accountNumberMasked: "", currencyCode: "CLP", openingBalance: "0", openingBalanceDate: "" });
     setMessage("Cuenta bancaria creada. Ya puedes cargar su primera cartola.");
+    await loadTreasury();
+  }
+
+  function openLoanEditor() {
+    const today = new Date().toISOString().slice(0, 10);
+    const clpAccount = data?.accounts.find((account) => account.currency_code === "CLP");
+    setLoanDraft({
+      borrowerCounterpartyId: data?.counterparties[0]?.id ?? "",
+      bankAccountId: clpAccount?.id ?? "",
+      contractDate: today,
+      disbursementDate: today,
+      maturityDate: "",
+      principalAmount: "",
+      annualInterestRate: "0",
+      agreementReference: "",
+      purpose: "",
+      relatedParty: false,
+      stampTaxStatus: "review",
+    });
+    setLoanEditorOpen(true);
+    setMessage(null);
+  }
+
+  async function saveLoan(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!organizationId || saving) return;
+    setSaving(true);
+    const response = await fetch("/api/company-loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "create_loan", organizationId, ...loanDraft }),
+    });
+    const payload = await response.json().catch(() => null) as { error?: string; detail?: string } | null;
+    setSaving(false);
+    if (!response.ok) {
+      setMessage(payload?.detail || "No fue posible registrar el préstamo. Revisa empresa, fechas, monto y cuenta bancaria.");
+      return;
+    }
+    setLoanEditorOpen(false);
+    setMessage("Préstamo registrado. Quedó listo para conciliar su desembolso contra la cartola bancaria.");
+    await loadTreasury();
+  }
+
+  function openRepaymentEditor(loan: CompanyLoan) {
+    const clpAccount = data?.accounts.find((account) => account.currency_code === "CLP");
+    const scheduledPrincipal = (data?.loanCashEvents ?? [])
+      .filter((event) => event.loan_id === loan.id && event.event_type === "repayment" && event.status !== "cancelled")
+      .reduce((sum, event) => sum + amount(event.principal_amount), 0);
+    setRepaymentDraft({
+      bankAccountId: clpAccount?.id ?? loan.disbursement_bank_account_id,
+      scheduledOn: new Date().toISOString().slice(0, 10),
+      principalAmount: String(Math.max(0, amount(loan.principal_amount) - scheduledPrincipal)),
+      interestAmount: "",
+      notes: "",
+    });
+    setRepaymentLoan(loan);
+    setMessage(null);
+  }
+
+  async function saveRepaymentEvent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!organizationId || !repaymentLoan || saving) return;
+    setSaving(true);
+    const response = await fetch("/api/company-loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "create_repayment_event",
+        organizationId,
+        loanId: repaymentLoan.id,
+        ...repaymentDraft,
+      }),
+    });
+    const payload = await response.json().catch(() => null) as { error?: string; detail?: string } | null;
+    setSaving(false);
+    if (!response.ok) {
+      setMessage(payload?.detail || "No fue posible programar la devolución. Revisa capital, intereses y fecha.");
+      return;
+    }
+    setRepaymentLoan(null);
+    setMessage("Devolución registrada. El próximo abono bancario ya puede conciliarse separando capital e intereses.");
     await loadTreasury();
   }
 
@@ -451,6 +714,15 @@ export function TreasuryDashboard({
 
   const clpPosition = accountPositions.filter((account) => account.currency_code === "CLP").reduce((total, account) => total + account.position, 0);
   const nonClpAccounts = accountPositions.filter((account) => account.currency_code !== "CLP");
+  const loanPortfolio = data?.companyLoans ?? [];
+  const outstandingLoanPrincipal = loanPortfolio.reduce(
+    (total, loan) => total + amount(loan.principal_outstanding),
+    0,
+  );
+  const activeLoans = loanPortfolio.filter((loan) =>
+    ["disbursed", "partially_repaid", "overdue"].includes(loanStatus(loan)),
+  );
+  const overdueLoans = loanPortfolio.filter((loan) => loanStatus(loan) === "overdue");
   const executionYears = useMemo(() => {
     const years = new Set<string>([String(new Date().getFullYear())]);
     for (const execution of data?.paymentExecutions ?? []) {
@@ -475,6 +747,7 @@ export function TreasuryDashboard({
         </div>
         {canManage && (
           <div className="headline-actions">
+            <button type="button" className="secondary-button" onClick={openLoanEditor} disabled={!data?.accounts.some((account) => account.currency_code === "CLP") || !data?.counterparties.length}>Registrar préstamo</button>
             <button type="button" className="secondary-button" onClick={() => setAccountEditorOpen(true)}>Nueva cuenta</button>
             <button type="button" className="primary-button" onClick={() => document.getElementById("cargar-cartola")?.scrollIntoView({ behavior: "smooth", block: "start" })} disabled={!data?.accounts.length}>Cargar cartola</button>
           </div>
@@ -510,6 +783,61 @@ export function TreasuryDashboard({
           <strong>{executionsToVerify.length}</strong>
           <small>Ver detalle anual · no se incluyen en posición hasta cargar cartola</small>
         </button>
+      </section>
+
+      <section className="table-section">
+        <div className="table-heading">
+          <div>
+            <span className="panel-label">ACTIVOS FINANCIEROS · PRÉSTAMOS OTORGADOS</span>
+            <h2>Cartera de préstamos a empresas</h2>
+            <p>
+              {activeLoans.length} préstamo(s) vigente(s) · capital por cobrar {money.format(outstandingLoanPrincipal)}
+              {overdueLoans.length ? ` · ${overdueLoans.length} vencido(s)` : ""}
+            </p>
+          </div>
+          {canManage && <button type="button" className="primary-button" onClick={openLoanEditor} disabled={!data?.accounts.some((account) => account.currency_code === "CLP") || !data?.counterparties.length}>Registrar préstamo</button>}
+        </div>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Préstamo / empresa</th>
+                <th>Desembolso</th>
+                <th>Vencimiento</th>
+                <th className="money-col">Capital original</th>
+                <th className="money-col">Por cobrar</th>
+                <th>Tasa anual</th>
+                <th>Estado</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={8}>Cargando cartera de préstamos…</td></tr>
+              ) : loanPortfolio.length ? loanPortfolio.map((loan) => {
+                const borrower = data?.counterparties.find((item) => item.id === loan.borrower_counterparty_id);
+                const effectiveStatus = loanStatus(loan);
+                return (
+                  <tr key={loan.id}>
+                    <td>
+                      <strong>{loanReference(loan)} · {borrower?.trade_name || borrower?.legal_name || "Empresa deudora"}</strong>
+                      <small>{borrower?.tax_id || "RUT no informado"}{loan.related_party ? " · Parte relacionada" : ""}</small>
+                    </td>
+                    <td>{displayDate(loan.disbursement_date)}<small>{data?.accounts.find((account) => account.id === loan.disbursement_bank_account_id)?.name || "Cuenta no disponible"}</small></td>
+                    <td>{displayDate(loan.maturity_date)}<small>{loan.receivable_account_code === "110230" ? "Activo corriente" : "Activo no corriente"}</small></td>
+                    <td className="money-col">{money.format(amount(loan.principal_amount))}</td>
+                    <td className="money-col"><strong>{money.format(amount(loan.principal_outstanding))}</strong><small>Devuelto {money.format(amount(loan.principal_repaid))}</small></td>
+                    <td>{new Intl.NumberFormat("es-CL", { maximumFractionDigits: 4 }).format(amount(loan.annual_interest_rate))}%<small>Intereses cobrados {money.format(amount(loan.interest_collected))}</small></td>
+                    <td><span className={loanStatusClass(effectiveStatus)}>{loanStatusLabel(effectiveStatus)}</span><small>{loan.stamp_tax_status === "paid" ? "Timbres pagado" : loan.stamp_tax_status === "not_applicable" ? "Timbres no aplica" : "Timbres por revisar"}</small></td>
+                    <td>{canManage && !["repaid", "cancelled"].includes(effectiveStatus) ? <button type="button" className="secondary-button" onClick={() => openRepaymentEditor(loan)}>Registrar devolución</button> : "—"}</td>
+                  </tr>
+                );
+              }) : (
+                <tr><td colSpan={8}>Aún no hay préstamos otorgados. Regístralos aquí; no se crean facturas ni cuentas por pagar.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       {!loading && !accountPositions.length && (
@@ -590,7 +918,7 @@ export function TreasuryDashboard({
           <div>
             <span className="panel-label">CONCILIACIÓN</span>
             <h2>Movimientos pendientes</h2>
-            <p>Un abono se aplica a una factura emitida y un cargo a una factura recibida o cuenta directa ejecutada mediante una orden de pago. Las aplicaciones parciales se conservan con trazabilidad.</p>
+            <p>Los movimientos pueden aplicarse a documentos operativos o a desembolsos y devoluciones de préstamos. En préstamos, el sistema separa capital e intereses y genera el asiento contable.</p>
           </div>
         </div>
         <div className="table-scroll">
@@ -646,16 +974,41 @@ export function TreasuryDashboard({
             <form onSubmit={reconcile}>
               <div className="form-grid">
                 <label>
-                  {amount(selectedTransaction.amount) > 0 ? "Factura emitida" : "Factura recibida o cuenta directa"} *
-                  <select required value={selectedDocumentId} onChange={(event) => { const id = event.target.value; setSelectedDocumentId(id); const doc = selectedDocuments.find((item) => item.id === id); setMatchAmount(doc ? String(Math.min(selectedTransactionRemaining, doc.remaining)) : ""); }}>
-                    <option value="">Selecciona un documento o cuenta</option>
-                    {selectedDocuments.map((document) => <option key={document.id} value={document.id}>{document.kind === "direct" ? "Cuenta directa" : "Documento"} · {document.document_number || "Sin folio"} · {document.name} · Disponible {money.format(document.remaining)}</option>)}
+                  {amount(selectedTransaction.amount) > 0 ? "Factura emitida o devolución de préstamo" : "Factura recibida, cuenta directa o desembolso"} *
+                  <select required value={selectedDocumentId} onChange={(event) => {
+                    const id = event.target.value;
+                    setSelectedDocumentId(id);
+                    const target = selectedDocuments.find((item) => item.id === id);
+                    const available = target ? Math.min(selectedTransactionRemaining, target.remaining) : 0;
+                    setMatchAmount(target ? String(available) : "");
+                    if (target?.kind === "loan") {
+                      const principal = Math.min(target.principalRemaining ?? 0, available);
+                      const interest = Math.min(target.interestRemaining ?? 0, Math.max(0, available - principal));
+                      setLoanPrincipalMatch(String(principal));
+                      setLoanInterestMatch(String(interest));
+                    } else {
+                      setLoanPrincipalMatch("");
+                      setLoanInterestMatch("");
+                    }
+                  }}>
+                    <option value="">Selecciona un documento, cuenta o préstamo</option>
+                    {selectedDocuments.map((document) => <option key={document.id} value={document.id}>{document.kind === "loan" ? "Préstamo" : document.kind === "direct" ? "Cuenta directa" : "Documento"} · {document.document_number || "Sin folio"} · {document.name} · Disponible {money.format(document.remaining)}</option>)}
                   </select>
                 </label>
-                <label>
+                {selectedDocument?.kind === "loan" ? <>
+                  <label>
+                    Capital *
+                    <input required type="number" min="0" step="1" max={selectedDocument.principalRemaining ?? 0} value={loanPrincipalMatch} onChange={(event) => setLoanPrincipalMatch(event.target.value)} />
+                  </label>
+                  <label>
+                    Intereses *
+                    <input required type="number" min="0" step="1" max={selectedDocument.interestRemaining ?? 0} value={loanInterestMatch} onChange={(event) => setLoanInterestMatch(event.target.value)} />
+                  </label>
+                  <p className="form-note">Total a conciliar: <strong>{money.format(selectedAppliedAmount)}</strong>. El capital reduce el activo; los intereses se reconocen como ingreso financiero.</p>
+                </> : <label>
                   Monto a aplicar *
                   <input required type="number" min="1" step="1" max={Math.min(selectedTransactionRemaining, selectedDocument?.remaining ?? 0)} value={matchAmount} onChange={(event) => setMatchAmount(event.target.value)} />
-                </label>
+                </label>}
                 <label className="collection-note">
                   Observación
                   <textarea maxLength={2000} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Ej. abono parcial, diferencia de transferencia" />
@@ -663,8 +1016,66 @@ export function TreasuryDashboard({
               </div>
               <div className="form-actions">
                 <button type="button" className="secondary-button" onClick={() => setSelectedTransaction(null)}>Cancelar</button>
-                <button type="submit" className="primary-button" disabled={saving || !selectedDocument || Number(matchAmount) <= 0}>{saving ? "Conciliando…" : "Aplicar conciliación"}</button>
+                <button type="submit" className="primary-button" disabled={saving || !selectedDocument || selectedAppliedAmount <= 0 || selectedAppliedAmount > selectedTransactionRemaining || selectedAppliedAmount > selectedDocument.remaining}>{saving ? "Conciliando…" : "Aplicar conciliación"}</button>
               </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {loanEditorOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="entry-modal collection-modal" role="dialog" aria-modal="true" aria-labelledby="company-loan-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">TESORERÍA · ACTIVO FINANCIERO</span>
+                <h2 id="company-loan-title">Registrar préstamo otorgado</h2>
+                <p>Registra el contrato y el desembolso esperado. No se genera factura: el asiento nace al conciliar la salida bancaria.</p>
+              </div>
+              <button type="button" className="close-button" onClick={() => setLoanEditorOpen(false)} aria-label="Cerrar">×</button>
+            </div>
+            <form onSubmit={saveLoan}>
+              <div className="form-grid">
+                <label>Empresa deudora *<select required value={loanDraft.borrowerCounterpartyId} onChange={(event) => setLoanDraft({ ...loanDraft, borrowerCounterpartyId: event.target.value })}><option value="">Selecciona una empresa</option>{data?.counterparties.map((counterparty) => <option key={counterparty.id} value={counterparty.id}>{counterparty.trade_name || counterparty.legal_name}{counterparty.tax_id ? ` · ${counterparty.tax_id}` : ""}</option>)}</select></label>
+                <label>Cuenta de salida Genesis *<select required value={loanDraft.bankAccountId} onChange={(event) => setLoanDraft({ ...loanDraft, bankAccountId: event.target.value })}><option value="">Selecciona una cuenta CLP</option>{data?.accounts.filter((account) => account.currency_code === "CLP").map((account) => <option key={account.id} value={account.id}>{account.name} · {account.bank_name || "Banco no informado"}</option>)}</select></label>
+                <label>Fecha del contrato *<input required type="date" value={loanDraft.contractDate} onChange={(event) => setLoanDraft({ ...loanDraft, contractDate: event.target.value })} /></label>
+                <label>Fecha de desembolso *<input required type="date" min={loanDraft.contractDate} value={loanDraft.disbursementDate} onChange={(event) => setLoanDraft({ ...loanDraft, disbursementDate: event.target.value, maturityDate: event.target.value > loanDraft.maturityDate ? "" : loanDraft.maturityDate })} /></label>
+                <label>Vencimiento final *<input required type="date" min={loanDraft.disbursementDate} value={loanDraft.maturityDate} onChange={(event) => setLoanDraft({ ...loanDraft, maturityDate: event.target.value })} /></label>
+                <label>Capital CLP *<input required type="number" min="1" step="1" value={loanDraft.principalAmount} onChange={(event) => setLoanDraft({ ...loanDraft, principalAmount: event.target.value })} placeholder="Ej. 10000000" /></label>
+                <label>Tasa de interés anual (%) *<input required type="number" min="0" max="100" step="0.0001" value={loanDraft.annualInterestRate} onChange={(event) => setLoanDraft({ ...loanDraft, annualInterestRate: event.target.value })} /></label>
+                <label>Contrato / referencia<input maxLength={180} value={loanDraft.agreementReference} onChange={(event) => setLoanDraft({ ...loanDraft, agreementReference: event.target.value })} placeholder="Ej. Mutuo 2026-08" /></label>
+                <label>Impuesto de Timbres *<select value={loanDraft.stampTaxStatus} onChange={(event) => setLoanDraft({ ...loanDraft, stampTaxStatus: event.target.value })}><option value="review">Requiere revisión</option><option value="pending">Determinado, pendiente de pago</option><option value="paid">Pagado</option><option value="not_applicable">No aplicable</option></select></label>
+                <label className="collection-note">Objetivo / condiciones<textarea maxLength={2000} value={loanDraft.purpose} onChange={(event) => setLoanDraft({ ...loanDraft, purpose: event.target.value })} placeholder="Destino de los fondos y condiciones relevantes" /></label>
+                <label><span>Relación entre empresas</span><span><input type="checkbox" checked={loanDraft.relatedParty} onChange={(event) => setLoanDraft({ ...loanDraft, relatedParty: event.target.checked })} /> Es una parte relacionada</span></label>
+              </div>
+              <p className="form-note">Hasta 12 meses se presenta inicialmente como préstamo por cobrar corriente; sobre 12 meses, como no corriente. La reclasificación posterior debe revisarse en cada cierre.</p>
+              <div className="form-actions"><button type="button" className="secondary-button" onClick={() => setLoanEditorOpen(false)}>Cancelar</button><button type="submit" className="primary-button" disabled={saving}>{saving ? "Registrando…" : "Registrar préstamo"}</button></div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {repaymentLoan && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="entry-modal collection-modal" role="dialog" aria-modal="true" aria-labelledby="loan-repayment-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">PRÉSTAMO {loanReference(repaymentLoan)}</span>
+                <h2 id="loan-repayment-title">Registrar devolución esperada</h2>
+                <p>Indica cuánto del próximo abono corresponde a capital y cuánto a intereses.</p>
+              </div>
+              <button type="button" className="close-button" onClick={() => setRepaymentLoan(null)} aria-label="Cerrar">×</button>
+            </div>
+            <form onSubmit={saveRepaymentEvent}>
+              <div className="form-grid">
+                <label>Cuenta de ingreso *<select required value={repaymentDraft.bankAccountId} onChange={(event) => setRepaymentDraft({ ...repaymentDraft, bankAccountId: event.target.value })}><option value="">Selecciona una cuenta CLP</option>{data?.accounts.filter((account) => account.currency_code === "CLP").map((account) => <option key={account.id} value={account.id}>{account.name} · {account.bank_name || "Banco no informado"}</option>)}</select></label>
+                <label>Fecha esperada *<input required type="date" min={repaymentLoan.disbursement_date} value={repaymentDraft.scheduledOn} onChange={(event) => setRepaymentDraft({ ...repaymentDraft, scheduledOn: event.target.value })} /></label>
+                <label>Capital a devolver *<input required type="number" min="0" step="1" max={amount(repaymentLoan.principal_amount)} value={repaymentDraft.principalAmount} onChange={(event) => setRepaymentDraft({ ...repaymentDraft, principalAmount: event.target.value })} /></label>
+                <label>Intereses a cobrar *<input required type="number" min="0" step="1" value={repaymentDraft.interestAmount} onChange={(event) => setRepaymentDraft({ ...repaymentDraft, interestAmount: event.target.value })} /></label>
+                <label className="collection-note">Observación<textarea maxLength={2000} value={repaymentDraft.notes} onChange={(event) => setRepaymentDraft({ ...repaymentDraft, notes: event.target.value })} placeholder="Ej. Primera cuota o pago total" /></label>
+              </div>
+              <p className="form-note">Total esperado: <strong>{money.format(amount(repaymentDraft.principalAmount) + amount(repaymentDraft.interestAmount))}</strong>. Al conciliar, el capital reduce “Préstamos por cobrar” y los intereses van a ingreso financiero.</p>
+              <div className="form-actions"><button type="button" className="secondary-button" onClick={() => setRepaymentLoan(null)}>Cancelar</button><button type="submit" className="primary-button" disabled={saving || amount(repaymentDraft.principalAmount) + amount(repaymentDraft.interestAmount) <= 0}>{saving ? "Registrando…" : "Registrar devolución"}</button></div>
             </form>
           </section>
         </div>

@@ -13,6 +13,7 @@ Aplicación web en Next.js, TypeScript, Tailwind CSS y Recharts para sustituir l
 - El formulario crea registros sólo en la sesión del navegador. No afirma persistencia ni modifica el libro Excel.
 - La capa de remuneraciones incorpora una integración preparada para PeopleWork: configuración sin secretos en base de datos, ejecuciones auditables y costos agregados por período, categoría y centro de costo. No persiste liquidaciones ni información personal de colaboradores.
 - Cuentas por cobrar incorpora ciclos de facturación recurrente: sólo Finanzas o Administrador pueden confirmar una recurrencia; cada ciclo debe quedar listo a más tardar el día 2, abre alerta preventiva y escala a vencida si permanece pendiente. Un trabajo diario en Supabase mantiene las alertas activas.
+- Tesorería incorpora una cartera separada de préstamos otorgados a empresas. El contrato no se trata como factura ni cuenta por pagar: el desembolso y cada devolución se concilian contra la cartola y generan asientos automáticos que separan capital e intereses.
 - Hay modelos, RLS, bitácora e importaciones para documentos, terceros, forecast y archivos fuente. El primer usuario administrador aún debe ser definido explícitamente antes de habilitar escritura real desde la interfaz.
 
 ## Ejecutar
@@ -85,6 +86,7 @@ PostgreSQL
 4. **Gastos y proveedores**: documentos recibidos, órdenes de compra, centros de costo y aprobaciones.
 5. **Remuneraciones**: importación de costos de personal a centros de costo y períodos, sin exponer liquidaciones a roles no autorizados.
 6. **Proyecciones**: evolución mensual con presupuesto, bloque `Real 2026`, gastos, resultado simple y desviaciones, sin modificar valores fuente.
+7. **Préstamos otorgados**: contratos de mutuo, capital pendiente, vencimiento, partes relacionadas, control de Timbres y Estampillas, devoluciones y conciliación bancaria con asiento automático.
 
 ### Roles iniciales
 
