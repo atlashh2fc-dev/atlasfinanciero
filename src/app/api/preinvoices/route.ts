@@ -8,7 +8,9 @@ const financeRoles = new Set(["administrator", "finance"]);
 type Service = {
   id: string;
   counterparty_id: string;
-  service_catalog_id: string;
+  service_catalog_id: string | null;
+  custom_service_name: string | null;
+  custom_service_category: string | null;
   quantity: number;
   unit_price: number;
   currency: string;
@@ -110,7 +112,7 @@ export async function GET(request: NextRequest) {
       .order("issue_date", { ascending: false })
       .limit(100),
     data.supabase.from("customer_services")
-      .select("id, counterparty_id, service_catalog_id, quantity, unit_price, currency, starts_on, ends_on, billing_frequency, is_active")
+      .select("id, counterparty_id, service_catalog_id, custom_service_name, custom_service_category, quantity, unit_price, currency, starts_on, ends_on, billing_frequency, notes, is_active")
       .eq("organization_id", data.organizationId)
       .eq("is_active", true)
       .order("created_at"),
@@ -132,8 +134,8 @@ export async function GET(request: NextRequest) {
     customers: customers.data ?? [],
     documents: documents.data ?? [],
     services: (services.data ?? []).map((service) => {
-      const catalogItem = catalogById.get(service.service_catalog_id);
-      return { ...service, service_name: catalogItem?.name ?? "Servicio contratado", service_category: catalogItem?.category ?? null };
+      const catalogItem = service.service_catalog_id ? catalogById.get(service.service_catalog_id) : null;
+      return { ...service, service_name: service.custom_service_name ?? catalogItem?.name ?? "Servicio contratado", service_category: service.custom_service_category ?? catalogItem?.category ?? null };
     }),
   });
 }
@@ -151,7 +153,7 @@ export async function POST(request: NextRequest) {
 
   const [servicesResult, rulesResult, cyclesResult] = await Promise.all([
     data.supabase.from("customer_services")
-      .select("id, counterparty_id, service_catalog_id, quantity, unit_price, currency, starts_on, ends_on, billing_frequency")
+      .select("id, counterparty_id, service_catalog_id, custom_service_name, custom_service_category, quantity, unit_price, currency, starts_on, ends_on, billing_frequency")
       .eq("organization_id", data.organizationId)
       .eq("counterparty_id", counterpartyId)
       .eq("is_active", true)

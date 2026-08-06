@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
   const canReadExpenses = ["administrator", "finance", "auditor"].includes(data.membership.role);
   const [catalog, services, files, issued, received] = await Promise.all([
     data.supabase.from("service_catalog").select("id, name, category, description, unit_name, unit_price, currency, is_active").eq("organization_id", organizationId).order("name"),
-    data.supabase.from("customer_services").select("id, counterparty_id, service_catalog_id, quantity, unit_price, currency, starts_on, ends_on, billing_frequency, notes, is_active").eq("organization_id", organizationId).order("created_at"),
+    data.supabase.from("customer_services").select("id, counterparty_id, service_catalog_id, custom_service_name, custom_service_category, quantity, unit_price, currency, starts_on, ends_on, billing_frequency, notes, is_active").eq("organization_id", organizationId).order("created_at"),
     data.supabase.from("customer_files").select("id, counterparty_id, file_name, mime_type, file_size, document_type, notes, created_at").eq("organization_id", organizationId).order("created_at", { ascending: false }),
     data.supabase.from("issued_document_receivable_balances").select("issued_document_id, counterparty_id, document_number, issue_date, document_type, client_name, recipient_name, settlement_amount, collection_status").eq("organization_id", organizationId).order("issue_date", { ascending: false }),
     canReadExpenses ? data.supabase.from("received_documents").select("id, supplier_counterparty_id, supplier_name, document_number, issue_date, document_type, total_amount, payment_status").eq("organization_id", organizationId).order("issue_date", { ascending: false }) : Promise.resolve({ data: [], error: null }),
@@ -113,11 +113,34 @@ export async function POST(request: NextRequest) {
   }
   if (action === "save_service") {
     const item = body.item as Record<string, unknown> | null;
-    const counterpartyId = item?.counterpartyId; const catalogId = item?.catalogId; const unitPrice = amount(item?.unitPrice); const quantity = Number(item?.quantity);
+    const counterpartyId = item?.counterpartyId; const catalogId = item?.catalogId; const customServiceName = text(item?.customServiceName, 180); const unitPrice = amount(item?.unitPrice); const quantity = Number(item?.quantity);
     const currency = typeof item?.currency === "string" && pricingCurrencies.has(item.currency) ? item.currency : null;
     const frequency = typeof item?.billingFrequency === "string" && frequencies.has(item.billingFrequency) ? item.billingFrequency : null;
-    if (!isUuid(counterpartyId) || !isUuid(catalogId) || unitPrice === null || !Number.isFinite(quantity) || quantity <= 0 || !currency || !frequency) return NextResponse.json({ error: "invalid_customer_service" }, { status: 400 });
-    const { error } = await data.supabase.from("customer_services").upsert({ organization_id: organizationId, counterparty_id: counterpartyId, service_catalog_id: catalogId, unit_price: unitPrice, quantity, currency, billing_frequency: frequency, starts_on: text(item?.startsOn, 10), ends_on: text(item?.endsOn, 10), notes: text(item?.notes, 2000), is_active: item?.isActive !== false }, { onConflict: "counterparty_id,service_catalog_id" });
+    const usesCatalog = isUuid(catalogId);
+    if (!isUuid(counterpartyId) || (!usesCatalog && !customServiceName) || unitPrice === null || !Number.isFinite(quantity) || quantity <= 0 || !currency || !frequency) return NextResponse.json({ error: "invalid_customer_service" }, { status: 400 });
+    const customServiceCategory = text(item?.category, 100);
+    if (!usesCatalog && !customServiceCategory) return NextResponse.json({ error: "invalid_customer_service_category" }, { status: 400 });
+    const values = { organization_id: organizationId, counterparty_id: counterpartyId, service_catalog_id: usesCatalog ? catalogId : null, custom_service_name: usesCatalog ? null : customServiceName, custom_service_category: usesCatalog ? null : customServiceCategory, unit_price: unitPrice, quantity, currency, billing_frequency: frequency, starts_on: text(item?.startsOn, 10), ends_on: text(item?.endsOn, 10), notes: text(item?.notes, 500), is_active: item?.isActive !== false };
+    let error = null;
+    if (usesCatalog) {
+      const { data: existing, error: readError } = await data.supabase
+        .from("customer_services")
+        .select("id")
+        .eq("organization_id", organizationId)
+        .eq("counterparty_id", counterpartyId)
+        .eq("service_catalog_id", catalogId)
+        .maybeSingle();
+      if (readError) error = readError;
+      else {
+        const result = existing
+          ? await data.supabase.from("customer_services").update(values).eq("id", existing.id).eq("organization_id", organizationId)
+          : await data.supabase.from("customer_services").insert(values);
+        error = result.error;
+      }
+    } else {
+      const result = await data.supabase.from("customer_services").insert(values);
+      error = result.error;
+    }
     return error ? NextResponse.json({ error: "unable_to_save_customer_service" }, { status: 409 }) : NextResponse.json({ ok: true });
   }
   if (action === "delete_service") {

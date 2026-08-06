@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type Role = "administrator" | "finance" | "operations" | "auditor" | "data_entry";
 type Customer = { id: string; legal_name: string; trade_name: string | null };
-type CustomerService = { id: string; counterparty_id: string; service_catalog_id: string; service_name: string; service_category: string | null; quantity: number; unit_price: number; currency: string; starts_on: string | null; ends_on: string | null; billing_frequency: "monthly" | "quarterly" | "annual" | "one_time" };
+type CustomerService = { id: string; counterparty_id: string; service_catalog_id: string | null; custom_service_name: string | null; custom_service_category: string | null; service_name: string; service_category: string | null; quantity: number; unit_price: number; currency: string; starts_on: string | null; ends_on: string | null; billing_frequency: "monthly" | "quarterly" | "annual" | "one_time"; notes: string | null };
 type ServiceDraft = { customerServiceId: string; description: string; quantity: string; unitPrice: string; notes: string };
 type IssuedDocument = { id: string; counterparty_id: string | null; document_number: string | null; issue_date: string | null; total_amount: number | null; client_name: string | null; recipient_name: string | null };
 type Line = { id: string; preinvoice_id: string; description: string; quantity: number; unit_price: number; net_amount: number; source_currency: string; source_unit_price: number; conversion_rate_to_clp: number; pricing_date: string; rate_source: string; usage_quantity: number | null; notes: string | null; service_name: string | null; service_category: string | null };
@@ -88,7 +88,7 @@ export function PreinvoiceWorkbench({ organizationId, onOpenApprovals }: { organ
     }
     setSelectedServiceIds((current) => [...current, serviceId]);
     const defaultGloss = service.service_category ? `${service.service_category} · ${service.service_name}` : service.service_name;
-    setServiceDrafts((drafts) => ({ ...drafts, [serviceId]: { customerServiceId: serviceId, description: defaultGloss, quantity: numberInput(service.quantity), unitPrice: numberInput(service.unit_price), notes: "" } }));
+    setServiceDrafts((drafts) => ({ ...drafts, [serviceId]: { customerServiceId: serviceId, description: defaultGloss, quantity: numberInput(service.quantity), unitPrice: numberInput(service.unit_price), notes: service.notes ?? "" } }));
   }
 
   function updateServiceDraft(serviceId: string, values: Partial<ServiceDraft>) {

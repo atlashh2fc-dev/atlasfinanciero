@@ -779,6 +779,48 @@ button {
   height: 235px;
   padding-top: 14px;
 }
+.chart-subtitle {
+  max-width: 64ch;
+  margin: 5px 0 0;
+  color: #7d899b;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.revenue-bi-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+.revenue-bi-summary > span {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #e8ecf3;
+  border-radius: 8px;
+  background: #fafbfe;
+}
+.revenue-bi-summary small {
+  display: block;
+  color: #7d8a9d;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .45px;
+  text-transform: uppercase;
+}
+.revenue-bi-summary strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 4px;
+  color: #33435d;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.revenue-bi-summary strong.is-negative { color: #b55261; }
+.revenue-comparison-chart {
+  height: 285px;
+  padding-top: 8px;
+}
 .donut-row {
   display: flex;
   align-items: center;
@@ -1531,13 +1573,31 @@ button {
   display: grid;
   gap: 4px;
 }
-.filters select {
+.filters select,
+.filters input {
   border: 1px solid #e1e6ee;
   color: #46556b;
   background: #fff;
   border-radius: 6px;
-  padding: 6px 26px 6px 8px;
+  padding: 6px 8px;
   font-size: 11px;
+}
+.filters select { padding-right: 26px; }
+.income-table-toolbar {
+  display: grid;
+  justify-items: end;
+  gap: 9px;
+}
+.income-table-toolbar .filters { flex-wrap: wrap; justify-content: flex-end; }
+.income-table-toolbar .filters input { min-width: 210px; }
+.income-customer-table { min-width: 1040px; }
+.income-customer-detail > td {
+  padding: 12px 14px;
+  background: #f7f9ff;
+}
+.income-customer-detail .table-scroll {
+  border: 1px solid #e3e9f5;
+  border-radius: 8px;
 }
 .expense-filter-row {
   display: grid;
@@ -3169,6 +3229,36 @@ td small {
 .customer-profile-card .secondary-button {
   justify-self: start;
 }
+.profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.profile-aliases {
+  display: block;
+  margin-top: 8px;
+  color: #67758b;
+  font-size: 9px;
+  line-height: 1.45;
+}
+.customer-merge-modal { max-width: 620px; }
+.merge-profile-picker {
+  display: grid;
+  gap: 7px;
+  margin: 18px 0 10px;
+  color: #637087;
+  font-size: 10px;
+  font-weight: 700;
+}
+.merge-profile-picker select {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #dfe5ed;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+  color: #26334a;
+}
 .customer-control {
   grid-column: 1 / -1;
   margin-top: 4px;
@@ -3242,6 +3332,10 @@ td small {
 .control-list strong, .control-list b { color: #3e4c62; font-size: 11px; }
 .control-list strong { display: block; }
 .control-list small { display: block; margin-top: 3px; color: #7e8a9d; font-size: 9px; line-height: 1.35; }
+.control-list .service-description {
+  max-width: 58ch;
+  color: #5f6f86;
+}
 .control-list b { white-space: nowrap; font-size: 10px; }
 .control-empty { margin: 12px 0; color: #8995a7; font-size: 10px; }
 .contract-upload, .service-assignment {
@@ -3258,7 +3352,7 @@ td small {
   font-size: 9px;
   font-weight: 700;
 }
-.contract-upload input, .service-assignment input, .service-assignment select {
+.contract-upload input, .service-assignment input, .service-assignment select, .service-assignment textarea {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid #dfe5ed;
@@ -3269,6 +3363,9 @@ td small {
   font-size: 10px;
 }
 .service-assignment { grid-template-columns: minmax(130px, 1.6fr) repeat(3, minmax(80px, 1fr)); }
+.service-assignment textarea { min-height: 58px; resize: vertical; }
+.service-assignment .service-custom-name,
+.service-assignment .service-description-field { grid-column: span 2; }
 .service-assignment .uf-reference-note {
   grid-column: 1 / -1;
   margin: 0;
@@ -4081,6 +4178,15 @@ td small {
   font-weight: 700;
 }
 @media (max-width: 720px) {
+  .income-table-toolbar {
+    justify-items: stretch;
+    width: 100%;
+    margin-top: 14px;
+  }
+  .income-table-toolbar .filters { display: grid; grid-template-columns: 1fr 1fr; }
+  .income-table-toolbar .filters label:first-child { grid-column: 1 / -1; }
+  .income-table-toolbar .filters input { min-width: 0; width: 100%; box-sizing: border-box; }
+  .revenue-bi-summary { grid-template-columns: 1fr; }
   .receivables-toolbar {
     align-items: stretch;
     flex-direction: column;

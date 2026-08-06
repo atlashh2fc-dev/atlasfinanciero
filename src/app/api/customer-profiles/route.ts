@@ -35,11 +35,26 @@ export async function GET(request: NextRequest) {
   if (!organizationId) return NextResponse.json({ error: "organization_access_required" }, { status: 403 });
 
   const [profiles, contacts] = await Promise.all([
-    supabase.from("counterparties").select("id, legal_name, trade_name, tax_id, business_activity, address_line1, commune, city, website, email, phone, payment_term_days, billing_email, billing_phone, legal_representative_name, legal_representative_tax_id, legal_representative_address, legal_representative_phone, legal_representative_email, is_active").eq("organization_id", organizationId).in("kind", ["customer", "both"]).order("legal_name"),
+    supabase.from("counterparties").select("id, legal_name, trade_name, tax_id, business_activity, address_line1, commune, city, website, email, phone, payment_term_days, billing_email, billing_phone, legal_representative_name, legal_representative_tax_id, legal_representative_address, legal_representative_phone, legal_representative_email, is_active, merged_into_counterparty_id").eq("organization_id", organizationId).in("kind", ["customer", "both"]).order("legal_name"),
     supabase.from("counterparty_contacts").select("id, counterparty_id, contact_area, job_title, full_name, phone, email, is_primary").eq("organization_id", organizationId).order("contact_area").order("full_name"),
   ]);
   if (profiles.error || contacts.error) return NextResponse.json({ error: "unable_to_load_customer_profiles" }, { status: 500 });
-  return NextResponse.json({ profiles: profiles.data ?? [], contacts: contacts.data ?? [] });
+  const mergedByCanonical = new Map<string, Array<{ id: string; legal_name: string; trade_name: string | null }>>();
+  for (const profile of profiles.data ?? []) {
+    if (!profile.merged_into_counterparty_id) continue;
+    mergedByCanonical.set(profile.merged_into_counterparty_id, [...(mergedByCanonical.get(profile.merged_into_counterparty_id) ?? []), profile]);
+  }
+  const canonicalProfiles = (profiles.data ?? [])
+    .filter((profile) => profile.is_active && !profile.merged_into_counterparty_id)
+    .map((profile) => {
+      const merged = mergedByCanonical.get(profile.id) ?? [];
+      return {
+        ...profile,
+        related_ids: merged.map((item) => item.id),
+        aliases: merged.flatMap((item) => [item.legal_name, item.trade_name]).filter((item): item is string => Boolean(item?.trim())),
+      };
+    });
+  return NextResponse.json({ profiles: canonicalProfiles, contacts: contacts.data ?? [] });
 }
 
 export async function POST(request: NextRequest) {
@@ -49,6 +64,17 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   const organizationId = await membership(supabase, body?.organizationId, user.id, true);
   if (!organizationId) return NextResponse.json({ error: "organization_write_not_authorized" }, { status: 403 });
+  if (body?.action === "merge_profiles") {
+    if (!["administrator", "finance"].includes((await supabase.from("organization_memberships").select("role").eq("organization_id", organizationId).eq("user_id", user.id).maybeSingle()).data?.role ?? "")) {
+      return NextResponse.json({ error: "customer_merge_not_authorized" }, { status: 403 });
+    }
+    const canonicalId = body.canonicalId;
+    const duplicateId = body.duplicateId;
+    if (!isUuid(canonicalId) || !isUuid(duplicateId) || canonicalId === duplicateId) return NextResponse.json({ error: "invalid_customer_merge" }, { status: 400 });
+    const { data, error } = await supabase.rpc("consolidate_customer_counterparties", { p_organization_id: organizationId, p_canonical_counterparty_id: canonicalId, p_duplicate_counterparty_ids: [duplicateId] });
+    if (error) return NextResponse.json({ error: "unable_to_merge_customer_profiles" }, { status: 409 });
+    return NextResponse.json({ result: data });
+  }
   if (body?.action !== "save_profile") return NextResponse.json({ error: "unsupported_customer_profile_action" }, { status: 400 });
 
   const profile = body.profile as Record<string, unknown> | null;

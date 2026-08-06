@@ -1,12 +1,14 @@
 "use client";
 
-import { FormEvent, type CSSProperties, useEffect, useMemo, useState } from "react";
+import { FormEvent, Fragment, type CSSProperties, useEffect, useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
   Bar,
   BarChart,
+  CartesianGrid,
   Cell,
+  Legend,
   Line,
   LineChart,
   Pie,
@@ -81,6 +83,8 @@ const pieColors = [
   "#2a8aa6",
   "#9d72d7",
 ];
+const revenueYearColors = ["#2a8aa6", "#d59a34", "#8b67c8", "#cf6e78", "#77859a"];
+const revenueYearDashes = [undefined, "7 4", "3 3", "10 4 2 4", "2 5"];
 const modulePreviews: Record<Module, string> = {
   Inicio:
     "Cockpit ejecutivo: crecimiento, cobranza, concentración y referencias de mercado.",
@@ -382,6 +386,11 @@ const money = new Intl.NumberFormat("es-CL", {
 });
 
 const number = new Intl.NumberFormat("es-CL", { maximumFractionDigits: 0 });
+const percentage = new Intl.NumberFormat("es-CL", {
+  style: "percent",
+  maximumFractionDigits: 1,
+  signDisplay: "exceptZero",
+});
 
 function formatMoney(value: number) {
   return money.format(value);
@@ -442,6 +451,7 @@ function localIsoDate(value = new Date()) {
 }
 
 type CanonicalInvoiceRecord = InvoiceRecord & {
+  counterpartyId?: string | null;
   settlementAmount?: number;
   paidAmount?: number;
   outstandingAmount?: number;
@@ -1285,10 +1295,12 @@ function CustomerModule({
   records,
   organizationId,
   canManage,
+  canConsolidate,
 }: {
   records: InvoiceRecord[];
   organizationId: string | null;
   canManage: boolean;
+  canConsolidate: boolean;
 }) {
   const [workspaceView, setWorkspaceView] =
     useState<CustomerWorkspaceView>("summary");
@@ -1550,6 +1562,7 @@ function CustomerModule({
           <CustomerProfiles
             organizationId={organizationId}
             canManage={canManage}
+            canConsolidate={canConsolidate}
           />
         </section>
       )}
@@ -2109,6 +2122,7 @@ function ForecastModule() {
 
 type StoredDocument = {
   id: string;
+  counterparty_id: string | null;
   document_number: string | null;
   issue_date: string | null;
   document_type: string | null;
@@ -2170,6 +2184,14 @@ function normalizeDocumentType(value: string | null) {
   );
 }
 
+function normalizeSearchText(value: string | null | undefined) {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es-CL")
+    .trim();
+}
+
 function mapStoredDocument(
   document: StoredDocument,
   previous?: InvoiceRecord | null,
@@ -2191,6 +2213,7 @@ function mapStoredDocument(
   );
   return {
     id: document.id,
+    counterpartyId: document.counterparty_id,
     invoiceNumber: document.document_number,
     year: document.issue_date ? Number(document.issue_date.slice(0, 4)) : null,
     month: document.issue_date ? monthFromDate(document.issue_date) : null,
@@ -2248,6 +2271,9 @@ export function FinanceDashboard() {
   const [year, setYear] = useState("Todos");
   const [month, setMonth] = useState("Todos");
   const [status, setStatus] = useState("Todos");
+  const [incomeView, setIncomeView] = useState<"customers" | "documents">("customers");
+  const [incomeSearch, setIncomeSearch] = useState("");
+  const [expandedIncomeCustomers, setExpandedIncomeCustomers] = useState<string[]>([]);
   const [documentSort, setDocumentSort] = useState<DocumentSort>({
     column: "invoiceNumber",
     direction: "asc",
@@ -2434,9 +2460,75 @@ export function FinanceDashboard() {
       ),
     [yearFilteredRecords, month, status],
   );
+  const incomeFiltered = useMemo(() => {
+    const search = normalizeSearchText(incomeSearch);
+    if (!search) return filtered;
+    return filtered.filter((record) =>
+      normalizeSearchText([
+        record.client,
+        record.recipient,
+        record.recipientRut,
+        record.invoiceNumber,
+        record.documentType,
+        record.notes,
+      ].filter(Boolean).join(" ")).includes(search),
+    );
+  }, [filtered, incomeSearch]);
+  const incomeCustomerGroups = useMemo(() => {
+    const groups = new Map<string, {
+      key: string;
+      name: string;
+      legalName: string | null;
+      rut: string | null;
+      documents: InvoiceRecord[];
+      netIncome: number;
+      invoicedIncome: number;
+      pendingInvoiceIncome: number;
+      latestIssueDate: string | null;
+    }>();
+    for (const record of incomeFiltered) {
+      if (isPurchaseOrderDocument(record)) continue;
+      const name = record.client?.trim() || record.recipient?.trim() || "Cliente no informado";
+      const rut = record.recipientRut?.trim() || null;
+      const counterpartyId = (record as CanonicalInvoiceRecord).counterpartyId;
+      const key = counterpartyId
+        ? `customer:${counterpartyId}`
+        : rut
+          ? `rut:${normalizeSearchText(rut)}`
+          : `name:${normalizeSearchText(name)}`;
+      const group = groups.get(key) ?? {
+        key,
+        name,
+        legalName: record.recipient?.trim() || null,
+        rut,
+        documents: [],
+        netIncome: 0,
+        invoicedIncome: 0,
+        pendingInvoiceIncome: 0,
+        latestIssueDate: null,
+      };
+      const net = recognizedNetAmount(record);
+      group.documents.push(record);
+      group.netIncome += net;
+      if (isActiveIssuedInvoice(record)) group.invoicedIncome += net;
+      if (
+        !isActiveIssuedInvoice(record) &&
+        !isCreditNoteDocument(record) &&
+        !record.status?.toLocaleLowerCase("es-CL").includes("anulad") &&
+        net > 0
+      ) group.pendingInvoiceIncome += net;
+      if (record.issueDate && (!group.latestIssueDate || record.issueDate > group.latestIssueDate)) {
+        group.latestIssueDate = record.issueDate;
+      }
+      groups.set(key, group);
+    }
+    return Array.from(groups.values()).sort(
+      (first, second) => second.netIncome - first.netIncome || first.name.localeCompare(second.name, "es-CL"),
+    );
+  }, [incomeFiltered]);
   const orderedDocuments = useMemo(
     () =>
-      [...filtered].sort((first, second) => {
+      [...incomeFiltered].sort((first, second) => {
         let result = 0;
         switch (documentSort.column) {
           case "invoiceNumber":
@@ -2470,7 +2562,7 @@ export function FinanceDashboard() {
         }
         return documentSort.direction === "asc" ? result : -result;
       }),
-    [filtered, documentSort],
+    [incomeFiltered, documentSort],
   );
 
   const toggleDocumentSort = (column: DocumentSortColumn) => {
@@ -2494,27 +2586,66 @@ export function FinanceDashboard() {
         : "descending";
 
   const revenueEvolution = useMemo(() => {
-    const years = (year === "Todos" ? availableYears : [Number(year)])
-      .slice()
-      .sort((first, second) => first - second);
-    return years.flatMap((currentYear) =>
-      calendarMonths.map((monthName, monthIndex) => {
-        const matching = records.filter(
-          (record) =>
-            record.year === currentYear && record.month === monthName,
-        );
-        return {
-          period: `${monthName.slice(0, 3)} ${currentYear}`,
-          year: String(currentYear),
-          month: monthName.slice(0, 3),
-          monthIndex,
-          montoNeto: sumRecognizedNet(matching),
-          documentos: matching.filter(
-            (record) => !isPurchaseOrderDocument(record),
-          ).length,
-        };
-      }),
+    const ascendingYears = availableYears.slice().sort((first, second) => first - second);
+    const focusYear = year === "Todos" ? ascendingYears.at(-1) : Number(year);
+    const previousYear = focusYear === undefined
+      ? undefined
+      : ascendingYears.filter((item) => item < focusYear).at(-1);
+    const chartYears = year === "Todos"
+      ? ascendingYears.slice(-5)
+      : [previousYear, focusYear].filter((item): item is number => typeof item === "number");
+    const observedMonthIndexes = focusYear === undefined
+      ? []
+      : records
+        .filter((record) => record.year === focusYear && record.month)
+        .map((record) => calendarMonths.indexOf(record.month!))
+        .filter((index) => index >= 0);
+    const current = new Date();
+    const latestObservedMonth = observedMonthIndexes.length ? Math.max(...observedMonthIndexes) : 0;
+    const cutoffMonth = focusYear === current.getFullYear()
+      ? Math.min(current.getMonth(), latestObservedMonth)
+      : 11;
+    const data = calendarMonths.map((monthName, monthIndex) => {
+      const row: Record<string, string | number | null> = {
+        month: monthName.slice(0, 3),
+        monthName,
+        monthIndex,
+      };
+      for (const currentYear of chartYears) {
+        const isFuture = currentYear === current.getFullYear() && monthIndex > cutoffMonth;
+        row[String(currentYear)] = isFuture
+          ? null
+          : sumRecognizedNet(records.filter((record) => record.year === currentYear && record.month === monthName));
+      }
+      return row;
+    });
+    const totalThroughCutoff = (targetYear: number | undefined) => targetYear === undefined
+      ? 0
+      : sumRecognizedNet(records.filter((record) =>
+        record.year === targetYear &&
+        record.month !== null &&
+        calendarMonths.indexOf(record.month) <= cutoffMonth,
+      ));
+    const focusTotal = totalThroughCutoff(focusYear);
+    const previousTotal = totalThroughCutoff(previousYear);
+    const focusValues = focusYear === undefined
+      ? []
+      : data.slice(0, cutoffMonth + 1).map((row, index) => ({ month: calendarMonths[index], value: Number(row[String(focusYear)] ?? 0) }));
+    const bestMonth = focusValues.reduce<{ month: string; value: number } | null>(
+      (best, item) => !best || item.value > best.value ? item : best,
+      null,
     );
+    return {
+      data,
+      years: chartYears,
+      focusYear,
+      previousYear,
+      cutoffMonth,
+      focusTotal,
+      previousTotal,
+      growth: previousTotal ? focusTotal / previousTotal - 1 : null,
+      bestMonth,
+    };
   }, [availableYears, records, year]);
   const statusesChart = useMemo(
     () =>
@@ -2854,6 +2985,7 @@ export function FinanceDashboard() {
     };
     const created = mapStoredDocument({
       ...payload.document,
+      counterparty_id: draft.clientId || null,
       notes: null,
       payment_term_days: null,
       due_date: payload.document.due_date,
@@ -2977,6 +3109,49 @@ export function FinanceDashboard() {
     if (groupLabel === activeNavigationGroup) return;
     setExpandedNavigationGroups((current) =>
       current.includes(groupLabel) ? [] : [groupLabel],
+    );
+  }
+
+  function toggleIncomeCustomer(key: string) {
+    setExpandedIncomeCustomers((current) =>
+      current.includes(key)
+        ? current.filter((item) => item !== key)
+        : [...current, key],
+    );
+  }
+
+  function renderIncomeDocumentRow(record: InvoiceRecord) {
+    return (
+      <tr key={record.id}>
+        <td>
+          <strong>N° {record.invoiceNumber ?? "—"}</strong>
+          <small>{record.issuer}</small>
+        </td>
+        <td>
+          {formatDate(record.issueDate)}
+          <small>{record.month ?? "—"}</small>
+        </td>
+        <td>
+          <strong>{record.client ?? "No informado"}</strong>
+          <small>{record.recipient ?? "—"}</small>
+        </td>
+        <td>{record.documentType ?? "—"}</td>
+        <td className={`money-col ${recognizedNetAmount(record) < 0 ? "is-negative" : ""}`}>
+          {formatMoney(recognizedNetAmount(record))}
+        </td>
+        <td><span className={statusClass(record.status)}>{record.status ?? "No informado"}</span></td>
+        <td>
+          <span className="origin">{record.source.sheet}<b>fila {record.source.row || "sesión"}</b></span>
+        </td>
+        <td>
+          <div className="document-row-actions">
+            {attachmentByDocument[record.id] && <button type="button" className="text-button" onClick={() => void openDocumentAttachment(record.id)}>Ver factura</button>}
+            {paymentProofByDocument[record.id] && <button type="button" className="text-button" onClick={() => void openPaymentProof(record.id)}>Ver comprobante</button>}
+            {hasEditPermission && databaseRecords && <button type="button" className="secondary-button" onClick={() => startDocumentEdit(record)}>Editar</button>}
+            {!attachmentByDocument[record.id] && !paymentProofByDocument[record.id] && !(hasEditPermission && databaseRecords) && "—"}
+          </div>
+        </td>
+      </tr>
     );
   }
 
@@ -3146,6 +3321,7 @@ export function FinanceDashboard() {
             records={records}
             organizationId={access?.membership.organizationId ?? null}
             canManage={hasEditPermission}
+            canConsolidate={Boolean(access && ["administrator", "finance"].includes(access.membership.role))}
           />
         ) : activeModule === "Cotizador" ? (
           <QuotationBuilder
@@ -3394,45 +3570,56 @@ export function FinanceDashboard() {
                     <span className="panel-label">EVOLUCIÓN</span>
                     <h2>
                       {year === "Todos"
-                        ? "Crecimiento anual, mes a mes"
-                        : `Crecimiento mensual · ${year}`}
+                        ? "Ingresos mensuales comparados por año"
+                        : `Ingresos mensuales · ${year} vs. ${revenueEvolution.previousYear ?? "sin comparativo"}`}
                     </h2>
+                    <p className="chart-subtitle">
+                      {year === "Todos"
+                        ? "Cada línea representa un año sobre el mismo eje enero–diciembre."
+                        : `Comparación acumulada hasta ${calendarMonths[revenueEvolution.cutoffMonth].toLocaleLowerCase("es-CL")}.`}
+                    </p>
                   </div>
                   <span className="unit">CLP neto/exento</span>
                 </div>
-                <div className="chart-wrap">
+                <div className="revenue-bi-summary" aria-label="Resumen de evolución de ingresos">
+                  <span><small>{revenueEvolution.focusYear ? `Acumulado ${revenueEvolution.focusYear}` : "Acumulado"}</small><strong>{formatMoney(revenueEvolution.focusTotal)}</strong></span>
+                  <span><small>Variación comparable</small><strong className={revenueEvolution.growth !== null && revenueEvolution.growth < 0 ? "is-negative" : ""}>{revenueEvolution.growth === null ? "Sin base" : percentage.format(revenueEvolution.growth)}</strong></span>
+                  <span><small>Mejor mes</small><strong>{revenueEvolution.bestMonth ? `${revenueEvolution.bestMonth.month.slice(0, 3)} · ${formatMoney(revenueEvolution.bestMonth.value)}` : "Sin datos"}</strong></span>
+                </div>
+                <div className="chart-wrap revenue-comparison-chart">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart
-                      data={revenueEvolution}
-                      margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                      data={revenueEvolution.data}
+                      margin={{ top: 8, right: 12, left: 4, bottom: 0 }}
                     >
+                      <CartesianGrid vertical={false} stroke="#e9edf3" strokeDasharray="3 5" />
                       <XAxis
-                        dataKey={year === "Todos" ? "period" : "month"}
+                        dataKey="month"
                         tickLine={false}
                         axisLine={false}
-                        minTickGap={24}
                         tick={{ fill: "#7e8ba0", fontSize: 12 }}
                       />
-                      <YAxis hide />
+                      <YAxis
+                        width={48}
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fill: "#8b96a8", fontSize: 10 }}
+                        tickFormatter={(value) => `${Math.round(Number(value) / 1_000_000)}M`}
+                      />
                       <Tooltip
-                        labelFormatter={(_, payload) =>
-                          payload[0]?.payload?.period ?? ""
-                        }
+                        labelFormatter={(_, payload) => payload[0]?.payload?.monthName ?? ""}
                         formatter={(value) => formatMoney(Number(value))}
                         contentStyle={{
                           borderRadius: 12,
                           border: "1px solid #e6e9ef",
                         }}
                       />
-                      <Line
-                        type="monotone"
-                        dataKey="montoNeto"
-                        name="Facturación neta"
-                        stroke="#5968df"
-                        strokeWidth={2.5}
-                        dot={{ r: 2.5, fill: "#5968df" }}
-                        activeDot={{ r: 5 }}
-                      />
+                      <Legend verticalAlign="top" align="right" height={32} iconType="plainline" />
+                      {revenueEvolution.years.map((chartYear, index) => {
+                        const isFocus = chartYear === revenueEvolution.focusYear;
+                        const color = isFocus ? "#5968df" : revenueYearColors[index % revenueYearColors.length];
+                        return <Line key={chartYear} type="monotone" dataKey={String(chartYear)} name={String(chartYear)} stroke={color} strokeWidth={isFocus ? 3 : 2} strokeDasharray={isFocus ? undefined : revenueYearDashes[index % revenueYearDashes.length]} dot={{ r: isFocus ? 3 : 2, fill: "#fff", stroke: color, strokeWidth: 2 }} activeDot={{ r: 5 }} connectNulls={false} />;
+                      })}
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
@@ -3538,10 +3725,15 @@ export function FinanceDashboard() {
               <div className="table-heading">
                 <div>
                   <span className="panel-label">REGISTRO TRAZABLE</span>
-                  <h2>Documentos emitidos</h2>
-                  <p>{filtered.length} resultado(s) con los filtros actuales</p>
+                  <h2>{incomeView === "customers" ? "Ingresos agrupados por cliente" : "Documentos emitidos"}</h2>
+                  <p>{incomeView === "customers" ? `${incomeCustomerGroups.length} cliente(s) con ingresos en los filtros actuales` : `${orderedDocuments.length} documento(s) con los filtros actuales`}</p>
                 </div>
+                <div className="income-table-toolbar">
                 <div className="filters">
+                  <label>
+                    Buscar
+                    <input type="search" value={incomeSearch} onChange={(event) => setIncomeSearch(event.target.value)} placeholder="Cliente, RUT, folio o detalle" />
+                  </label>
                   <label>
                     Año
                     <select
@@ -3585,8 +3777,47 @@ export function FinanceDashboard() {
                     </select>
                   </label>
                 </div>
+                <div className="receivables-view-toggle" aria-label="Vista de ingresos">
+                  <button type="button" className={incomeView === "customers" ? "active" : ""} onClick={() => setIncomeView("customers")}>Por cliente</button>
+                  <button type="button" className={incomeView === "documents" ? "active" : ""} onClick={() => setIncomeView("documents")}>Por documento</button>
+                </div>
+                </div>
               </div>
-              <div className="table-scroll">
+              {incomeView === "customers" ? <div className="table-scroll">
+                <table className="income-customer-table">
+                  <thead>
+                    <tr>
+                      <th>Cliente</th>
+                      <th>Documentos</th>
+                      <th className="money-col">Ingreso neto/exento</th>
+                      <th className="money-col">Facturación vigente</th>
+                      <th className="money-col">Pendiente de facturar</th>
+                      <th>Último movimiento</th>
+                      <th>Detalle</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {incomeCustomerGroups.map((group) => {
+                      const isExpanded = expandedIncomeCustomers.includes(group.key);
+                      return <Fragment key={group.key}>
+                        <tr>
+                          <td><strong>{group.name}</strong><small>{group.rut ? `RUT ${group.rut}` : group.legalName || "Sin RUT informado"}</small></td>
+                          <td><strong>{group.documents.length}</strong><small>{group.documents.length === 1 ? "1 documento trazable" : `${group.documents.length} documentos trazables`}</small></td>
+                          <td className={`money-col ${group.netIncome < 0 ? "is-negative" : ""}`}><strong>{formatMoney(group.netIncome)}</strong></td>
+                          <td className="money-col"><strong>{formatMoney(group.invoicedIncome)}</strong></td>
+                          <td className="money-col"><strong>{group.pendingInvoiceIncome ? formatMoney(group.pendingInvoiceIncome) : "—"}</strong></td>
+                          <td>{formatDate(group.latestIssueDate)}</td>
+                          <td><button type="button" className="secondary-button" onClick={() => toggleIncomeCustomer(group.key)} aria-expanded={isExpanded}>{isExpanded ? "Ocultar documentos" : "Ver documentos"}</button></td>
+                        </tr>
+                        {isExpanded && <tr className="income-customer-detail"><td colSpan={7}><div className="table-scroll"><table>
+                          <thead><tr><th>Documento</th><th>Emisión</th><th>Cliente</th><th>Tipo</th><th className="money-col">Neto/exento</th><th>Estado</th><th>Origen</th><th>Acción</th></tr></thead>
+                          <tbody>{group.documents.map(renderIncomeDocumentRow)}</tbody>
+                        </table></div></td></tr>}
+                      </Fragment>;
+                    })}
+                  </tbody>
+                </table>
+              </div> : <div className="table-scroll">
                 <table>
                   <thead>
                     <tr>
@@ -3628,51 +3859,10 @@ export function FinanceDashboard() {
                       <th>Acción</th>
                     </tr>
                   </thead>
-                  <tbody>
-                    {orderedDocuments.map((record) => (
-                      <tr key={record.id}>
-                        <td>
-                          <strong>N° {record.invoiceNumber ?? "—"}</strong>
-                          <small>{record.issuer}</small>
-                        </td>
-                        <td>
-                          {formatDate(record.issueDate)}
-                          <small>{record.month ?? "—"}</small>
-                        </td>
-                        <td>
-                          <strong>{record.client ?? "No informado"}</strong>
-                          <small>{record.recipient ?? "—"}</small>
-                        </td>
-                        <td>{record.documentType ?? "—"}</td>
-                        <td
-                          className={`money-col ${recognizedNetAmount(record) < 0 ? "is-negative" : ""}`}
-                        >
-                          {formatMoney(recognizedNetAmount(record))}
-                        </td>
-                        <td>
-                          <span className={statusClass(record.status)}>
-                            {record.status ?? "No informado"}
-                          </span>
-                        </td>
-                        <td>
-                          <span className="origin">
-                            {record.source.sheet}
-                            <b>fila {record.source.row || "sesión"}</b>
-                          </span>
-                        </td>
-                        <td>
-                          <div className="document-row-actions">
-                            {attachmentByDocument[record.id] && <button type="button" className="text-button" onClick={() => void openDocumentAttachment(record.id)}>Ver factura</button>}
-                            {paymentProofByDocument[record.id] && <button type="button" className="text-button" onClick={() => void openPaymentProof(record.id)}>Ver comprobante</button>}
-                            {hasEditPermission && databaseRecords && <button type="button" className="secondary-button" onClick={() => startDocumentEdit(record)}>Editar</button>}
-                            {!attachmentByDocument[record.id] && !paymentProofByDocument[record.id] && !(hasEditPermission && databaseRecords) && "—"}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
+                  <tbody>{orderedDocuments.map(renderIncomeDocumentRow)}</tbody>
                 </table>
-              </div>
+              </div>}
+              {!incomeFiltered.length && <p className="billing-empty">{incomeSearch ? "No encontramos ingresos con esa búsqueda." : "No hay ingresos en los filtros seleccionados."}</p>}
             </section>
           </main>
         )}
