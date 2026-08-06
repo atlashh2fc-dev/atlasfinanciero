@@ -4460,6 +4460,56 @@ td small {
 }
 .management-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .management-kpis .kpi-card.danger { border-top: 3px solid #de7a68; }
+.payroll-provisions .kpi-card.danger { border-top: 3px solid #de7a68; }
+.provision-draft-actions {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) auto auto;
+  gap: 12px;
+  align-items: end;
+  padding: 0 20px 20px;
+}
+.provision-draft-actions label {
+  display: grid;
+  gap: 6px;
+  color: #64738a;
+  font-size: 11px;
+  font-weight: 750;
+}
+.provision-draft-actions textarea {
+  width: 100%;
+  min-height: 68px;
+  resize: vertical;
+  border: 1px solid #dfe5ed;
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: #334057;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  outline-color: #6c79e5;
+}
+.provision-line-form {
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+}
+.provision-line-form label small {
+  color: #7b8799;
+  font-size: 10px;
+  line-height: 1.35;
+}
+.provision-line-form > button {
+  align-self: end;
+  min-height: 38px;
+}
+@media (max-width: 1180px) {
+  .payroll-provisions .kpis-six { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .provision-line-form { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+}
+@media (max-width: 760px) {
+  .payroll-provisions .kpis-six,
+  .provision-line-form,
+  .provision-draft-actions { grid-template-columns: 1fr; }
+}
 .management-worklists { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .8fr); gap: 18px; }
 .management-action-list { display: grid; gap: 1px; border-top: 1px solid var(--line); }
 .management-action-list button { display: grid; gap: 4px; padding: 17px 28px; border: 0; border-bottom: 1px solid var(--line); text-align: left; background: #fff; color: #2b3a55; cursor: pointer; font: inherit; }

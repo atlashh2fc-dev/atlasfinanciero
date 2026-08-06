@@ -25,6 +25,7 @@ import { AccountsReceivable } from "@/components/accounts-receivable";
 import { createClient } from "@/lib/supabase/client";
 import { AdministrationConsole } from "@/components/administration-console";
 import { PayrollDashboard } from "@/components/payroll-dashboard";
+import { PayrollProvisions } from "@/components/payroll-provisions";
 import { CustomerPurchaseOrders } from "@/components/customer-purchase-orders";
 import { CustomerProfiles } from "@/components/customer-profiles";
 import { CommercialControl } from "@/components/commercial-control";
@@ -123,6 +124,7 @@ const modulePreviews: Record<Module, string> = {
   Tesorería:
     "Posición por cuenta, movimientos bancarios y conciliación de cobros y pagos.",
   Remuneraciones: "Costo laboral y dotación sincronizados desde PeopleWork.",
+  Provisiones: "Estimación semanal de remuneraciones, componentes adicionales, contabilización incremental y comparación contra la nómina real.",
   "Centros de costo":
     "Estructura de imputación, personas y clientes que financian cada unidad o proyecto.",
   "Imputaciones pendientes":
@@ -159,6 +161,7 @@ type Module =
   | "Compras, obligaciones y pagos"
   | "Tesorería"
   | "Remuneraciones"
+  | "Provisiones"
   | "Centros de costo"
   | "Imputaciones pendientes"
   | "Aprobaciones"
@@ -211,7 +214,7 @@ const navigationGroups: NavigationGroup[] = [
   },
   {
     label: "PERSONAS Y CONTROL",
-    items: ["Remuneraciones", "Aprobaciones", "Cierre financiero", "Administración", "Bitácora de actividad", "Control SaaS"],
+    items: ["Remuneraciones", "Provisiones", "Aprobaciones", "Cierre financiero", "Administración", "Bitácora de actividad", "Control SaaS"],
     accent: "#f4a7bd",
     accentSoft: "#472b3b",
   },
@@ -253,6 +256,7 @@ function NavigationItemIcon({ item }: { item: Module }) {
   if (item === "Inicio") return <svg {...iconProps}><path d="m4 11 8-7 8 7v9H4z" /><path d="M9 20v-5h6v5" /></svg>;
   if (item === "Gestión 360") return <svg {...iconProps}><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></svg>;
   if (item === "CRM y clientes" || item === "Remuneraciones") return <svg {...iconProps}><circle cx="9" cy="8" r="3" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0m2-10a3 3 0 0 1 0 6m1.5-8a3 3 0 0 1 0 5" /></svg>;
+  if (item === "Provisiones") return <svg {...iconProps}><path d="M5 4h14v16H5z" /><path d="M8 8h8m-8 4h8m-8 4h4" /><path d="M16 14v5m-2.5-2.5h5" /></svg>;
   if (item === "Cotizador") return <svg {...iconProps}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M8 7h8M8 11h2m3 0h3m-8 4h2m3 0h3m-8 3h8" /></svg>;
   if (item === "Mercado Público") return <svg {...iconProps}><circle cx="10.5" cy="10.5" r="5.5" /><path d="m15 15 4.5 4.5M7 10.5h7M10.5 7v7" /></svg>;
   if (item === "Fondos y beneficios") return <svg {...iconProps}><path d="M12 3v18M16 7.5c-.7-1-2-1.5-4-1.5-2.3 0-4 1.1-4 3s1.7 3 4 3 4 1.1 4 3-1.7 3-4 3c-2 0-3.3-.5-4-1.5" /><path d="M4 20h16" /></svg>;
@@ -3090,6 +3094,7 @@ export function FinanceDashboard() {
           (item !== "Compras, obligaciones y pagos" || canReadProcurement) &&
           (item !== "Tesorería" || canReadExpenses) &&
           (item !== "Planificación financiera" || canReadExpenses) &&
+          (item !== "Provisiones" || canReadExpenses) &&
           (item !== "Cierre financiero" || canReadExpenses),
       ),
     }))
@@ -3409,6 +3414,8 @@ export function FinanceDashboard() {
             organizationId={access?.membership.organizationId ?? null}
             canSynchronize={access?.membership.role === "administrator"}
           />
+        ) : activeModule === "Provisiones" ? (
+          canReadExpenses ? <PayrollProvisions organizationId={access?.membership.organizationId ?? null} /> : null
         ) : activeModule === "Centros de costo" ? (
           canManageCostCenters ? (
             <CostCenterManagement

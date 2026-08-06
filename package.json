@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test:receivables": "node --experimental-strip-types --test tests/clp.test.ts",
     "test:peoplework": "node --experimental-strip-types --test tests/peoplework-sync.test.ts",
+    "test:payroll-provisions": "node --experimental-strip-types --test tests/payroll-provisions.test.ts",
     "test:quotation": "node --experimental-strip-types --test tests/quotation.test.ts",
     "test:payment-schedule": "node --experimental-strip-types --test tests/payment-schedule.test.ts",
     "verify:crm": "node scripts/verify-crm-workspace.mjs",
