@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: context.error }, { status: context.status });
   }
 
-  const [provisionResult, centersResult, payrollResult, membershipResult] = await Promise.all([
+  const [provisionResult, centersResult, payrollResult, contractualSnapshotResult, membershipResult] = await Promise.all([
     context.supabase
       .from("payroll_provisions")
       .select("id, period_month, status, currency_code, posted_amount, actual_amount, actual_refreshed_at, reconciliation_entry_id, reconciled_at, notes, created_at, updated_at")
@@ -89,9 +89,15 @@ export async function GET(request: NextRequest) {
       .order("code"),
     context.supabase
       .from("payroll_cost_lines")
-      .select("amount, data_basis")
+      .select("sync_run_id, amount, data_basis, cost_center_code, cost_center_name")
       .eq("organization_id", organizationId)
       .eq("period_month", periodMonth),
+    context.supabase
+      .from("payroll_contractual_snapshots")
+      .select("current_sync_run_id")
+      .eq("organization_id", organizationId)
+      .eq("fiscal_year", Number(periodMonth.slice(0, 4)))
+      .maybeSingle(),
     context.supabase
       .from("organization_memberships")
       .select("role")
@@ -99,7 +105,7 @@ export async function GET(request: NextRequest) {
       .eq("user_id", context.user?.id ?? "")
       .maybeSingle(),
   ]);
-  if (provisionResult.error || centersResult.error || payrollResult.error || membershipResult.error) {
+  if (provisionResult.error || centersResult.error || payrollResult.error || contractualSnapshotResult.error || membershipResult.error) {
     return NextResponse.json({ error: "unable_to_load_payroll_provision" }, { status: 500 });
   }
 
@@ -108,8 +114,15 @@ export async function GET(request: NextRequest) {
     ? officialLines.reduce((total, line) => total + asNumber(line.amount), 0)
     : null;
   const contractualSourceTotal = (payrollResult.data ?? [])
-    .filter((line) => line.data_basis === "contractual_estimate")
+    .filter((line) => line.data_basis === "contractual_estimate" && line.sync_run_id === contractualSnapshotResult.data?.current_sync_run_id)
     .reduce((total, line) => total + asNumber(line.amount), 0);
+  const centerIdByCode = new Map((centersResult.data ?? []).map((center) => [center.code.trim().toLocaleUpperCase("es-CL"), center.id]));
+  const officialActualLines = officialLines.map((line) => ({
+    costCenterId: line.cost_center_code ? centerIdByCode.get(line.cost_center_code.trim().toLocaleUpperCase("es-CL")) ?? null : null,
+    costCenterCode: line.cost_center_code,
+    costCenterName: line.cost_center_name,
+    amount: asNumber(line.amount),
+  }));
 
   const provision = provisionResult.data;
   if (!provision) {
@@ -117,9 +130,14 @@ export async function GET(request: NextRequest) {
       provision: null,
       revisions: [],
       currentRevision: null,
+      workingRevision: null,
+      lastPostedRevision: null,
+      sourceIsStale: false,
       centers: centersResult.data ?? [],
       officialActual,
+      officialActualLines,
       contractualSourceTotal,
+      reportedLaborCost: officialActual === null ? null : { amount: officialActual, basis: "official" },
       comparison: null,
       canManage: ["administrator", "finance"].includes(membershipResult.data?.role ?? ""),
     });
@@ -127,7 +145,7 @@ export async function GET(request: NextRequest) {
 
   const revisionsResult = await context.supabase
     .from("payroll_provision_revisions")
-    .select("id, provision_id, as_of_date, status, total_amount, accounting_delta, accounting_entry_id, source_refreshed_at, posted_at, notes, created_at, updated_at")
+      .select("id, provision_id, as_of_date, status, total_amount, accounting_delta, accounting_entry_id, source_refreshed_at, source_sync_run_id, posted_at, notes, created_at, updated_at")
     .eq("organization_id", organizationId)
     .eq("provision_id", provision.id)
     .order("as_of_date", { ascending: false });
@@ -166,17 +184,28 @@ export async function GET(request: NextRequest) {
       displayTotal: revision.status === "posted" ? asNumber(revision.total_amount) : calculatedTotal,
     };
   });
-  const currentRevision = revisions.find((revision) => revision.status === "draft") ?? revisions[0] ?? null;
-  const comparisonAmount = currentRevision?.displayTotal ?? asNumber(provision.posted_amount);
+  const workingRevision = revisions.find((revision) => revision.status === "draft") ?? null;
+  const lastPostedRevision = revisions.find((revision) => revision.status === "posted") ?? null;
+  const currentRevision = workingRevision ?? lastPostedRevision;
+  const comparisonAmount = lastPostedRevision?.displayTotal ?? null;
+  const sourceIsStale = Boolean(workingRevision && workingRevision.source_sync_run_id !== contractualSnapshotResult.data?.current_sync_run_id);
+  const reportedLaborCost = officialActual === null
+    ? lastPostedRevision ? { amount: lastPostedRevision.displayTotal, basis: "posted_provision" } : null
+    : { amount: officialActual, basis: "official" };
 
   return NextResponse.json({
     provision,
     revisions,
     currentRevision,
+    workingRevision,
+    lastPostedRevision,
+    sourceIsStale,
     centers: centersResult.data ?? [],
     officialActual,
+    officialActualLines,
     contractualSourceTotal,
-    comparison: officialActual === null ? null : {
+    reportedLaborCost,
+    comparison: officialActual === null || comparisonAmount === null ? null : {
       provisionAmount: comparisonAmount,
       actualAmount: officialActual,
       variance: officialActual - comparisonAmount,
@@ -345,6 +374,32 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "unable_to_post_revision", detail: error?.message ?? null }, { status: 409 });
     }
     return NextResponse.json({ revision: data });
+  }
+
+  if (body.action === "save_official_actual") {
+    if (!isPeriodMonth(body.periodMonth) || !Array.isArray(body.allocations) || body.allocations.length < 1 || body.allocations.length > 200) {
+      return NextResponse.json({ error: "invalid_official_payroll" }, { status: 400 });
+    }
+    const allocations = body.allocations.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const input = item as Record<string, unknown>;
+      const amount = positiveNumber(input.amount);
+      const costCenterId = input.costCenterId === null || input.costCenterId === "" ? null : input.costCenterId;
+      if (amount === null || (costCenterId !== null && !isUuid(costCenterId))) return [];
+      return [{ costCenterId, amount }];
+    });
+    if (allocations.length !== body.allocations.length) {
+      return NextResponse.json({ error: "invalid_official_payroll_line" }, { status: 400 });
+    }
+    const { data, error } = await supabase.rpc("replace_manual_official_payroll", {
+      p_organization_id: organizationId,
+      p_period_month: body.periodMonth,
+      p_lines: allocations,
+    });
+    if (error || !data) {
+      return NextResponse.json({ error: "unable_to_save_official_payroll", detail: error?.message ?? null }, { status: 409 });
+    }
+    return NextResponse.json({ officialPayroll: data });
   }
 
   if (body.action === "reconcile_actual") {

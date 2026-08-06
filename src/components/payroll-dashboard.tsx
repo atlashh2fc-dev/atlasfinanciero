@@ -73,11 +73,12 @@ export function PayrollDashboard({ organizationId, canSynchronize }: { organizat
     setSyncing(true);
     setMessage(null);
     const response = await fetch("/api/integrations/peoplework/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, year, month }) });
-    const result = await response.json().catch(() => null) as { error?: string; detail?: string; summary?: { employees: number; contracts: number; attendanceReportRows: number; attendanceMetrics: number; rejectedAttendanceEvents: number } } | null;
+    const result = await response.json().catch(() => null) as { error?: string; detail?: string; summary?: { employees: number; contracts: number; attendanceReportRows: number; attendanceMetrics: number; rejectedAttendanceEvents: number; contractualSnapshotActivated: boolean; refreshedProvisionDrafts: number } } | null;
     if (!response.ok) setMessage(result?.detail ?? "No fue posible sincronizar PeopleWork. Revisa la configuración y vuelve a intentarlo.");
     else {
       const rejected = result?.summary?.rejectedAttendanceEvents ?? 0;
-      setMessage(`PeopleWork quedó conciliado para ${year}: ${result?.summary?.employees ?? 0} personas, ${result?.summary?.contracts ?? 0} contratos y ${result?.summary?.attendanceReportRows ?? 0} filas del reporte oficial de asistencia. La API pública no entregó la nómina liquidada; la base contractual se mantiene separada.${rejected ? ` ${rejected} evento(s) no pudieron asociarse.` : ""}`);
+      const refreshedDrafts = result?.summary?.refreshedProvisionDrafts ?? 0;
+      setMessage(`PeopleWork quedó conciliado para ${year}: ${result?.summary?.employees ?? 0} personas, ${result?.summary?.contracts ?? 0} contratos y ${result?.summary?.attendanceReportRows ?? 0} filas del reporte oficial de asistencia. El snapshot contractual se activó sin mezclar lotes${refreshedDrafts ? ` y actualizó ${refreshedDrafts} borrador(es) de provisión` : ""}. La API pública no entregó la nómina liquidada.${rejected ? ` ${rejected} evento(s) no pudieron asociarse.` : ""}`);
       await load();
     }
     setSyncing(false);

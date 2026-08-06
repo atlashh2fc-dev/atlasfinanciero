@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
   if (runError || !syncRun) return NextResponse.json({ error: "unable_to_start_peoplework_sync" }, { status: 500 });
 
   let insertedReplacementCosts = false;
-  let removedPreviousCosts = false;
+  let snapshotActivated = false;
   try {
     const snapshot = await fetchPeopleWorkSnapshot(year);
     const now = new Date().toISOString();
@@ -210,20 +210,21 @@ export async function POST(request: NextRequest) {
       const { error } = await admin.from("payroll_person_period_metrics").delete().eq("organization_id", organizationId).in("id", staleMetricIds);
       if (error) throw new Error("No fue posible retirar eventos de asistencia eliminados en PeopleWork.");
     }
-    const { error: removeCostError } = await admin.from("payroll_cost_lines").delete().eq("organization_id", organizationId).eq("data_basis", "contractual_estimate").gte("period_month", `${year}-01-01`).lte("period_month", `${year}-12-01`).neq("sync_run_id", syncRun.id);
-    if (removeCostError) throw new Error("No fue posible retirar la base histórica anterior de remuneraciones.");
-    removedPreviousCosts = true;
-
     const received = snapshot.employees.length + snapshot.contracts.length + snapshot.absences.length + snapshot.vacations.length + snapshot.attendanceReports.length;
-    const [runUpdate, integrationUpdate] = await Promise.all([
-      admin.from("payroll_sync_runs").update({ status: "succeeded", finished_at: new Date().toISOString(), records_received: received, records_accepted: peopleRows.length + contractRows.length + metricRows.length + payrollCosts.length, records_rejected: snapshot.contracts.length - contractRows.length + attendance.rejected }).eq("id", syncRun.id),
-      admin.from("payroll_integrations").update({ is_active: true, last_sync_at: new Date().toISOString(), last_sync_status: "succeeded", last_period_month: month }).eq("id", integration.id),
-    ]);
-    if (runUpdate.error || integrationUpdate.error) throw new Error("Los datos se conciliaron, pero no fue posible confirmar el estado final de la sincronización.");
-    return NextResponse.json({ synced: true, summary: { employees: peopleRows.length, contracts: contractRows.length, contractualCostLines: payrollCosts.length, officialPayrollAvailable: false, officialPayrollStatus: "peoplework_public_api_unavailable", absenceEvents: snapshot.absences.length, vacationEvents: snapshot.vacations.length, attendanceReportRows: snapshot.attendanceReports.length, attendanceMetrics: metricRows.length, rejectedAttendanceEvents: attendance.rejected, periodYear: year, periodMonth: selectedMonth } });
+    const runUpdate = await admin.from("payroll_sync_runs").update({ status: "succeeded", finished_at: new Date().toISOString(), records_received: received, records_accepted: peopleRows.length + contractRows.length + metricRows.length + payrollCosts.length, records_rejected: snapshot.contracts.length - contractRows.length + attendance.rejected }).eq("id", syncRun.id);
+    if (runUpdate.error) throw new Error("Los datos se conciliaron, pero no fue posible confirmar el lote de sincronización.");
+
+    const { data: activation, error: activationError } = await admin.rpc("activate_peoplework_contractual_snapshot", {
+      p_organization_id: organizationId,
+      p_sync_run_id: syncRun.id,
+    });
+    if (activationError || !activation) throw new Error("No fue posible activar de forma atómica la nueva base contractual.");
+    const activationResult = activation as { activated?: boolean; refreshedDrafts?: number };
+    snapshotActivated = activationResult.activated === true;
+    return NextResponse.json({ synced: true, summary: { employees: peopleRows.length, contracts: contractRows.length, contractualCostLines: payrollCosts.length, contractualSnapshotActivated: snapshotActivated, refreshedProvisionDrafts: activationResult.refreshedDrafts ?? 0, officialPayrollAvailable: false, officialPayrollStatus: "peoplework_public_api_unavailable", absenceEvents: snapshot.absences.length, vacationEvents: snapshot.vacations.length, attendanceReportRows: snapshot.attendanceReports.length, attendanceMetrics: metricRows.length, rejectedAttendanceEvents: attendance.rejected, periodYear: year, periodMonth: selectedMonth } });
   } catch (error) {
     const message = errorMessage(error);
-    if (insertedReplacementCosts && !removedPreviousCosts) await admin.from("payroll_cost_lines").delete().eq("sync_run_id", syncRun.id);
+    if (insertedReplacementCosts && !snapshotActivated) await admin.from("payroll_cost_lines").delete().eq("sync_run_id", syncRun.id);
     await Promise.all([
       admin.from("payroll_sync_runs").update({ status: "failed", finished_at: new Date().toISOString(), error_summary: message }).eq("id", syncRun.id),
       admin.from("payroll_integrations").update({ last_sync_status: "failed" }).eq("id", integration.id),

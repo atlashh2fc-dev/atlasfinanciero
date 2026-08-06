@@ -52,7 +52,7 @@ export function FinancialCloseWorkbench({ organizationId }: { organizationId: st
   const events = useMemo(() => data?.events.filter((event) => event.financial_period_id === period?.id) ?? [], [data, period]);
   const metrics = useMemo(() => {
     if (!period || !data) return { automaticBlockers: 0, managementPending: 0, draftEntries: 0, unreconciled: 0, documents: 0 };
-    const automatic = ["documents_reviewed", "bank_reconciliation", "receivables_payables", "journal_entries"].map((code) => data.controls?.[code]).filter((control): control is AutomaticControl => Boolean(control));
+    const automatic = ["documents_reviewed", "bank_reconciliation", "receivables_payables", "journal_entries", "payroll_provision"].map((code) => data.controls?.[code]).filter((control): control is AutomaticControl => Boolean(control));
     const management = tasks.find((task) => task.task_code === "management_review");
     return {
       automaticBlockers: automatic.filter((control) => control.state === "blocked").length,
@@ -113,7 +113,7 @@ export function FinancialCloseWorkbench({ organizationId }: { organizationId: st
     {loading ? <section className="panel billing-empty"><p>Cargando control de cierre…</p></section> : !data ? <section className="panel billing-empty"><p>Selecciona una empresa para consultar sus cierres financieros.</p></section> : <>
       <section className="billing-form-panel panel">
         <div className="panel-heading"><div><span className="panel-label">NUEVO PERÍODO</span><h2>Crear un mes de control</h2></div><span className="unit">Finanzas y administración</span></div>
-        <form className="billing-form" onSubmit={createPeriod}><label>Mes<input type="month" value={periodStart} onChange={(event) => setPeriodStart(event.target.value)} required /></label><p className="form-note">Se conectan cuatro validaciones automáticas: documentos, bancos, aging y asientos. Sólo la revisión de gestión requiere evidencia de Finanzas.</p><button className="primary-button" disabled={!canManage || saving} type="submit">Crear período</button></form>
+        <form className="billing-form" onSubmit={createPeriod}><label>Mes<input type="month" value={periodStart} onChange={(event) => setPeriodStart(event.target.value)} required /></label><p className="form-note">Se conectan cinco validaciones automáticas: documentos, bancos, aging, asientos y provisión de remuneraciones. Sólo la revisión de gestión requiere evidencia de Finanzas.</p><button className="primary-button" disabled={!canManage || saving} type="submit">Crear período</button></form>
       </section>
 
       {!period ? <section className="panel billing-empty"><p>No hay períodos todavía. Crea el primer mes para iniciar el control de cierre.</p></section> : <>

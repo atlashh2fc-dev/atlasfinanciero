@@ -27,6 +27,7 @@ type Revision = {
   accounting_delta: number | string | null;
   accounting_entry_id: string | null;
   source_refreshed_at: string | null;
+  source_sync_run_id: string | null;
   posted_at: string | null;
   notes: string | null;
   displayTotal: number;
@@ -48,9 +49,14 @@ type Payload = {
   provision: Provision | null;
   revisions: Revision[];
   currentRevision: Revision | null;
+  workingRevision: Revision | null;
+  lastPostedRevision: Revision | null;
+  sourceIsStale: boolean;
   centers: Center[];
   officialActual: number | null;
+  officialActualLines: Array<{ costCenterId: string | null; costCenterCode: string | null; costCenterName: string | null; amount: number }>;
   contractualSourceTotal: number;
+  reportedLaborCost: { amount: number; basis: "official" | "posted_provision" } | null;
   comparison: {
     provisionAmount: number;
     actualAmount: number;
@@ -110,6 +116,9 @@ function errorMessage(error: string | undefined, detail: string | null | undefin
   if (detail?.includes("closed period")) return "El período contable está cerrado. Debes reabrirlo antes de registrar este movimiento.";
   if (detail?.includes("Official payroll")) return "La nómina real todavía no está disponible para este mes.";
   if (detail?.includes("chronological")) return "Las versiones semanales deben registrarse en orden cronológico.";
+  if (detail?.includes("latest PeopleWork snapshot")) return "PeopleWork cambió desde esta versión. Refresca la semana antes de contabilizar.";
+  if (detail?.includes("Synchronize PeopleWork") || detail?.includes("Configure PeopleWork")) return "Primero debes sincronizar y configurar PeopleWork para este año.";
+  if (detail?.includes("reconciled")) return "La nómina real ya fue conciliada y no puede reemplazarse sin reabrir ese proceso.";
   if (error === "invalid_provision_line_amount") return "El componente no genera monto. Revisa el valor o la base PeopleWork del centro de costo.";
   return detail || "No fue posible completar la operación.";
 }
@@ -132,6 +141,8 @@ export function PayrollProvisions({ organizationId }: { organizationId: string |
     notes: "",
   });
   const [revisionNotes, setRevisionNotes] = useState("");
+  const [actualAllocations, setActualAllocations] = useState<Array<{ costCenterId: string; amount: string }>>([]);
+  const [actualDraft, setActualDraft] = useState({ costCenterId: "", amount: "" });
 
   async function load() {
     if (!organizationId) {
@@ -149,6 +160,7 @@ export function PayrollProvisions({ organizationId }: { organizationId: string |
     } else {
       setPayload(next);
       setRevisionNotes(next.currentRevision?.status === "draft" ? next.currentRevision.notes ?? "" : "");
+      setActualAllocations(next.officialActualLines.map((line) => ({ costCenterId: line.costCenterId ?? "", amount: String(line.amount) })));
       setMessage("");
     }
     setLoading(false);
@@ -177,7 +189,7 @@ export function PayrollProvisions({ organizationId }: { organizationId: string |
   }
 
   const revision = payload?.currentRevision ?? null;
-  const editableRevision = revision?.status === "draft" ? revision : null;
+  const editableRevision = payload?.workingRevision ?? null;
   const centerById = useMemo(() => new Map(payload?.centers.map((center) => [center.id, center]) ?? []), [payload?.centers]);
   const percentageBase = useMemo(() => {
     if (!editableRevision) return 0;
@@ -194,6 +206,7 @@ export function PayrollProvisions({ organizationId }: { organizationId: string |
     deductions: 0,
   };
   const displayedEstimate = revision?.displayTotal ?? payload?.contractualSourceTotal ?? 0;
+  const accountedProvision = payload?.lastPostedRevision?.displayTotal ?? 0;
 
   async function addLine(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -233,10 +246,31 @@ export function PayrollProvisions({ organizationId }: { organizationId: string |
     await post({ action: "reconcile_actual", provisionId: payload.provision.id }, "Provisión ajustada y conciliada contra la nómina real.");
   }
 
+  function addActualAllocation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const value = Number(actualDraft.amount);
+    if (!Number.isFinite(value) || value <= 0) return;
+    setActualAllocations((current) => {
+      const existing = current.find((line) => line.costCenterId === actualDraft.costCenterId);
+      if (existing) return current.map((line) => line === existing ? { ...line, amount: String(amount(line.amount) + value) } : line);
+      return [...current, { costCenterId: actualDraft.costCenterId, amount: String(value) }];
+    });
+    setActualDraft({ costCenterId: "", amount: "" });
+  }
+
+  async function saveOfficialActual() {
+    if (!actualAllocations.length) return;
+    await post({
+      action: "save_official_actual",
+      periodMonth: `${month}-01`,
+      allocations: actualAllocations.map((line) => ({ costCenterId: line.costCenterId || null, amount: amount(line.amount) })),
+    }, "Nómina real guardada por centro de costo. Ya puedes ajustar la provisión contra el real.");
+  }
+
   return <main className="dashboard payroll-provisions">
     <section className="headline">
       <div>
-        <span className="eyebrow">PERSONAS · DEVENGO SEMANAL</span>
+        <span className="eyebrow">PROVISIÓN MENSUAL · VERSIÓN SEMANAL</span>
         <h1>Provisiones de remuneraciones</h1>
         <p>Construye el costo esperado desde PeopleWork, agrega componentes no incluidos y conserva cada movimiento semanal hasta conciliarlo con la nómina real.</p>
       </div>
@@ -250,12 +284,14 @@ export function PayrollProvisions({ organizationId }: { organizationId: string |
 
     <section className="kpis kpis-six" aria-label="Resumen de provisión">
       <article className="kpi-card"><span>Base PeopleWork</span><strong>{money.format(displayedSummary.contractualBase)}</strong><small>Sueldo bruto contractual de la versión</small></article>
-      <article className="kpi-card"><span>Componentes agregados</span><strong>{money.format(displayedSummary.additions)}</strong><small>Cargas, bonos y otros estimados</small></article>
-      <article className="kpi-card"><span>Descuentos estimados</span><strong>{money.format(displayedSummary.deductions)}</strong><small>Correcciones que reducen la base</small></article>
-      <article className="kpi-card accent"><span>Provisión vigente</span><strong>{money.format(displayedEstimate)}</strong><small>{revision ? `Versión al ${date.format(new Date(`${revision.as_of_date}T00:00:00`))}` : "Aún sin versión semanal"}</small></article>
+      <article className="kpi-card"><span>Ajustes estimados netos</span><strong>{money.format(displayedSummary.additions - displayedSummary.deductions)}</strong><small>{money.format(displayedSummary.additions)} agregados · {money.format(displayedSummary.deductions)} descuentos</small></article>
+      <article className="kpi-card"><span>Estimación de trabajo</span><strong>{money.format(displayedEstimate)}</strong><small>{editableRevision ? `Borrador al ${date.format(new Date(`${editableRevision.as_of_date}T00:00:00`))}; no impacta reportes` : revision ? "Última versión contabilizada" : "Aún sin versión semanal"}</small></article>
+      <article className="kpi-card accent"><span>Provisión contabilizada</span><strong>{accountedProvision ? money.format(accountedProvision) : "Pendiente"}</strong><small>{accountedProvision ? "Impacta Contabilidad y Reportes hasta recibir el real" : "El borrador todavía no impacta KPI financieros"}</small></article>
       <article className="kpi-card"><span>Nómina real</span><strong>{payload?.officialActual === null || payload?.officialActual === undefined ? "Pendiente" : money.format(payload.officialActual)}</strong><small>{payload?.officialActual === null || payload?.officialActual === undefined ? "Se activará al recibir la nómina oficial" : "Costo oficial disponible"}</small></article>
       <article className={`kpi-card ${payload?.comparison && payload.comparison.variance !== 0 ? "danger" : ""}`}><span>Desviación vs. real</span><strong>{payload?.comparison ? money.format(payload.comparison.variance) : "—"}</strong><small>{payload?.comparison?.variancePercentage === null || payload?.comparison?.variancePercentage === undefined ? "Sin nómina real para comparar" : percentage.format(payload.comparison.variancePercentage)}</small></article>
     </section>
+
+    {payload?.sourceIsStale && <p className="operation-message">PeopleWork cambió desde que se abrió este borrador. Refresca la versión antes de contabilizar; la base de datos también bloqueará un asiento obsoleto.</p>}
 
     <section className="billing-form-panel panel">
       <div className="panel-heading">
@@ -319,6 +355,16 @@ export function PayrollProvisions({ organizationId }: { organizationId: string |
       <div className="table-scroll"><table><thead><tr><th>Fecha de corte</th><th>Estado</th><th className="money-col">Estimación</th><th className="money-col">Movimiento contable</th><th>Comentario</th></tr></thead><tbody>
         {payload?.revisions.length ? payload.revisions.map((item) => <tr key={item.id}><td><strong>{date.format(new Date(`${item.as_of_date}T00:00:00`))}</strong><small>{item.source_refreshed_at ? `PeopleWork actualizado ${dateTime.format(new Date(item.source_refreshed_at))}` : "Sin actualización de origen"}</small></td><td><span className={`status ${item.status === "posted" ? "paid" : "pending"}`}>{item.status === "posted" ? "Contabilizada" : "Borrador"}</span></td><td className="money-col">{money.format(item.displayTotal)}</td><td className={`money-col ${amount(item.accounting_delta) < 0 ? "is-negative" : ""}`}>{item.status === "posted" ? money.format(amount(item.accounting_delta)) : "—"}</td><td>{item.notes || "—"}</td></tr>) : <tr><td colSpan={5}>No existen versiones semanales para este mes.</td></tr>}
       </tbody></table></div>
+    </section>
+
+    <section className="table-section">
+      <div className="table-heading"><div><span className="panel-label">NÓMINA REAL</span><h2>Carga manual por centro de costo</h2><p>Cuando PeopleWork no entrega la liquidación por API, el manager puede registrar aquí el total oficial. Esta fuente reemplaza a la provisión en los KPI; nunca se suma con ella.</p></div>{payload?.canManage && payload?.provision?.status !== "reconciled" && <button className="primary-button" type="button" disabled={saving || !actualAllocations.length} onClick={() => void saveOfficialActual()}>Guardar nómina real</button>}</div>
+      {payload?.canManage && payload?.provision?.status !== "reconciled" && <form className="expense-filter-row provision-line-form" onSubmit={addActualAllocation}>
+        <label><span>Centro de costo</span><select value={actualDraft.costCenterId} onChange={(event) => setActualDraft((current) => ({ ...current, costCenterId: event.target.value }))}><option value="">Sin centro asignado</option>{payload.centers.map((center) => <option key={center.id} value={center.id}>{center.code} · {center.name}</option>)}</select></label>
+        <label><span>Monto liquidado oficial</span><input type="number" min="1" step="0.01" value={actualDraft.amount} onChange={(event) => setActualDraft((current) => ({ ...current, amount: event.target.value }))} required /></label>
+        <button className="secondary-button" type="submit" disabled={saving || amount(actualDraft.amount) <= 0}>Agregar al detalle</button>
+      </form>}
+      <div className="table-scroll"><table><thead><tr><th>Centro de costo</th><th className="money-col">Monto real</th>{payload?.canManage && payload?.provision?.status !== "reconciled" && <th />}</tr></thead><tbody>{actualAllocations.length ? actualAllocations.map((line, index) => { const center = line.costCenterId ? centerById.get(line.costCenterId) : null; return <tr key={`${line.costCenterId || "sin-centro"}-${index}`}><td><strong>{center ? `${center.code} · ${center.name}` : "Sin centro asignado"}</strong></td><td className="money-col">{money.format(amount(line.amount))}</td>{payload?.canManage && payload?.provision?.status !== "reconciled" && <td><button type="button" className="text-button" onClick={() => setActualAllocations((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Quitar</button></td>}</tr>; }) : <tr><td colSpan={payload?.canManage && payload?.provision?.status !== "reconciled" ? 3 : 2}>Aún no se ha cargado la nómina real de este mes.</td></tr>}</tbody><tfoot><tr><td><strong>Total nómina real</strong></td><td className="money-col"><strong>{money.format(actualAllocations.reduce((total, line) => total + amount(line.amount), 0))}</strong></td>{payload?.canManage && payload?.provision?.status !== "reconciled" && <td />}</tr></tfoot></table></div>
     </section>
 
     {payload?.comparison && <section className="billing-form-panel panel">
