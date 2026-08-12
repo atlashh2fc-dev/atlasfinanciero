@@ -63,13 +63,15 @@ export function summarizePaymentWeeks(
 
   return weekDates.map<PaymentWeekSummary>((scheduledFor) => {
     const weekBatches = batches.filter(
-      (batch) =>
-        batch.scheduled_for === scheduledFor && batch.status !== "cancelled",
+      (batch) => batch.scheduled_for === scheduledFor,
+    );
+    const activeBatches = weekBatches.filter(
+      (batch) => !["cancelled", "paid"].includes(batch.status),
     );
     const result: PaymentWeekSummary = {
       scheduledFor,
-      batchIds: weekBatches.map((batch) => batch.id),
-      itemCount: weekBatches.reduce(
+      batchIds: activeBatches.map((batch) => batch.id),
+      itemCount: activeBatches.reduce(
         (sum, batch) => sum + (itemCountByBatch.get(batch.id) ?? 0),
         0,
       ),
@@ -82,7 +84,8 @@ export function summarizePaymentWeeks(
     };
     for (const batch of weekBatches) {
       const amount = Number(batch.total_amount ?? 0);
-      result.totalAmount += amount;
+      if (!["cancelled", "paid"].includes(batch.status))
+        result.totalAmount += amount;
       if (batch.status === "draft") result.draftAmount += amount;
       if (batch.status === "review") result.reviewAmount += amount;
       if (batch.status === "approved") result.approvedAmount += amount;

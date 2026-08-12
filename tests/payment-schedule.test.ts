@@ -28,12 +28,14 @@ test("totaliza carga y estados por viernes", () => {
       { id: "b", scheduled_for: "2026-08-07", status: "approved", total_amount: "4000" },
       { id: "c", scheduled_for: "2026-08-14", status: "review", total_amount: 3000 },
       { id: "d", scheduled_for: "2026-08-14", status: "cancelled", total_amount: 9999 },
+      { id: "e", scheduled_for: "2026-08-07", status: "paid", total_amount: 700 },
     ],
     [
       { payment_batch_id: "a", amount: 1000 },
       { payment_batch_id: "a", amount: 1500 },
       { payment_batch_id: "b", amount: 4000 },
       { payment_batch_id: "c", amount: 3000 },
+      { payment_batch_id: "e", amount: 700 },
     ],
     ["2026-08-07", "2026-08-14"],
   );
@@ -46,7 +48,7 @@ test("totaliza carga y estados por viernes", () => {
     reviewAmount: 0,
     approvedAmount: 4000,
     processingAmount: 0,
-    paidAmount: 0,
+    paidAmount: 700,
   });
   assert.equal(weeks[1].totalAmount, 3000);
   assert.equal(weeks[1].itemCount, 1);

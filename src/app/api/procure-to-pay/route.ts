@@ -336,6 +336,7 @@ export async function GET(request: NextRequest) {
     receiptLines,
     batches,
     batchItems,
+    batchItemProofs,
     executions,
     documents,
     directPayables,
@@ -393,13 +394,21 @@ export async function GET(request: NextRequest) {
     context.supabase
       .from("payment_batch_items")
       .select(
-        "id, payment_batch_id, received_document_id, direct_payable_id, supplier_name_snapshot, document_number_snapshot, due_date_snapshot, amount, cash_flow_category",
+        "id, payment_batch_id, received_document_id, direct_payable_id, supplier_name_snapshot, document_number_snapshot, due_date_snapshot, amount, cash_flow_category, authorization_status, authorized_amount, cancelled_at, cancellation_reason",
       )
       .eq("organization_id", organizationId),
     context.supabase
+      .from("payment_batch_item_proofs")
+      .select(
+        "id, payment_batch_id, payment_batch_item_id, payment_execution_id, paid_on, amount, payment_reference, storage_path, file_name, mime_type, file_size, created_at",
+      )
+      .eq("organization_id", organizationId)
+      .order("paid_on", { ascending: false })
+      .limit(2_000),
+    context.supabase
       .from("payment_executions")
       .select(
-        "id, payment_batch_id, direct_payable_id, status, amount, executed_on, bank_transaction_id, reconciled_at, cash_flow_classification",
+        "id, payment_batch_id, payment_batch_item_id, received_document_id, direct_payable_id, status, amount, executed_on, bank_transaction_id, reconciled_at, cash_flow_classification",
       )
       .eq("organization_id", organizationId)
       .order("executed_on", { ascending: false })
@@ -473,6 +482,7 @@ export async function GET(request: NextRequest) {
       receiptLines,
       batches,
       batchItems,
+      batchItemProofs,
       executions,
       documents,
       directPayables,
@@ -495,12 +505,20 @@ export async function GET(request: NextRequest) {
   );
   const reservedDocumentIds = new Set(
     (batchItems.data ?? [])
-      .filter((item) => activeBatchIds.has(item.payment_batch_id))
+      .filter(
+        (item) =>
+          activeBatchIds.has(item.payment_batch_id) &&
+          item.authorization_status !== "cancelled",
+      )
       .map((item) => item.received_document_id),
   );
   const reservedDirectPayableIds = new Set(
     (batchItems.data ?? [])
-      .filter((item) => activeBatchIds.has(item.payment_batch_id))
+      .filter(
+        (item) =>
+          activeBatchIds.has(item.payment_batch_id) &&
+          item.authorization_status !== "cancelled",
+      )
       .map((item) => item.direct_payable_id),
   );
   const ordersById = new Map(
@@ -590,8 +608,31 @@ export async function GET(request: NextRequest) {
     ]);
   const documentsById = new Map((documents.data ?? []).map((document) => [document.id, document]));
   const payablesById = new Map((directPayables.data ?? []).map((payable) => [payable.id, payable]));
+  const proofSignedUrls = new Map<string, string>();
+  await Promise.all(
+    (batchItemProofs.data ?? []).map(async (proof) => {
+      const { data: signed } = await context.supabase.storage
+        .from("direct-payable-files")
+        .createSignedUrl(proof.storage_path, 60);
+      if (signed?.signedUrl) proofSignedUrls.set(proof.id, signed.signedUrl);
+    }),
+  );
   const paidByDirectPayable = new Map<string, number>();
+  const paidByDocument = new Map<string, number>();
+  const paidByItem = new Map<string, number>();
   for (const execution of executions.data ?? []) {
+    if (execution.payment_batch_item_id)
+      paidByItem.set(
+        execution.payment_batch_item_id,
+        (paidByItem.get(execution.payment_batch_item_id) ?? 0) +
+          Number(execution.amount ?? 0),
+      );
+    if (execution.received_document_id)
+      paidByDocument.set(
+        execution.received_document_id,
+        (paidByDocument.get(execution.received_document_id) ?? 0) +
+          Number(execution.amount ?? 0),
+      );
     if (!execution.direct_payable_id) continue;
     paidByDirectPayable.set(
       execution.direct_payable_id,
@@ -606,6 +647,18 @@ export async function GET(request: NextRequest) {
       supplier_name_current: document?.supplier_name ?? payable?.supplier_name ?? null,
       document_number_current: document?.document_number ?? payable?.invoice_number ?? payable?.payable_number ?? null,
       due_date_current: document?.due_date ?? payable?.due_date ?? null,
+      paid_amount: paidByItem.get(item.id) ?? 0,
+      outstanding_amount: Math.max(
+        0,
+        Number(item.authorized_amount ?? item.amount ?? 0) -
+          (paidByItem.get(item.id) ?? 0),
+      ),
+      proofs: (batchItemProofs.data ?? [])
+        .filter((proof) => proof.payment_batch_item_id === item.id)
+        .map(({ storage_path: _storagePath, ...proof }) => ({
+          ...proof,
+          signed_url: proofSignedUrls.get(proof.id) ?? null,
+        })),
     };
   });
   const paymentBatches = await Promise.all((batches.data ?? []).map(async (batch) => {
@@ -689,7 +742,20 @@ export async function GET(request: NextRequest) {
     paymentProposals,
     paymentOrders,
     paymentExecutions: executions.data ?? [],
-    receivedDocuments: availableDocuments,
+    receivedDocuments: availableDocuments.map((document) => {
+      const paidAmount = Math.min(
+        Math.max(0, paidByDocument.get(document.id) ?? 0),
+        Math.max(0, Number(document.total_amount ?? 0)),
+      );
+      return {
+        ...document,
+        paid_amount: paidAmount,
+        outstanding_amount: Math.max(
+          0,
+          Number(document.total_amount ?? 0) - paidAmount,
+        ),
+      };
+    }),
     directPayables: (directPayables.data ?? []).map((payable) => {
       const paidAmount = Math.min(
         Math.max(0, paidByDirectPayable.get(payable.id) ?? 0),
@@ -766,8 +832,9 @@ export async function POST(request: NextRequest) {
     );
 
   if (action === "create_purchase_request") {
-    const requestNumber = text(body?.requestNumber, 100, true);
+    const requestNumber = text(body?.requestNumber, 100);
     const supplierName = text(body?.supplierName, 300, true);
+    const supplierTaxId = text(body?.supplierTaxId, 40);
     const description = text(body?.description, 2_000, true);
     const estimatedAmount = positive(body?.estimatedAmount);
     const requestedOn =
@@ -787,7 +854,6 @@ export async function POST(request: NextRequest) {
         )
       : null;
     if (
-      !requestNumber ||
       !supplierName ||
       !supplier ||
       !description ||
@@ -799,13 +865,35 @@ export async function POST(request: NextRequest) {
         { error: "invalid_purchase_request" },
         { status: 400 },
       );
-    const { data, error } = await context.supabase
-      .from("purchase_requests")
-      .insert({
+    let resolvedSupplier = supplier;
+    if (!resolvedSupplier.id && body?.createSupplier === true) {
+      const { data: createdSupplier, error: createdSupplierError } =
+        await context.supabase
+          .from("counterparties")
+          .insert({
+            organization_id: organizationId,
+            legal_name: supplierName,
+            tax_id: supplierTaxId,
+            kind: "supplier",
+            created_by: context.user.id,
+          })
+          .select("id, legal_name, trade_name, tax_id")
+          .single();
+      if (createdSupplierError || !createdSupplier)
+        return NextResponse.json(
+          { error: "unable_to_create_request_supplier" },
+          { status: 409 },
+        );
+      resolvedSupplier = {
+        id: createdSupplier.id,
+        name: supplierDisplayName(createdSupplier),
+        taxId: createdSupplier.tax_id,
+      };
+    }
+    const insertValues = {
         organization_id: organizationId,
-        request_number: requestNumber,
-        supplier_counterparty_id: supplier.id,
-        supplier_name: supplier.name,
+        supplier_counterparty_id: resolvedSupplier.id,
+        supplier_name: resolvedSupplier.name,
         description,
         requested_on: requestedOn,
         needed_by: neededBy,
@@ -814,6 +902,12 @@ export async function POST(request: NextRequest) {
         currency_code: "CLP",
         notes: text(body?.notes, 2_000),
         requested_by: context.user.id,
+      };
+    const { data, error } = await context.supabase
+      .from("purchase_requests")
+      .insert({
+        ...insertValues,
+        ...(requestNumber ? { request_number: requestNumber } : {}),
       })
       .select("id")
       .single();
@@ -1527,6 +1621,7 @@ export async function POST(request: NextRequest) {
         ? (body.directPayableIds as string[])
         : null;
     const directPayableAmounts = paymentAmounts(body?.directPayableAmounts);
+    const documentAmounts = paymentAmounts(body?.documentAmounts);
     if (
       !scheduledFor ||
       !isFriday(scheduledFor) ||
@@ -1534,6 +1629,7 @@ export async function POST(request: NextRequest) {
       !documentIds ||
       !directPayableIds ||
       !directPayableAmounts ||
+      !documentAmounts ||
       (!documentIds.length && !directPayableIds.length) ||
       documentIds.length + directPayableIds.length > 250 ||
       (body?.bankAccountId && !bankAccountId)
@@ -1624,7 +1720,7 @@ export async function POST(request: NextRequest) {
         .in("vendor_purchase_order_id", queryIds(purchaseOrderIds)),
       context.supabase
         .from("payment_batch_items")
-        .select("payment_batch_id, received_document_id")
+        .select("payment_batch_id, received_document_id, authorization_status")
         .eq("organization_id", organizationId)
         .in("received_document_id", queryIds(documentIds)),
       context.supabase
@@ -1636,7 +1732,7 @@ export async function POST(request: NextRequest) {
         .in("id", queryIds(directPayableIds)),
       context.supabase
         .from("payment_batch_items")
-        .select("payment_batch_id, direct_payable_id")
+        .select("payment_batch_id, direct_payable_id, authorization_status")
         .eq("organization_id", organizationId)
         .in("direct_payable_id", queryIds(directPayableIds)),
     ]);
@@ -1667,6 +1763,7 @@ export async function POST(request: NextRequest) {
         { status: 409 },
       );
     if (
+      [...documentAmounts.keys()].some((id) => !documentIds.includes(id)) ||
       [...directPayableAmounts.keys()].some(
         (id) => !directPayableIds.includes(id),
       )
@@ -1675,25 +1772,64 @@ export async function POST(request: NextRequest) {
         { error: "invalid_direct_payable_payment_amount" },
         { status: 400 },
       );
-    const { data: directPayableExecutions, error: directPayableExecutionsError } =
-      await context.supabase
+    const [directExecutionResult, documentExecutionResult] = await Promise.all([
+      context.supabase
         .from("payment_executions")
         .select("direct_payable_id, amount")
         .eq("organization_id", organizationId)
-        .in("direct_payable_id", queryIds(directPayableIds));
-    if (directPayableExecutionsError)
+        .in("direct_payable_id", queryIds(directPayableIds)),
+      context.supabase
+        .from("payment_executions")
+        .select("received_document_id, amount")
+        .eq("organization_id", organizationId)
+        .in("received_document_id", queryIds(documentIds)),
+    ]);
+    if (directExecutionResult.error || documentExecutionResult.error)
       return NextResponse.json(
         { error: "unable_to_validate_payment_documents" },
         { status: 500 },
       );
     const paidByPayable = new Map<string, number>();
-    for (const execution of directPayableExecutions ?? []) {
+    for (const execution of directExecutionResult.data ?? []) {
       if (!execution.direct_payable_id) continue;
       paidByPayable.set(
         execution.direct_payable_id,
         (paidByPayable.get(execution.direct_payable_id) ?? 0) + Number(execution.amount ?? 0),
       );
     }
+    const paidByDocument = new Map<string, number>();
+    for (const execution of documentExecutionResult.data ?? []) {
+      if (!execution.received_document_id) continue;
+      paidByDocument.set(
+        execution.received_document_id,
+        (paidByDocument.get(execution.received_document_id) ?? 0) +
+          Number(execution.amount ?? 0),
+      );
+    }
+    const documentAmountById = new Map(
+      documents.map((document) => [
+        document.id,
+        documentAmounts.get(document.id) ??
+          Math.max(
+            0,
+            Number(document.total_amount ?? 0) -
+              (paidByDocument.get(document.id) ?? 0),
+          ),
+      ]),
+    );
+    if (
+      documents.some((document) => {
+        const outstanding =
+          Number(document.total_amount ?? 0) -
+          (paidByDocument.get(document.id) ?? 0);
+        const proposed = documentAmountById.get(document.id) ?? 0;
+        return proposed <= 0 || proposed > outstanding + 0.01;
+      })
+    )
+      return NextResponse.json(
+        { error: "received_document_payment_exceeds_outstanding" },
+        { status: 409 },
+      );
     const payableAmountById = new Map(
       directPayables.map((payable) => [
         payable.id,
@@ -1750,8 +1886,12 @@ export async function POST(request: NextRequest) {
       );
     const existingBatchIds = [
       ...new Set([
-        ...(existingItems ?? []).map((item) => item.payment_batch_id),
-        ...(existingDirectItems ?? []).map((item) => item.payment_batch_id),
+        ...(existingItems ?? [])
+          .filter((item) => item.authorization_status !== "cancelled")
+          .map((item) => item.payment_batch_id),
+        ...(existingDirectItems ?? [])
+          .filter((item) => item.authorization_status !== "cancelled")
+          .map((item) => item.payment_batch_id),
       ]),
     ];
     if (existingBatchIds.length) {
@@ -1779,7 +1919,7 @@ export async function POST(request: NextRequest) {
     const selectedEntries = [
       ...documents.map((document) => ({
         category: itemCashFlowCategory(itemCategories, "received", document.id),
-        amount: Number(document.total_amount ?? 0),
+        amount: documentAmountById.get(document.id) ?? 0,
       })),
       ...directPayables.map((payable) => ({
         category: itemCashFlowCategory(itemCategories, "payable", payable.id),
@@ -1825,7 +1965,7 @@ export async function POST(request: NextRequest) {
           supplier_name_snapshot: document.supplier_name,
           document_number_snapshot: document.document_number,
           due_date_snapshot: document.due_date,
-          amount: document.total_amount,
+          amount: documentAmountById.get(document.id) ?? 0,
           cash_flow_category: itemCashFlowCategory(
             itemCategories,
             "received",
@@ -1889,7 +2029,9 @@ export async function PATCH(request: NextRequest) {
   const organizationId = body?.organizationId;
   const id = body?.id;
   const action = paymentWorkflowAction(body?.action);
-  const requiresId = action !== "reschedule_payment_items";
+  const requiresId = !["reschedule_payment_items", "cancel_payment_items"].includes(
+    String(action),
+  );
   if (
     !isUuid(organizationId) ||
     typeof action !== "string" ||
@@ -1904,6 +2046,7 @@ export async function PATCH(request: NextRequest) {
     "set_direct_payable_beneficiary",
     "submit_asset_financing_plan",
     "reschedule_payment_items",
+    "cancel_payment_items",
   ].includes(action);
   const context = financeOnly
     ? await requireOrganizationFinanceAccess(organizationId)
@@ -1942,6 +2085,39 @@ export async function PATCH(request: NextRequest) {
     if (error)
       return NextResponse.json(
         { error: "unable_to_reschedule_payment_items", detail: error.message },
+        { status: 409 },
+      );
+    await context.supabase.rpc("refresh_payment_schedule_alerts", {
+      p_organization_id: organizationId,
+    });
+    return NextResponse.json({ result: data });
+  }
+  if (action === "cancel_payment_items") {
+    const itemIds = Array.isArray(body?.itemIds) ? body.itemIds : null;
+    const reason = text(body?.reason, 500, true);
+    if (
+      !itemIds ||
+      !itemIds.length ||
+      itemIds.length > 250 ||
+      !itemIds.every(isUuid) ||
+      new Set(itemIds).size !== itemIds.length ||
+      !reason
+    )
+      return NextResponse.json(
+        { error: "invalid_payment_item_cancellation" },
+        { status: 400 },
+      );
+    const { data, error } = await context.supabase.rpc(
+      "cancel_payment_batch_items",
+      {
+        p_organization_id: organizationId,
+        p_item_ids: itemIds,
+        p_reason: reason,
+      },
+    );
+    if (error)
+      return NextResponse.json(
+        { error: "unable_to_cancel_payment_items", detail: error.message },
         { status: 409 },
       );
     await context.supabase.rpc("refresh_payment_schedule_alerts", {

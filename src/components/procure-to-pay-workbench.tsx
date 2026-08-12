@@ -81,6 +81,20 @@ type PaymentItem = {
   due_date_current?: string | null;
   amount: number | string;
   cash_flow_category: "operating" | "investing" | "financing";
+  status?: "pending" | "processing" | "partially_paid" | "paid" | "cancelled";
+  authorization_status?: "authorized" | "cancelled";
+  authorized_amount?: number | string;
+  paid_amount?: number | string;
+  outstanding_amount?: number | string;
+  payment_proof_name?: string | null;
+  payment_proof_signed_url?: string | null;
+  proofs?: Array<{
+    id: string;
+    file_name: string;
+    amount: number | string;
+    paid_on: string;
+    signed_url?: string | null;
+  }>;
 };
 type Document = {
   id: string;
@@ -91,6 +105,8 @@ type Document = {
   due_date: string | null;
   net_amount: number | string;
   total_amount: number | string;
+  paid_amount?: number | string;
+  outstanding_amount?: number | string;
   payment_status: string | null;
   status: string;
   vendor_purchase_order_id: string | null;
@@ -240,6 +256,8 @@ function label(status: string) {
         partially_received: "Recepción parcial",
         received: "Recibida",
         processing: "En ejecución",
+        pending: "Pendiente",
+        partially_paid: "Abonado",
         paid: "Pagado",
         cancelled: "Anulado",
       } as Record<string, string>
@@ -336,6 +354,14 @@ function cashFlowLabel(category: PaymentItem["cash_flow_category"]) {
     } as const
   )[category];
 }
+function paymentItemStatus(item: PaymentItem) {
+  if (item.authorization_status === "cancelled") return "cancelled";
+  if (item.status) return item.status;
+  if (item.outstanding_amount !== undefined && amount(item.outstanding_amount) <= 0.01)
+    return "paid";
+  if (amount(item.paid_amount) > 0) return "partially_paid";
+  return "pending";
+}
 
 export function ProcureToPayWorkbench({
   organizationId,
@@ -366,9 +392,10 @@ export function ProcureToPayWorkbench({
     item: Record<string, any>;
   } | null>(null);
   const [request, setRequest] = useState({
-    requestNumber: "",
     supplierId: "",
     supplierName: "",
+    createSupplier: true,
+    supplierTaxId: "",
     costCenterId: "",
     description: "",
     requestedOn: today(),
@@ -433,6 +460,7 @@ export function ProcureToPayWorkbench({
     scheduledFor: nextFriday(today()),
     notes: "",
     documentIds: [] as string[],
+    documentAmounts: {} as Record<string, string>,
     directPayableIds: [] as string[],
     directPayableAmounts: {} as Record<string, string>,
   });
@@ -446,10 +474,15 @@ export function ProcureToPayWorkbench({
   });
   const [paymentConfirmation, setPaymentConfirmation] = useState<{
     batch: PaymentBatch;
+    itemIds: string[];
+    amounts: Record<string, string>;
     paidOn: string;
     paymentReference: string;
     file: File | null;
   } | null>(null);
+  const [cancellationReason, setCancellationReason] = useState(
+    "Pago retirado de la propuesta",
+  );
   async function load(): Promise<Payload | null> {
     if (!organizationId) {
       setData(null);
@@ -540,6 +573,19 @@ export function ProcureToPayWorkbench({
         ? amount(payable.total_amount)
         : amount(payable.outstanding_amount),
     );
+  const documentOutstandingAmount = (document: Document) =>
+    Math.max(
+      0,
+      document.outstanding_amount === undefined
+        ? amount(document.total_amount)
+        : amount(document.outstanding_amount),
+    );
+  const documentPaymentAmount = (document: Document) => {
+    const draft = batch.documentAmounts[document.id];
+    if (draft === undefined) return documentOutstandingAmount(document);
+    const parsed = Number(draft);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  };
   const payablePaymentAmount = (payable: DirectPayable) => {
     const draft = batch.directPayableAmounts[payable.id];
     if (draft === undefined) return payableOutstandingAmount(payable);
@@ -603,12 +649,13 @@ export function ProcureToPayWorkbench({
     () =>
       paymentEligibleDocuments
         .filter((document) => batch.documentIds.includes(document.id))
-        .reduce((sum, document) => sum + amount(document.total_amount), 0) +
+        .reduce((sum, document) => sum + documentPaymentAmount(document), 0) +
       paymentEligibleDirectPayables
         .filter((payable) => batch.directPayableIds.includes(payable.id))
         .reduce((sum, payable) => sum + payablePaymentAmount(payable), 0),
     [
       batch.documentIds,
+      batch.documentAmounts,
       batch.directPayableIds,
       paymentEligibleDocuments,
       paymentEligibleDirectPayables,
@@ -718,7 +765,10 @@ export function ProcureToPayWorkbench({
             ? item.status !== "paid"
             : item.status === stateFilter)
         );
-      });
+      }).sort((left, right) =>
+        left.scheduled_for.localeCompare(right.scheduled_for) ||
+        left.batch_number.localeCompare(right.batch_number),
+      );
     },
     [data?.paymentBatches, data?.paymentBatchItems, year, search, stateFilter],
   );
@@ -799,6 +849,8 @@ export function ProcureToPayWorkbench({
       ...current,
       supplierId,
       supplierName: supplier ? supplier.trade_name || supplier.legal_name : "",
+      createSupplier: !supplierId,
+      supplierTaxId: "",
     }));
   }
   function selectDirectPayableSupplier(supplierId: string) {
@@ -943,6 +995,8 @@ export function ProcureToPayWorkbench({
     const form = new FormData();
     form.set("organizationId", organizationId);
     form.set("batchId", paymentConfirmation.batch.id);
+    form.set("itemIds", JSON.stringify(paymentConfirmation.itemIds));
+    form.set("amounts", JSON.stringify(paymentConfirmation.amounts));
     form.set("paidOn", paymentConfirmation.paidOn);
     form.set("paymentReference", paymentConfirmation.paymentReference);
     form.set("file", paymentConfirmation.file);
@@ -955,7 +1009,7 @@ export function ProcureToPayWorkbench({
       setPaymentConfirmation(null);
       setDetail(null);
       await load();
-      setMessage("Pago registrado con comprobante. La cuenta quedó marcada como pagada y pendiente de conciliación bancaria.");
+      setMessage(`${paymentConfirmation.itemIds.length} pago(s) registrado(s) con comprobante y pendiente(s) de conciliación bancaria.`);
     } catch {
       setMessage("No fue posible registrar el pago por un problema de conexión.");
     } finally {
@@ -970,9 +1024,10 @@ export function ProcureToPayWorkbench({
     }
     if (await post({ action: "create_purchase_request", ...request })) {
       setRequest({
-        requestNumber: "",
         supplierId: "",
         supplierName: "",
+        createSupplier: true,
+        supplierTaxId: "",
         costCenterId: "",
         description: "",
         requestedOn: today(),
@@ -1217,6 +1272,7 @@ export function ProcureToPayWorkbench({
       scheduledFor: batch.scheduledFor,
       notes: batch.notes,
       documentIds: batch.documentIds,
+      documentAmounts: batch.documentAmounts,
       directPayableIds: batch.directPayableIds,
       directPayableAmounts: batch.directPayableAmounts,
       cashFlowCategories,
@@ -1240,6 +1296,7 @@ export function ProcureToPayWorkbench({
         scheduledFor: nextFriday(today()),
         notes: "",
         documentIds: [],
+        documentAmounts: {},
         directPayableIds: [],
         directPayableAmounts: {},
       });
@@ -1263,6 +1320,20 @@ export function ProcureToPayWorkbench({
       documentIds: current.documentIds.includes(id)
         ? current.documentIds.filter((item) => item !== id)
         : [...current.documentIds, id],
+      documentAmounts: current.documentIds.includes(id)
+        ? Object.fromEntries(
+            Object.entries(current.documentAmounts).filter(
+              ([documentId]) => documentId !== id,
+            ),
+          )
+        : {
+            ...current.documentAmounts,
+            [id]: String(
+              documentOutstandingAmount(
+                paymentEligibleDocuments.find((document) => document.id === id)!,
+              ),
+            ),
+          },
     }));
   }
   function toggleDirectPayable(id: string) {
@@ -1331,7 +1402,7 @@ export function ProcureToPayWorkbench({
       });
       if (!response.ok) {
         setMessage(
-          "No fue posible mover los pagos. Solo se pueden reprogramar semanas que todavía están en planificación.",
+          "No fue posible mover los pagos. Verifica que sigan pendientes y que la nueva fecha sea válida.",
         );
         return;
       }
@@ -1352,6 +1423,60 @@ export function ProcureToPayWorkbench({
     } finally {
       setSaving(false);
     }
+  }
+  async function cancelSelectedPayments() {
+    if (!organizationId || !reschedule.itemIds.length || cancellationReason.trim().length < 3) return;
+    setSaving(true);
+    try {
+      const response = await fetch("/api/procure-to-pay", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationId,
+          action: "cancel_payment_items",
+          itemIds: reschedule.itemIds,
+          reason: cancellationReason,
+        }),
+      });
+      if (!response.ok) {
+        setMessage("No fue posible cancelar los pagos seleccionados. Verifica que no hayan sido ejecutados.");
+        return;
+      }
+      const cancelled = reschedule.itemIds.length;
+      setDetail(null);
+      setReschedule((current) => ({ ...current, itemIds: [] }));
+      await load();
+      setMessage(`${cancelled} pago(s) cancelado(s). Las deudas pendientes volvieron a quedar disponibles.`);
+    } catch {
+      setMessage("No fue posible cancelar los pagos por un problema de conexión.");
+    } finally {
+      setSaving(false);
+    }
+  }
+  function beginSelectedPayment(batch: PaymentBatch) {
+    const selected = (data?.paymentBatchItems ?? []).filter(
+      (line) =>
+        line.payment_batch_id === batch.id &&
+        reschedule.itemIds.includes(line.id) &&
+        !["paid", "cancelled"].includes(paymentItemStatus(line)),
+    );
+    if (!selected.length) {
+      setMessage("Selecciona al menos un pago pendiente de la propuesta.");
+      return;
+    }
+    setPaymentConfirmation({
+      batch,
+      itemIds: selected.map((line) => line.id),
+      amounts: Object.fromEntries(
+        selected.map((line) => [
+          line.id,
+          String(line.outstanding_amount ?? line.amount),
+        ]),
+      ),
+      paidOn: today(),
+      paymentReference: batch.payment_reference ?? "",
+      file: null,
+    });
   }
   function beginOrder(requestId: string) {
     setOrderDraft({
@@ -2113,17 +2238,8 @@ export function ProcureToPayWorkbench({
             onSubmit={createRequest}
           >
             <label>
-              N° solicitud *
-              <input
-                required
-                value={request.requestNumber}
-                onChange={(event) =>
-                  setRequest((current) => ({
-                    ...current,
-                    requestNumber: event.target.value,
-                  }))
-                }
-              />
+              N° solicitud
+              <input value="Se asigna automáticamente al crear" disabled />
             </label>
             <CostCenterPicker
               required
@@ -2139,7 +2255,7 @@ export function ProcureToPayWorkbench({
                 value={request.supplierId}
                 onChange={(event) => selectSupplier(event.target.value)}
               >
-                <option value="">Proveedor no registrado</option>
+                <option value="">Crear proveedor nuevo</option>
                 {data?.suppliers.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.trade_name || item.legal_name}
@@ -2152,6 +2268,7 @@ export function ProcureToPayWorkbench({
               <input
                 required
                 value={request.supplierName}
+                readOnly={Boolean(request.supplierId)}
                 onChange={(event) =>
                   setRequest((current) => ({
                     ...current,
@@ -2160,6 +2277,23 @@ export function ProcureToPayWorkbench({
                 }
               />
             </label>
+            {!request.supplierId && (
+              <label>
+                RUT proveedor (opcional)
+                <input
+                  value={request.supplierTaxId}
+                  placeholder="Ej. 76.123.456-7"
+                  onChange={(event) =>
+                    setRequest((current) => ({
+                      ...current,
+                      createSupplier: true,
+                      supplierTaxId: event.target.value,
+                    }))
+                  }
+                />
+                <small>El proveedor quedará disponible para futuras solicitudes.</small>
+              </label>
+            )}
             <label>
               Monto estimado *
               <input
@@ -3011,6 +3145,27 @@ export function ProcureToPayWorkbench({
                       </td>
                       <td className="money-col">
                         {money.format(amount(document.total_amount))}
+                        <small>Saldo: {money.format(documentOutstandingAmount(document))}</small>
+                        <label className="p2p-payment-amount">
+                          Abono a pagar
+                          <input
+                            aria-label={`Abono para ${document.supplier_name}`}
+                            type="number"
+                            min="0.01"
+                            max={documentOutstandingAmount(document)}
+                            step="0.01"
+                            value={batch.documentAmounts[document.id] ?? String(documentOutstandingAmount(document))}
+                            onChange={(event) =>
+                              setBatch((current) => ({
+                                ...current,
+                                documentAmounts: {
+                                  ...current.documentAmounts,
+                                  [document.id]: event.target.value,
+                                },
+                              }))
+                            }
+                          />
+                        </label>
                       </td>
                     </tr>
                   ))}
@@ -3275,11 +3430,12 @@ export function ProcureToPayWorkbench({
                   <table className="p2p-dense-table p2p-detail-items">
                     <thead>
                       <tr>
-                        {detail.item.status === "draft" && <th>Mover</th>}
+                        {["draft", "approved", "processing"].includes(detail.item.status) && <th>Seleccionar</th>}
                         <th>Proveedor / documento</th>
                         <th>Vencimiento</th>
                         <th>IAS 7</th>
                         <th className="money-col">Monto</th>
+                        <th>Estado / comprobante</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3289,11 +3445,12 @@ export function ProcureToPayWorkbench({
                         )
                         .map((line) => (
                           <tr key={line.id}>
-                            {detail.item.status === "draft" && (
+                            {["draft", "approved", "processing"].includes(detail.item.status) && (
                               <td>
                                 <input
-                                  aria-label={`Mover ${line.supplier_name_current || line.supplier_name_snapshot}`}
+                                  aria-label={`Seleccionar ${line.supplier_name_current || line.supplier_name_snapshot}`}
                                   type="checkbox"
+                                  disabled={["paid", "cancelled"].includes(paymentItemStatus(line))}
                                   checked={reschedule.itemIds.includes(line.id)}
                                   onChange={() => toggleRescheduleItem(line.id)}
                                 />
@@ -3309,17 +3466,41 @@ export function ProcureToPayWorkbench({
                             <td>{cashFlowLabel(line.cash_flow_category)}</td>
                             <td className="money-col">
                               {money.format(amount(line.amount))}
+                              {line.outstanding_amount !== undefined && (
+                                <small>Saldo: {money.format(amount(line.outstanding_amount))}</small>
+                              )}
+                            </td>
+                            <td>
+                              <span className={statusClass(paymentItemStatus(line))}>
+                                {label(paymentItemStatus(line))}
+                              </span>
+                              {line.payment_proof_signed_url && (
+                                <small>
+                                  <a href={line.payment_proof_signed_url} target="_blank" rel="noreferrer">
+                                    {line.payment_proof_name || "Ver comprobante"}
+                                  </a>
+                                </small>
+                              )}
+                              {(line.proofs ?? []).map((proof) => (
+                                <small key={proof.id}>
+                                  {proof.signed_url ? (
+                                    <a href={proof.signed_url} target="_blank" rel="noreferrer">
+                                      {proof.file_name}
+                                    </a>
+                                  ) : proof.file_name} · {displayDate(proof.paid_on)} · {money.format(amount(proof.amount))}
+                                </small>
+                              ))}
                             </td>
                           </tr>
                         ))}
                     </tbody>
                   </table>
                 </div>
-                {detail.item.status === "draft" && canManagePayments && (
+                {["draft", "approved"].includes(detail.item.status) && canManagePayments && (
                   <div className="p2p-reschedule-box">
                     <div>
-                      <strong>Mover pagos seleccionados</strong>
-                      <small>La deuda conserva su expediente, monto, IAS 7 e historial.</small>
+                      <strong>Reprogramar o cancelar pagos seleccionados</strong>
+                      <small>{detail.item.status === "approved" ? "La orden ya autorizada conservará su aprobación; sólo cambian las líneas pendientes seleccionadas." : "La deuda conserva su expediente, monto, IAS 7 e historial."}</small>
                     </div>
                     <label>
                       Nuevo viernes
@@ -3365,6 +3546,22 @@ export function ProcureToPayWorkbench({
                       onClick={() => void rescheduleSelectedPayments()}
                     >
                       Mover {reschedule.itemIds.length || ""} pago(s)
+                    </button>
+                    <label>
+                      Motivo de cancelación
+                      <input
+                        value={cancellationReason}
+                        maxLength={500}
+                        onChange={(event) => setCancellationReason(event.target.value)}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={saving || !reschedule.itemIds.length || cancellationReason.trim().length < 3}
+                      onClick={() => void cancelSelectedPayments()}
+                    >
+                      Cancelar {reschedule.itemIds.length || ""} pago(s)
                     </button>
                   </div>
                 )}
@@ -3546,17 +3743,10 @@ export function ProcureToPayWorkbench({
                 detail.item.status === "approved" && (
                   <button
                     className="primary-button"
-                    disabled={saving}
-                    onClick={() =>
-                      setPaymentConfirmation({
-                        batch: detail.item as PaymentBatch,
-                        paidOn: today(),
-                        paymentReference: (detail.item as PaymentBatch).payment_reference ?? "",
-                        file: null,
-                      })
-                    }
+                    disabled={saving || !reschedule.itemIds.length}
+                    onClick={() => beginSelectedPayment(detail.item as PaymentBatch)}
                   >
-                    Registrar pago y comprobante
+                    Registrar {reschedule.itemIds.length || ""} pago(s) y comprobante
                   </button>
                 )}
               {detail.kind === "batch" &&
@@ -3564,17 +3754,10 @@ export function ProcureToPayWorkbench({
                 detail.item.status === "processing" && (
                   <button
                     className="primary-button"
-                    disabled={saving}
-                    onClick={() =>
-                      setPaymentConfirmation({
-                        batch: detail.item as PaymentBatch,
-                        paidOn: today(),
-                        paymentReference: (detail.item as PaymentBatch).payment_reference ?? "",
-                        file: null,
-                      })
-                    }
+                    disabled={saving || !reschedule.itemIds.length}
+                    onClick={() => beginSelectedPayment(detail.item as PaymentBatch)}
                   >
-                    Registrar pago y comprobante
+                    Registrar {reschedule.itemIds.length || ""} pago(s) y comprobante
                   </button>
                 )}
               {detail.kind === "financing" &&
@@ -3622,7 +3805,7 @@ export function ProcureToPayWorkbench({
                 <span className="eyebrow">EJECUCIÓN DE PAGO</span>
                 <h2>{paymentConfirmation.batch.batch_number}</h2>
                 <p>
-                  Esta orden ya fue autorizada. Adjunta el comprobante bancario para registrar el pago y actualizar sus cuentas por pagar.
+                  Esta orden ya fue autorizada. Registrarás {paymentConfirmation.itemIds.length} pago(s); un mismo comprobante puede respaldar todas las líneas seleccionadas.
                 </p>
               </div>
               <button
@@ -3635,6 +3818,40 @@ export function ProcureToPayWorkbench({
               </button>
             </div>
             <form className="admin-form" onSubmit={confirmPayment}>
+              <div className="table-scroll p2p-form-wide">
+                <table className="p2p-dense-table">
+                  <thead><tr><th>Proveedor / documento</th><th className="money-col">Monto pagado</th></tr></thead>
+                  <tbody>
+                    {(data?.paymentBatchItems ?? [])
+                      .filter((line) => paymentConfirmation.itemIds.includes(line.id))
+                      .map((line) => (
+                        <tr key={line.id}>
+                          <td>
+                            <strong>{line.supplier_name_current || line.supplier_name_snapshot}</strong>
+                            <small>{line.document_number_current || line.document_number_snapshot || "Sin folio"}</small>
+                          </td>
+                          <td className="money-col">
+                            <input
+                              aria-label={`Monto pagado a ${line.supplier_name_current || line.supplier_name_snapshot}`}
+                              type="number"
+                              required
+                              min="0.01"
+                              max={amount(line.outstanding_amount ?? line.amount)}
+                              step="0.01"
+                              value={paymentConfirmation.amounts[line.id] ?? ""}
+                              onChange={(event) =>
+                                setPaymentConfirmation((current) => current ? {
+                                  ...current,
+                                  amounts: { ...current.amounts, [line.id]: event.target.value },
+                                } : current)
+                              }
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
               <label>
                 Fecha de pago *
                 <input
