@@ -367,10 +367,14 @@ export function ProcureToPayWorkbench({
   organizationId,
   canManage,
   canManagePayments,
+  initialReceivedDocumentId,
+  onInitialReceivedDocumentHandled,
 }: {
   organizationId: string | null;
   canManage: boolean;
   canManagePayments: boolean;
+  initialReceivedDocumentId?: string | null;
+  onInitialReceivedDocumentHandled?: () => void;
 }) {
   const [data, setData] = useState<Payload | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -743,6 +747,43 @@ export function ProcureToPayWorkbench({
       ),
     [dueDocuments, openDirectPayables, year, search, stateFilter],
   );
+  useEffect(() => {
+    if (!initialReceivedDocumentId || !data) return;
+    const document = dueDocuments.find(
+      (item) => item.id === initialReceivedDocumentId,
+    );
+    setTab("payables");
+    setStateFilter("all");
+    if (!document) {
+      setMessage("La factura ya no está disponible para preparar un pago.");
+      onInitialReceivedDocumentHandled?.();
+      return;
+    }
+    setYear(document.issue_date.slice(0, 4));
+    setSearch(document.document_number || document.supplier_name);
+    if (!canManagePayments) {
+      setMessage("Tu perfil puede consultar la factura, pero sólo Administración o Finanzas puede preparar el abono.");
+      onInitialReceivedDocumentHandled?.();
+      return;
+    }
+    if (!document.payment_eligible) {
+      setMessage(`No se puede seleccionar esta factura: ${paymentBlockLabel(document.payment_block_reason)}`);
+      onInitialReceivedDocumentHandled?.();
+      return;
+    }
+    setBatch((current) => ({
+      ...current,
+      documentIds: current.documentIds.includes(document.id)
+        ? current.documentIds
+        : [...current.documentIds, document.id],
+      documentAmounts: {
+        ...current.documentAmounts,
+        [document.id]: current.documentAmounts[document.id] ?? String(documentOutstandingAmount(document)),
+      },
+    }));
+    setMessage(`Factura ${document.document_number || "sin folio"} seleccionada. Indica el monto del abono y prepara la propuesta de pago.`);
+    onInitialReceivedDocumentHandled?.();
+  }, [initialReceivedDocumentId, data]);
   const visibleBatches = useMemo(
     () => {
       const itemsByBatch = new Map<string, PaymentItem[]>();

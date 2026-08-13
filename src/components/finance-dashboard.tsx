@@ -2312,6 +2312,7 @@ export function FinanceDashboard() {
   const [paymentDraft, setPaymentDraft] = useState<PaymentDraft>(blankPaymentDraft);
   const [paymentInstallmentProof, setPaymentInstallmentProof] = useState<File | null>(null);
   const [isRegisteringPayment, setIsRegisteringPayment] = useState(false);
+  const [receivedDocumentToPay, setReceivedDocumentToPay] = useState<string | null>(null);
   const [formError, setFormError] = useState("");
   const [sessionRecords, setSessionRecords] = useState<InvoiceRecord[]>([]);
   const [databaseRecords, setDatabaseRecords] = useState<InvoiceRecord[]>([]);
@@ -3381,6 +3382,10 @@ export function FinanceDashboard() {
               organizationId={access?.membership.organizationId ?? null}
               canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
               canConfigureSii={access?.membership.role === "administrator"}
+              onPrepareReceivedDocumentPayment={(documentId) => {
+                setReceivedDocumentToPay(documentId);
+                selectModule("Compras, obligaciones y pagos", "COMPRAS Y CAJA");
+              }}
             />
           ) : null
         ) : activeModule === "Bandeja mail" ? (
@@ -3395,6 +3400,8 @@ export function FinanceDashboard() {
             organizationId={access?.membership.organizationId ?? null}
             canManage={hasEditPermission}
             canManagePayments={access?.membership.role === "administrator" || access?.membership.role === "finance"}
+            initialReceivedDocumentId={receivedDocumentToPay}
+            onInitialReceivedDocumentHandled={() => setReceivedDocumentToPay(null)}
           />
         ) : activeModule === "Proveedores" ? (
           canReadExpenses ? (
