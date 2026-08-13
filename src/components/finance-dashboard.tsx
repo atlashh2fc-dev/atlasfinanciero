@@ -49,6 +49,7 @@ import { AccountingWorkbench } from "@/components/accounting-workbench";
 import { BenefitsHub } from "@/components/benefits-hub";
 import { MailInbox } from "@/components/mail-inbox";
 import { QuotationBuilder } from "@/components/quotation-builder";
+import { VirtualSecretarySubscriptions } from "@/components/virtual-secretary-subscriptions";
 import {
   isActiveIssuedInvoice,
   isCreditNoteDocument,
@@ -103,6 +104,8 @@ const modulePreviews: Record<Module, string> = {
     "Resumen, pipeline, clientes 360, contratos, proyectos y evolución comercial en un workspace integrado.",
   Cotizador:
     "Costos, margen y valor de venta para SaaS, BPO, infraestructura, IA, setup y células de desarrollo.",
+  "Secretaria Virtual":
+    "Suscripciones anticipadas de Geimser: venta, pago validado, activación, renovación y devengo.",
   "Mercado Público":
     "Búsqueda oficial de licitaciones ChileCompra y conversión trazable a oportunidades del CRM.",
   "Fondos y beneficios":
@@ -150,6 +153,7 @@ type Module =
   | "Planificación financiera"
   | "CRM y clientes"
   | "Cotizador"
+  | "Secretaria Virtual"
   | "Mercado Público"
   | "Fondos y beneficios"
   | "Cuentas por cobrar"
@@ -189,6 +193,7 @@ const navigationGroups: NavigationGroup[] = [
     items: [
       "CRM y clientes",
       "Cotizador",
+      "Secretaria Virtual",
       "Mercado Público",
       "Fondos y beneficios",
       "Prefacturación",
@@ -258,6 +263,7 @@ function NavigationItemIcon({ item }: { item: Module }) {
   if (item === "CRM y clientes" || item === "Remuneraciones") return <svg {...iconProps}><circle cx="9" cy="8" r="3" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0m2-10a3 3 0 0 1 0 6m1.5-8a3 3 0 0 1 0 5" /></svg>;
   if (item === "Provisiones de remuneraciones") return <svg {...iconProps}><path d="M5 4h14v16H5z" /><path d="M8 8h8m-8 4h8m-8 4h4" /><path d="M16 14v5m-2.5-2.5h5" /></svg>;
   if (item === "Cotizador") return <svg {...iconProps}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M8 7h8M8 11h2m3 0h3m-8 4h2m3 0h3m-8 3h8" /></svg>;
+  if (item === "Secretaria Virtual") return <svg {...iconProps}><path d="M6 4h12v16H6z" /><path d="M9 8h6m-6 4h6m-6 4h3" /><circle cx="18" cy="17" r="3" /><path d="m17 17 1 1 2-2" /></svg>;
   if (item === "Mercado Público") return <svg {...iconProps}><circle cx="10.5" cy="10.5" r="5.5" /><path d="m15 15 4.5 4.5M7 10.5h7M10.5 7v7" /></svg>;
   if (item === "Fondos y beneficios") return <svg {...iconProps}><path d="M12 3v18M16 7.5c-.7-1-2-1.5-4-1.5-2.3 0-4 1.1-4 3s1.7 3 4 3 4 1.1 4 3-1.7 3-4 3c-2 0-3.3-.5-4-1.5" /><path d="M4 20h16" /></svg>;
   if (item === "Prefacturación") return <svg {...iconProps}><path d="M6 3h9l4 4v14H6z" /><path d="M14 3v5h5M9 14l5-5 2 2-5 5-3 1z" /></svg>;
@@ -3086,6 +3092,8 @@ export function FinanceDashboard() {
         (item) =>
           (item !== "Administración" && item !== "Bitácora de actividad" ||
             access?.membership.role === "administrator") &&
+          (item !== "Secretaria Virtual" ||
+            access?.membership.organizationName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/gi, "").toLowerCase().includes("geimser")) &&
           (item !== "Control SaaS" || access?.isSuperAdmin) &&
           (item !== "Centros de costo" || canManageCostCenters) &&
           (item !== "Imputaciones pendientes" || canManageCostCenters) &&
@@ -3332,6 +3340,11 @@ export function FinanceDashboard() {
           />
         ) : activeModule === "Cotizador" ? (
           <QuotationBuilder
+            organizationId={access?.membership.organizationId ?? null}
+            canManage={hasEditPermission}
+          />
+        ) : activeModule === "Secretaria Virtual" ? (
+          <VirtualSecretarySubscriptions
             organizationId={access?.membership.organizationId ?? null}
             canManage={hasEditPermission}
           />
