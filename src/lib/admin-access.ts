@@ -57,19 +57,19 @@ export async function requireOrganizationFinanceAccess(organizationId: string) {
 export async function requireOrganizationDataEntryAccess(organizationId: string) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: "authentication_required" as const, status: 401, supabase: null, user: null };
+  if (!user) return { error: "authentication_required" as const, status: 401, supabase: null, user: null, membership: null };
 
   const { data: membership, error } = await supabase
     .from("organization_memberships")
-    .select("organization_id, role")
+    .select("organization_id, role, can_create_suppliers")
     .eq("organization_id", organizationId)
     .eq("user_id", user.id)
     .maybeSingle();
 
-  if (error) return { error: "unable_to_read_membership" as const, status: 500, supabase: null, user: null };
-  if (membership?.role !== "data_entry") return { error: "data_entry_access_required" as const, status: 403, supabase: null, user: null };
+  if (error) return { error: "unable_to_read_membership" as const, status: 500, supabase: null, user: null, membership: null };
+  if (membership?.role !== "data_entry") return { error: "data_entry_access_required" as const, status: 403, supabase: null, user: null, membership: null };
 
-  return { error: null, status: 200, supabase, user };
+  return { error: null, status: 200, supabase, user, membership };
 }
 
 export async function requireOrganizationExpenseReadAccess(organizationId: string) {

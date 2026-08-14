@@ -9,11 +9,13 @@ type CostCenter = { id: string; code: string; name: string };
 type EntryKind = "sale" | "cost" | "collection" | "support";
 type Entry = { id: string; kind: EntryKind; issuedDocumentId: string | null; number: string | null; documentType: string | null; counterpart: string | null; issuedOn: string | null; amount: number | string | null; status: string | null; attachmentName: string | null; hasAttachment: boolean; existingProof: boolean; createdAt: string };
 type Reference = { kind: "sale" | "collection"; id: string; issuedDocumentId: string; number: string | null; occurredOn: string | null; counterpart: string | null; amount: number | string | null; status: string | null; detail: string | null; hasProof: boolean; createdAt: string };
-type Payload = { customers: Counterparty[]; suppliers: Counterparty[]; costCenters: CostCenter[]; references: Reference[]; entries: Entry[] };
+type Payload = { canCreateSuppliers: boolean; customers: Counterparty[]; suppliers: Counterparty[]; costCenters: CostCenter[]; references: Reference[]; entries: Entry[] };
 type View = "register" | "history" | "support" | "benefits";
 type HistoryFilter = "all" | EntryKind;
+type SupplierDraft = { legalName: string; tradeName: string; taxId: string };
 
-const emptyPayload: Payload = { customers: [], suppliers: [], costCenters: [], references: [], entries: [] };
+const emptyPayload: Payload = { canCreateSuppliers: false, customers: [], suppliers: [], costCenters: [], references: [], entries: [] };
+const emptySupplierDraft = (): SupplierDraft => ({ legalName: "", tradeName: "", taxId: "" });
 const today = () => new Date().toISOString().slice(0, 10);
 const label = (item: Counterparty) => item.trade_name?.trim() || item.legal_name;
 const money = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
@@ -67,6 +69,10 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>("all");
   const [historySearch, setHistorySearch] = useState("");
   const [supportTarget, setSupportTarget] = useState("");
+  const [supplierQuery, setSupplierQuery] = useState("");
+  const [selectedSupplierId, setSelectedSupplierId] = useState("");
+  const [supplierDraft, setSupplierDraft] = useState<SupplierDraft | null>(null);
+  const [savingSupplier, setSavingSupplier] = useState(false);
 
   const load = useCallback(async () => {
     const response = await fetch(`/api/data-entry?organizationId=${encodeURIComponent(organizationId)}`, { cache: "no-store" });
@@ -108,6 +114,16 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
     invoices: data.references.filter((item) => item.kind === "sale"),
     collections: data.references.filter((item) => item.kind === "collection"),
   }), [data.references]);
+  const supplierResults = useMemo(() => {
+    const terms = searchable(supplierQuery).trim().split(/\s+/).filter(Boolean);
+    if (!terms.length) return [];
+    return data.suppliers.filter((item) => {
+      const haystack = searchable([item.legal_name, item.trade_name, item.tax_id].filter(Boolean).join(" "));
+      const compact = haystack.replace(/[^a-z0-9]/g, "");
+      return terms.every((term) => haystack.includes(term) || compact.includes(term.replace(/[^a-z0-9]/g, "")));
+    }).slice(0, 8);
+  }, [data.suppliers, supplierQuery]);
+  const selectedSupplier = data.suppliers.find((item) => item.id === selectedSupplierId) ?? null;
 
   function selectView(nextView: View) {
     setMessage(null);
@@ -141,14 +157,21 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
 
   async function submitCost(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!selectedSupplierId) {
+      setMessage("Busca y selecciona un proveedor antes de registrar el costo.");
+      return;
+    }
     setSavingCost(true); setMessage(null);
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     form.set("organizationId", organizationId);
     form.set("action", "cost");
+    form.set("supplierId", selectedSupplierId);
     const response = await fetch("/api/data-entry", { method: "POST", body: form });
     if (response.ok) {
       formElement.reset();
+      setSupplierQuery("");
+      setSelectedSupplierId("");
       await load();
       setView("history"); setHistoryFilter("cost");
       setMessage("Costo registrado. Ya aparece en el historial.");
@@ -159,6 +182,47 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
         : "No se pudo registrar el costo. Revisa los campos obligatorios.");
     }
     setSavingCost(false);
+  }
+
+  function chooseSupplier(item: Counterparty) {
+    setSelectedSupplierId(item.id);
+    setSupplierQuery(`${label(item)}${item.tax_id ? ` · ${item.tax_id}` : ""}`);
+    setMessage(null);
+  }
+
+  function startSupplierCreation() {
+    setSupplierDraft({ ...emptySupplierDraft(), legalName: supplierQuery.trim() });
+    setMessage(null);
+  }
+
+  async function createSupplier(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supplierDraft) return;
+    setSavingSupplier(true); setMessage(null);
+    const form = new FormData();
+    form.set("organizationId", organizationId);
+    form.set("action", "create_supplier");
+    form.set("legalName", supplierDraft.legalName);
+    form.set("tradeName", supplierDraft.tradeName);
+    form.set("taxId", supplierDraft.taxId);
+    const response = await fetch("/api/data-entry", { method: "POST", body: form });
+    const payload = await response.json().catch(() => null) as { supplier?: Counterparty; created?: boolean; error?: string } | null;
+    if (response.ok && payload?.supplier) {
+      const supplier = payload.supplier;
+      setData((current) => ({
+        ...current,
+        suppliers: [...current.suppliers.filter((item) => item.id !== supplier.id), supplier]
+          .sort((left, right) => label(left).localeCompare(label(right), "es-CL")),
+      }));
+      chooseSupplier(supplier);
+      setSupplierDraft(null);
+      setMessage(payload.created === false ? "El proveedor ya existía y quedó seleccionado." : "Proveedor creado y seleccionado.");
+    } else {
+      setMessage(payload?.error === "tax_id_already_registered"
+        ? "Ese RUT ya pertenece a otra contraparte. Solicita a Finanzas habilitarla como proveedor."
+        : "No se pudo crear el proveedor. Revisa la razón social y el RUT.");
+    }
+    setSavingSupplier(false);
   }
 
   async function submitSupport(event: FormEvent<HTMLFormElement>) {
@@ -247,9 +311,40 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
           </form>
         </section> : <div className="data-entry-register-grid">
           <section className="panel data-entry-form-panel"><div className="panel-heading"><div><span className="panel-label">VENTAS</span><h2>Ingresar factura de venta</h2><p>Se envía a revisión de Finanzas y queda visible en el historial.</p></div></div><form className="admin-form" onSubmit={(event) => void submitSale(event)}><div className="form-grid"><label>Cliente *<select name="clientId" required defaultValue=""><option value="" disabled>Selecciona cliente</option>{data.customers.map((item) => <option key={item.id} value={item.id}>{label(item)}{item.tax_id ? ` · ${item.tax_id}` : ""}</option>)}</select></label><label>Folio / número *<input name="invoiceNumber" required maxLength={80} /></label><label>Tipo *<select name="documentType" defaultValue="Factura afecta"><option>Factura afecta</option><option>Factura exenta</option><option>Nota de crédito</option><option>Nota de débito</option></select></label><label>Fecha emisión *<input name="issueDate" type="date" required defaultValue={today()} /></label><label>Vencimiento *<input name="dueDate" type="date" required defaultValue={today()} /></label><label>Monto neto *<input name="netAmount" type="number" min="0" step="1" required /></label><label className="data-entry-wide-field">Adjunto (PDF o imagen)<input name="file" type="file" accept="application/pdf,image/jpeg,image/png" /></label></div><button className="primary-button" disabled={savingSale || !data.customers.length}>{savingSale ? "Guardando…" : "Registrar factura"}</button></form></section>
-          <section className="panel data-entry-form-panel"><div className="panel-heading"><div><span className="panel-label">COSTOS</span><h2>Ingresar factura de proveedor</h2><p>No crea pagos ni aprobaciones; deja el documento listo para revisión.</p></div></div><form className="admin-form" onSubmit={(event) => void submitCost(event)}><div className="form-grid"><label>Proveedor *<select name="supplierId" required defaultValue=""><option value="" disabled>Selecciona proveedor</option>{data.suppliers.map((item) => <option key={item.id} value={item.id}>{label(item)}{item.tax_id ? ` · ${item.tax_id}` : ""}</option>)}</select></label><label>Centro de costo *<select name="costCenterId" required defaultValue=""><option value="" disabled>Selecciona centro</option>{data.costCenters.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}</select></label><label>Folio / número *<input name="documentNumber" required maxLength={80} /></label><label>Tipo *<select name="documentType" defaultValue="Factura afecta"><option>Factura afecta</option><option>Factura exenta</option><option>Nota de crédito</option><option>Nota de débito</option><option>Boleta</option><option>Otro</option></select></label><label>Fecha emisión *<input name="issueDate" type="date" required defaultValue={today()} /></label><label>Vencimiento<input name="dueDate" type="date" /></label><label>Monto neto *<input name="netAmount" type="number" min="0" step="0.01" required /></label><label>IVA *<input name="vatAmount" type="number" min="0" step="0.01" required /></label><label>Otros impuestos *<input name="additionalTaxAmount" type="number" min="0" step="0.01" defaultValue="0" required /></label><label>Adjunto (PDF o imagen)<input name="file" type="file" accept="application/pdf,image/jpeg,image/png" /></label></div><label>Observación<textarea name="notes" maxLength={2000} /></label><button className="primary-button" disabled={savingCost || !data.suppliers.length || !data.costCenters.length}>{savingCost ? "Guardando…" : "Registrar costo"}</button></form></section>
+          <section className="panel data-entry-form-panel">
+            <div className="panel-heading"><div><span className="panel-label">COSTOS</span><h2>Ingresar factura de proveedor</h2><p>No crea pagos ni aprobaciones; deja el documento listo para revisión.</p></div></div>
+            <form className="admin-form" onSubmit={(event) => void submitCost(event)}>
+              <div className="form-grid">
+                <div className="data-entry-supplier-picker">
+                  <label>Proveedor *<input type="search" value={supplierQuery} onChange={(event) => { setSupplierQuery(event.target.value); setSelectedSupplierId(""); }} placeholder="Buscar por nombre o RUT" autoComplete="off" /></label>
+                  {selectedSupplier ? <div className="data-entry-selected-supplier"><span>Proveedor seleccionado</span><strong>{label(selectedSupplier)}</strong><small>{selectedSupplier.tax_id ?? "Sin RUT"}</small></div> : supplierQuery.trim() ? <div className="data-entry-supplier-results" role="listbox" aria-label="Proveedores encontrados">
+                    {supplierResults.length ? supplierResults.map((item) => <button key={item.id} type="button" role="option" aria-selected="false" onClick={() => chooseSupplier(item)}><strong>{label(item)}</strong><small>{item.legal_name}{item.tax_id ? ` · ${item.tax_id}` : ""}</small></button>) : <div className="data-entry-create-supplier"><span>{data.canCreateSuppliers ? "No encontramos ese proveedor." : "No encontramos ese proveedor. Solicita su creación a Finanzas."}</span>{data.canCreateSuppliers && <button type="button" className="secondary-button" onClick={startSupplierCreation}>Crear proveedor</button>}</div>}
+                  </div> : <small className="data-entry-supplier-hint">Escribe parte del nombre, razón social o RUT.</small>}
+                </div>
+                <label>Centro de costo *<select name="costCenterId" required defaultValue=""><option value="" disabled>Selecciona centro</option>{data.costCenters.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}</select></label>
+                <label>Folio / número *<input name="documentNumber" required maxLength={80} /></label>
+                <label>Tipo *<select name="documentType" defaultValue="Factura afecta"><option>Factura afecta</option><option>Factura exenta</option><option>Nota de crédito</option><option>Nota de débito</option><option>Boleta</option><option>Otro</option></select></label>
+                <label>Fecha emisión *<input name="issueDate" type="date" required defaultValue={today()} /></label>
+                <label>Vencimiento<input name="dueDate" type="date" /></label>
+                <label>Monto neto *<input name="netAmount" type="number" min="0" step="0.01" required /></label>
+                <label>IVA *<input name="vatAmount" type="number" min="0" step="0.01" required /></label>
+                <label>Otros impuestos *<input name="additionalTaxAmount" type="number" min="0" step="0.01" defaultValue="0" required /></label>
+                <label>Adjunto (PDF o imagen)<input name="file" type="file" accept="application/pdf,image/jpeg,image/png" /></label>
+              </div>
+              <label>Observación<textarea name="notes" maxLength={2000} /></label>
+              <button className="primary-button" disabled={savingCost || !selectedSupplierId || !data.costCenters.length}>{savingCost ? "Guardando…" : "Registrar costo"}</button>
+            </form>
+          </section>
         </div>}
       </main>
+      {supplierDraft && <div className="modal-backdrop" role="presentation"><section className="entry-modal data-entry-supplier-modal" role="dialog" aria-modal="true" aria-labelledby="data-entry-supplier-title">
+        <div className="modal-header"><div><span className="eyebrow">MAESTRO DE PROVEEDORES</span><h2 id="data-entry-supplier-title">Crear proveedor</h2><p>Quedará disponible de inmediato para registrar esta factura.</p></div><button type="button" className="close-button" onClick={() => setSupplierDraft(null)} aria-label="Cerrar">×</button></div>
+        <form className="admin-form" onSubmit={(event) => void createSupplier(event)}><div className="form-grid">
+          <label>Razón social *<input required maxLength={250} autoFocus value={supplierDraft.legalName} onChange={(event) => setSupplierDraft({ ...supplierDraft, legalName: event.target.value })} /></label>
+          <label>Nombre comercial<input maxLength={180} value={supplierDraft.tradeName} onChange={(event) => setSupplierDraft({ ...supplierDraft, tradeName: event.target.value })} /></label>
+          <label>RUT<input maxLength={40} value={supplierDraft.taxId} onChange={(event) => setSupplierDraft({ ...supplierDraft, taxId: event.target.value })} placeholder="Ej.: 76123456-7" /></label>
+        </div><div className="form-actions"><button type="button" className="secondary-button" onClick={() => setSupplierDraft(null)}>Cancelar</button><button className="primary-button" disabled={savingSupplier}>{savingSupplier ? "Creando…" : "Crear y seleccionar"}</button></div></form>
+      </section></div>}
     </section>
   </div>;
 }

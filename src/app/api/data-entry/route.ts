@@ -60,6 +60,15 @@ function amount(value: FormDataEntryValue | null) {
     : null;
 }
 
+function taxId(value: FormDataEntryValue | null) {
+  const raw = text(value, 40);
+  if (!raw) return null;
+  const compact = raw.replace(/[.\s-]+/g, "").toUpperCase();
+  return /^[0-9]{7,8}[0-9K]$/.test(compact)
+    ? `${compact.slice(0, -1)}-${compact.slice(-1)}`
+    : raw;
+}
+
 function dueMonth(value: string | null) {
   if (!value) return null;
   return new Intl.DateTimeFormat("es-CL", { month: "long" })
@@ -164,6 +173,7 @@ export async function GET(request: NextRequest) {
   const ownSaleFiles = new Map((ownSales.data ?? []).map((document) => [document.id, document]));
 
   return NextResponse.json({
+    canCreateSuppliers: context.membership?.can_create_suppliers === true,
     customers: customers.data ?? [],
     suppliers: suppliers.data ?? [],
     costCenters: costCenters.data ?? [],
@@ -229,9 +239,60 @@ export async function POST(request: NextRequest) {
   const form = await request.formData();
   const organizationId = form.get("organizationId");
   const action = form.get("action");
-  if (!isUuid(organizationId) || !["cost", "support"].includes(typeof action === "string" ? action : "")) return NextResponse.json({ error: "invalid_data_entry_action" }, { status: 400 });
+  if (!isUuid(organizationId) || !["cost", "support", "create_supplier"].includes(typeof action === "string" ? action : "")) return NextResponse.json({ error: "invalid_data_entry_action" }, { status: 400 });
   const context = await requireOrganizationDataEntryAccess(organizationId);
   if (context.error || !context.supabase || !context.user) return NextResponse.json({ error: context.error }, { status: context.status });
+
+  if (action === "create_supplier") {
+    if (context.membership?.can_create_suppliers !== true) {
+      return NextResponse.json({ error: "supplier_creation_not_allowed" }, { status: 403 });
+    }
+    const legalName = text(form.get("legalName"), 250, true);
+    const tradeName = text(form.get("tradeName"), 180);
+    const supplierTaxId = taxId(form.get("taxId"));
+    if (!legalName) return NextResponse.json({ error: "invalid_supplier" }, { status: 400 });
+
+    if (supplierTaxId) {
+      const { data: existing, error: existingError } = await context.supabase
+        .from("counterparties")
+        .select("id, legal_name, trade_name, tax_id, kind, is_active")
+        .eq("organization_id", organizationId)
+        .eq("tax_id", supplierTaxId)
+        .is("merged_into_counterparty_id", null)
+        .maybeSingle();
+      if (existingError) return NextResponse.json({ error: "unable_to_check_supplier" }, { status: 500 });
+      if (existing && ["supplier", "both"].includes(existing.kind) && existing.is_active) {
+        return NextResponse.json({
+          supplier: {
+            id: existing.id,
+            legal_name: existing.legal_name,
+            trade_name: existing.trade_name,
+            tax_id: existing.tax_id,
+          },
+          created: false,
+        });
+      }
+      if (existing) return NextResponse.json({ error: "tax_id_already_registered" }, { status: 409 });
+    }
+
+    const { data: supplier, error } = await context.supabase
+      .from("counterparties")
+      .insert({
+        organization_id: organizationId,
+        legal_name: legalName,
+        trade_name: tradeName,
+        tax_id: supplierTaxId,
+        kind: "supplier",
+        is_active: true,
+        created_by: context.user.id,
+      })
+      .select("id, legal_name, trade_name, tax_id")
+      .single();
+    if (error || !supplier) {
+      return NextResponse.json({ error: error?.code === "23505" ? "tax_id_already_registered" : "unable_to_create_supplier" }, { status: 409 });
+    }
+    return NextResponse.json({ supplier, created: true }, { status: 201 });
+  }
 
   if (action === "support") {
     const category = form.get("category");
