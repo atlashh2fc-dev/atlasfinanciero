@@ -503,24 +503,35 @@ export async function GET(request: NextRequest) {
       .filter((batch) => !["cancelled", "paid"].includes(batch.status))
       .map((batch) => batch.id),
   );
-  const reservedDocumentIds = new Set(
-    (batchItems.data ?? [])
-      .filter(
-        (item) =>
-          activeBatchIds.has(item.payment_batch_id) &&
-          item.authorization_status !== "cancelled",
-      )
-      .map((item) => item.received_document_id),
+  const activeBatchesById = new Map(
+    (batches.data ?? [])
+      .filter((batch) => activeBatchIds.has(batch.id))
+      .map((batch) => [batch.id, batch]),
   );
-  const reservedDirectPayableIds = new Set(
-    (batchItems.data ?? [])
-      .filter(
-        (item) =>
-          activeBatchIds.has(item.payment_batch_id) &&
-          item.authorization_status !== "cancelled",
-      )
-      .map((item) => item.direct_payable_id),
-  );
+  const activePaymentByDocumentId = new Map<
+    string,
+    { item_id: string; id: string; batch_number: string; status: string; scheduled_for: string }
+  >();
+  const activePaymentByDirectPayableId = new Map<
+    string,
+    { item_id: string; id: string; batch_number: string; status: string; scheduled_for: string }
+  >();
+  for (const item of batchItems.data ?? []) {
+    if (item.authorization_status === "cancelled") continue;
+    const batch = activeBatchesById.get(item.payment_batch_id);
+    if (!batch) continue;
+    const activePayment = {
+      item_id: item.id,
+      id: batch.id,
+      batch_number: batch.batch_number,
+      status: batch.status,
+      scheduled_for: batch.scheduled_for,
+    };
+    if (item.received_document_id)
+      activePaymentByDocumentId.set(item.received_document_id, activePayment);
+    if (item.direct_payable_id)
+      activePaymentByDirectPayableId.set(item.direct_payable_id, activePayment);
+  }
   const ordersById = new Map(
     (orders.data ?? []).map((order) => [order.id, order]),
   );
@@ -561,18 +572,22 @@ export async function GET(request: NextRequest) {
             )
           : false;
       const isDirectDocument = !document.vendor_purchase_order_id;
+      const activePayment = activePaymentByDocumentId.get(document.id) ?? null;
       const paymentEligible =
         isDirectDocument || document.purchase_match_status === "not_required"
-          ? !reservedDocumentIds.has(document.id)
+          ? !activePayment
           : approvedException
-            ? !reservedDocumentIds.has(document.id)
-            : matchedOrder && !reservedDocumentIds.has(document.id);
+            ? !activePayment
+            : matchedOrder && !activePayment;
       return {
         ...document,
+        active_payment_batch: activePayment,
         payment_eligible: paymentEligible,
         payment_block_reason: paymentEligible
           ? null
-          : document.purchase_match_status === "pending"
+          : activePayment
+            ? "already_in_payment_batch"
+            : document.purchase_match_status === "pending"
             ? "purchase_match_pending"
             : document.purchase_match_status === "rejected"
               ? "purchase_match_rejected"
@@ -762,13 +777,15 @@ export async function GET(request: NextRequest) {
         Math.max(0, Number(payable.total_amount ?? 0)),
       );
       const outstandingAmount = Math.max(0, Number(payable.total_amount ?? 0) - paidAmount);
+      const activePayment = activePaymentByDirectPayableId.get(payable.id) ?? null;
       const paymentEligible =
         !payable.is_reference &&
         payable.status === "approved" &&
         outstandingAmount > 0.01 &&
-        !reservedDirectPayableIds.has(payable.id);
+        !activePayment;
       return {
       ...payable,
+      active_payment_batch: activePayment,
       paid_amount: paidAmount,
       outstanding_amount: outstandingAmount,
       payment_eligible:

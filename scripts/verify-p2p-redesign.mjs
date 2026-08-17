@@ -155,7 +155,24 @@ requireContract(
   "Las cuotas financiadas no quedan conectadas a CxP.",
 );
 
-// 5. Nomenclatura. Identificadores internos payment_batch siguen permitidos;
+// 5. Una deuda reservada debe explicar y abrir su propuesta vigente. Las
+// facturas directas sin OC no pueden volver a mostrarse como bloqueadas por OC.
+requireContract(
+  contains(api, 'active_payment_batch: activePayment') &&
+    contains(api, 'activePayment\n            ? "already_in_payment_batch"'),
+  "Una factura ya reservada no informa primero la propuesta activa que la bloquea.",
+);
+requireContract(
+  contains(ui, "function openPayableDetail") &&
+    contains(ui, 'setDetail({ kind: "batch", item: existingBatch })'),
+  "La bandeja de CxP no permite abrir la propuesta vigente desde una deuda reservada.",
+);
+requireContract(
+  contains(ui, "Su pago quedó seleccionado para registrar el abono."),
+  "Preparar abono desde una factura reservada no preselecciona su pago vigente.",
+);
+
+// 6. Nomenclatura. Identificadores internos payment_batch siguen permitidos;
 // esto sólo revisa textos que se presentan al usuario (literales JSX/mensajes).
 const userFacingLote = [
   /"[^"\n]*\blote(?:s)?\b[^"\n]*"/iu,

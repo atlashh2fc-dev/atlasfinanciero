@@ -112,6 +112,14 @@ type Document = {
   vendor_purchase_order_id: string | null;
   payment_eligible: boolean;
   payment_block_reason: string | null;
+  active_payment_batch?: ActivePaymentBatch | null;
+};
+type ActivePaymentBatch = {
+  item_id: string;
+  id: string;
+  batch_number: string;
+  status: string;
+  scheduled_for: string;
 };
 type DirectPayable = {
   id: string;
@@ -137,6 +145,7 @@ type DirectPayable = {
   reference_settled_at: string | null;
   payment_eligible: boolean;
   payment_block_reason: string | null;
+  active_payment_batch?: ActivePaymentBatch | null;
 };
 const directPayableDocumentNumber = (payable: Pick<DirectPayable, "invoice_number" | "payable_number">) =>
   payable.invoice_number?.trim() || payable.payable_number;
@@ -767,6 +776,22 @@ export function ProcureToPayWorkbench({
       return;
     }
     if (!document.payment_eligible) {
+      const activePayment = document.active_payment_batch;
+      const existingBatch = activePayment
+        ? data.paymentBatches.find((item) => item.id === activePayment.id)
+        : null;
+      if (activePayment && existingBatch) {
+        setReschedule((current) => ({
+          ...current,
+          itemIds: [activePayment.item_id],
+        }));
+        setDetail({ kind: "batch", item: existingBatch });
+        setMessage(
+          `La factura ${document.document_number || "sin folio"} ya está en ${activePayment.batch_number} (${paymentOrderStatusLabel(activePayment.status)}). Su pago quedó seleccionado para registrar el abono.`,
+        );
+        onInitialReceivedDocumentHandled?.();
+        return;
+      }
       setMessage(`No se puede seleccionar esta factura: ${paymentBlockLabel(document.payment_block_reason)}`);
       onInitialReceivedDocumentHandled?.();
       return;
@@ -784,6 +809,28 @@ export function ProcureToPayWorkbench({
     setMessage(`Factura ${document.document_number || "sin folio"} seleccionada. Indica el monto del abono y prepara la propuesta de pago.`);
     onInitialReceivedDocumentHandled?.();
   }, [initialReceivedDocumentId, data]);
+
+  function openPayableDetail(item: Document | DirectPayable) {
+    const activePayment = item.active_payment_batch;
+    const existingBatch = activePayment
+      ? data?.paymentBatches.find((batch) => batch.id === activePayment.id)
+      : null;
+    if (activePayment && existingBatch) {
+      setReschedule((current) => ({
+        ...current,
+        itemIds: [activePayment.item_id],
+      }));
+      setDetail({ kind: "batch", item: existingBatch });
+      setMessage(
+        `${"document_number" in item ? `Factura ${item.document_number || "sin folio"}` : `Cuenta ${directPayableDocumentNumber(item)}`} · ${activePayment.batch_number} · ${paymentOrderStatusLabel(activePayment.status)}.`,
+      );
+      return;
+    }
+    setDetail({
+      kind: "document_number" in item ? "document" : "payable",
+      item,
+    });
+  }
   const visibleBatches = useMemo(
     () => {
       const itemsByBatch = new Map<string, PaymentItem[]>();
@@ -1932,17 +1979,16 @@ export function ProcureToPayWorkbench({
                         <tr
                           key={id}
                           tabIndex={0}
-                          onClick={() =>
-                            setDetail({
-                              kind: isDocument ? "document" : "payable",
-                              item,
-                            })
-                          }
+                          onClick={() => openPayableDetail(item)}
                         >
                           <td onClick={(event) => event.stopPropagation()}>
                             {canManagePayments && (
                               <input
-                                aria-label="Seleccionar para propuesta"
+                                aria-label={
+                                  item.active_payment_batch
+                                    ? `Ya incluida en ${item.active_payment_batch.batch_number}`
+                                    : "Seleccionar para propuesta"
+                                }
                                 type="checkbox"
                                 disabled={!eligible}
                                 checked={selected}
@@ -1982,17 +2028,24 @@ export function ProcureToPayWorkbench({
                           <td>
                             <span
                               className={
-                                eligible
-                                  ? statusClass(overdue ? "review" : "approved")
-                                  : "status cancelled"
+                                item.active_payment_batch
+                                  ? statusClass(item.active_payment_batch.status)
+                                  : eligible
+                                    ? statusClass(overdue ? "review" : "approved")
+                                    : "status cancelled"
                               }
                             >
                               {eligible
                                 ? overdue
                                   ? "Vencida"
                                   : "Elegible"
+                                : item.active_payment_batch
+                                  ? `${item.active_payment_batch.batch_number} · ${paymentOrderStatusLabel(item.active_payment_batch.status)}`
                                 : paymentBlockLabel(item.payment_block_reason)}
                             </span>
+                            {item.active_payment_batch && (
+                              <small>Abre esta fila para ver la propuesta o registrar el abono.</small>
+                            )}
                           </td>
                         </tr>
                       );
