@@ -1235,18 +1235,49 @@ export function ExpensesDashboard({
               vinculadas, notas de crédito aplicadas y factoring).
             </p>
           </div>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => {
-              setSupplier("all");
-              setStatus("all");
-              setSearch("");
-              setQueueFilter("todo");
-            }}
-          >
-            Limpiar filtros
-          </button>
+          <div className="payable-proposal-actions">
+            {canManage && onPreparePayments && (
+              <>
+                {selectedPayables.length > 0 && (
+                  <>
+                    <span className="payable-selection-summary">
+                      {selectedPayables.length} seleccionada(s) ·{" "}
+                      {money.format(selectedPaymentTotal)}
+                    </span>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => setSelectedPaymentKeys(new Set())}
+                    >
+                      Quitar selección
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={!selectedPayables.length}
+                  onClick={prepareSelectedPayments}
+                >
+                  {selectedPayables.length
+                    ? `Preparar abono conjunto (${selectedPayables.length})`
+                    : "Selecciona cuentas para abonar"}
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                setSupplier("all");
+                setStatus("all");
+                setSearch("");
+                setQueueFilter("todo");
+              }}
+            >
+              Limpiar filtros
+            </button>
+          </div>
         </div>
         <div className="cycle-actions">
           {(Object.keys(queueLabels) as Queue[]).map((queue) => (
@@ -1593,30 +1624,6 @@ export function ExpensesDashboard({
                 </tbody>
               </table>
             </div>
-            {canManage && onPreparePayments && selectedPayables.length > 0 && (
-              <div className="p2p-selection-bar">
-                <span>
-                  {selectedPayables.length} cuenta(s) seleccionada(s) ·{" "}
-                  {money.format(selectedPaymentTotal)}
-                </span>
-                <div className="payable-proposal-actions">
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => setSelectedPaymentKeys(new Set())}
-                  >
-                    Limpiar
-                  </button>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={prepareSelectedPayments}
-                  >
-                    Preparar propuesta de pago
-                  </button>
-                </div>
-              </div>
-            )}
           </>
         )}
       </section>

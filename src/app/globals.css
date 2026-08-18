@@ -2770,6 +2770,7 @@ td small {
 .expense-select-col input { width:16px; height:16px; accent-color:#5368df; cursor:pointer; }
 .expense-select-col input:disabled { cursor:not-allowed; opacity:.35; }
 .payable-proposal-actions { display:flex; align-items:center; gap:8px; }
+.payable-selection-summary { color:#526178; font-size:12px; font-weight:800; white-space:nowrap; }
 .p2p-workbench .p2p-board { display:none; }
 .p2p-workbench .p2p-create-panel { position:fixed; z-index:55; top:50%; left:50%; width:min(760px,calc(100vw - 36px)); max-height:88vh; overflow:auto; transform:translate(-50%,-50%); padding:24px; border:1px solid #ffffffc9; border-radius:16px; background:linear-gradient(135deg,#fffffff5,#f3f6ffed); box-shadow:0 0 0 100vmax #1722378a,0 30px 90px #101b3760; backdrop-filter:blur(22px) saturate(1.2); }
 .p2p-workbench .p2p-create-panel.p2p-payment-batch-modal { width:min(1240px,calc(100vw - 36px)); }
