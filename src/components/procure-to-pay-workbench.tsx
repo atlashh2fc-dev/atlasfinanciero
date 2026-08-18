@@ -376,14 +376,17 @@ export function ProcureToPayWorkbench({
   organizationId,
   canManage,
   canManagePayments,
-  initialReceivedDocumentId,
-  onInitialReceivedDocumentHandled,
+  initialPaymentSelection,
+  onInitialPaymentSelectionHandled,
 }: {
   organizationId: string | null;
   canManage: boolean;
   canManagePayments: boolean;
-  initialReceivedDocumentId?: string | null;
-  onInitialReceivedDocumentHandled?: () => void;
+  initialPaymentSelection?: {
+    receivedDocumentIds: string[];
+    directPayableIds: string[];
+  } | null;
+  onInitialPaymentSelectionHandled?: () => void;
 }) {
   const [data, setData] = useState<Payload | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -757,58 +760,47 @@ export function ProcureToPayWorkbench({
     [dueDocuments, openDirectPayables, year, search, stateFilter],
   );
   useEffect(() => {
-    if (!initialReceivedDocumentId || !data) return;
-    const document = dueDocuments.find(
-      (item) => item.id === initialReceivedDocumentId,
-    );
+    if (!initialPaymentSelection || !data) return;
     setTab("payables");
     setStateFilter("all");
-    if (!document) {
-      setMessage("La factura ya no está disponible para preparar un pago.");
-      onInitialReceivedDocumentHandled?.();
-      return;
-    }
-    setYear(document.issue_date.slice(0, 4));
-    setSearch(document.document_number || document.supplier_name);
     if (!canManagePayments) {
-      setMessage("Tu perfil puede consultar la factura, pero sólo Administración o Finanzas puede preparar el abono.");
-      onInitialReceivedDocumentHandled?.();
+      setMessage("Tu perfil puede consultar las cuentas, pero sólo Administración o Finanzas puede preparar la propuesta.");
+      onInitialPaymentSelectionHandled?.();
       return;
     }
-    if (!document.payment_eligible) {
-      const activePayment = document.active_payment_batch;
-      const existingBatch = activePayment
-        ? data.paymentBatches.find((item) => item.id === activePayment.id)
-        : null;
-      if (activePayment && existingBatch) {
-        setReschedule((current) => ({
-          ...current,
-          itemIds: [activePayment.item_id],
-        }));
-        setDetail({ kind: "batch", item: existingBatch });
-        setMessage(
-          `La factura ${document.document_number || "sin folio"} ya está en ${activePayment.batch_number} (${paymentOrderStatusLabel(activePayment.status)}). Su pago quedó seleccionado para registrar el abono.`,
-        );
-        onInitialReceivedDocumentHandled?.();
-        return;
-      }
-      setMessage(`No se puede seleccionar esta factura: ${paymentBlockLabel(document.payment_block_reason)}`);
-      onInitialReceivedDocumentHandled?.();
+    const requestedDocuments = new Set(initialPaymentSelection.receivedDocumentIds);
+    const requestedPayables = new Set(initialPaymentSelection.directPayableIds);
+    const documents = paymentEligibleDocuments.filter((item) => requestedDocuments.has(item.id));
+    const payables = paymentEligibleDirectPayables.filter((item) => requestedPayables.has(item.id));
+    const requestedCount = requestedDocuments.size + requestedPayables.size;
+    const selectedCount = documents.length + payables.length;
+    if (!selectedCount) {
+      setMessage("Las cuentas seleccionadas ya no están disponibles para una propuesta de pago.");
+      onInitialPaymentSelectionHandled?.();
       return;
     }
     setBatch((current) => ({
       ...current,
-      documentIds: current.documentIds.includes(document.id)
-        ? current.documentIds
-        : [...current.documentIds, document.id],
+      documentIds: [...new Set([...current.documentIds, ...documents.map((item) => item.id)])],
       documentAmounts: {
         ...current.documentAmounts,
-        [document.id]: current.documentAmounts[document.id] ?? String(documentOutstandingAmount(document)),
+        ...Object.fromEntries(documents.map((item) => [item.id, current.documentAmounts[item.id] ?? String(documentOutstandingAmount(item))])),
+      },
+      directPayableIds: [...new Set([...current.directPayableIds, ...payables.map((item) => item.id)])],
+      directPayableAmounts: {
+        ...current.directPayableAmounts,
+        ...Object.fromEntries(payables.map((item) => [item.id, current.directPayableAmounts[item.id] ?? String(payableOutstandingAmount(item))])),
       },
     }));
-    setMessage(`Factura ${document.document_number || "sin folio"} seleccionada. Indica el monto del abono y prepara la propuesta de pago.`);
-    onInitialReceivedDocumentHandled?.();
-  }, [initialReceivedDocumentId, data]);
+    setIsPreparingSelectedPayments(true);
+    setShowBatchForm(true);
+    setMessage(
+      selectedCount === requestedCount
+        ? `${selectedCount} cuenta(s) seleccionada(s). Revisa los montos y guarda la propuesta de pago.`
+        : `${selectedCount} de ${requestedCount} cuenta(s) siguen disponibles. Revisa la selección antes de guardar la propuesta.`,
+    );
+    onInitialPaymentSelectionHandled?.();
+  }, [initialPaymentSelection, data]);
 
   function openPayableDetail(item: Document | DirectPayable) {
     const activePayment = item.active_payment_batch;

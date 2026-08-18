@@ -2766,6 +2766,20 @@ td small {
 .p2p-dense-table td strong,.p2p-dense-table td small { display:block; }
 .p2p-dense-table td small { margin-top:3px; color:#8794a7; font-size:10px; }
 .p2p-selection-bar { position:sticky; bottom:14px; z-index:8; display:flex; align-items:center; justify-content:space-between; gap:16px; margin:12px 0 0; padding:12px 14px; border:1px solid #d7e0fb; border-radius:10px; background:#f7f9ffed; box-shadow:0 10px 24px #28365c1a; color:#43516a; font-size:12px; font-weight:700; backdrop-filter:blur(12px); }
+.payable-proposal-picker { overflow:visible; }
+.payable-proposal-groups { display:grid; gap:8px; margin-top:14px; max-height:360px; overflow:auto; }
+.payable-proposal-group { border:1px solid #e3e8f1; border-radius:10px; background:#fff; }
+.payable-proposal-group > summary { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:11px 13px; cursor:pointer; color:#526178; font-size:12px; }
+.payable-proposal-group > summary::marker { color:#7182a0; }
+.payable-proposal-group > summary label { display:flex; align-items:center; gap:9px; cursor:pointer; }
+.payable-proposal-group > summary span { color:#7182a0; white-space:nowrap; }
+.payable-proposal-items { display:grid; border-top:1px solid #edf1f5; }
+.payable-proposal-items > label { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; padding:9px 13px 9px 34px; cursor:pointer; }
+.payable-proposal-items > label + label { border-top:1px solid #f0f3f7; }
+.payable-proposal-items span strong,.payable-proposal-items span small { display:block; }
+.payable-proposal-items span small { margin-top:2px; color:#8794a7; font-size:10px; }
+.payable-proposal-items b { color:#33425d; font-size:12px; }
+.payable-proposal-actions { display:flex; align-items:center; gap:8px; }
 .p2p-workbench .p2p-board { display:none; }
 .p2p-workbench .p2p-create-panel { position:fixed; z-index:55; top:50%; left:50%; width:min(760px,calc(100vw - 36px)); max-height:88vh; overflow:auto; transform:translate(-50%,-50%); padding:24px; border:1px solid #ffffffc9; border-radius:16px; background:linear-gradient(135deg,#fffffff5,#f3f6ffed); box-shadow:0 0 0 100vmax #1722378a,0 30px 90px #101b3760; backdrop-filter:blur(22px) saturate(1.2); }
 .p2p-workbench .p2p-create-panel.p2p-payment-batch-modal { width:min(1240px,calc(100vw - 36px)); }

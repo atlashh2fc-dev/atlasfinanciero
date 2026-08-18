@@ -8,6 +8,10 @@ type DirectPayable = { id: string; payable_number: string; supplier_counterparty
 type Payable = { id: string; source: "received" | "direct"; supplier_counterparty_id: string | null; supplier_name: string; supplier_tax_id: string | null; document_number: string | null; issue_date: string; document_type: string; net_amount: number | string; vat_amount: number | string; additional_tax_amount: number | string; total_amount: number | string; paid_amount?: number | string; outstanding_amount?: number | string; currency_code: string; notes: string | null; payment_term_days: number | null; due_date: string | null; payment_status: string | null; payment_method: string | null; payment_bank: string | null; payment_reference: string | null; payment_date: string | null; attachment_path: string | null; attachment_name: string | null; attachment_mime_type: string | null; attachment_size: number | null; payment_proof_path?: string | null; payment_proof_name?: string | null; payment_proof_mime_type?: string | null; payment_proof_size?: number | null; sii_document_type: number | null; sii_folio: number | string | null; sii_received_at: string | null; sii_response_deadline: string | null; sii_event_status: string | null; sii_last_checked_at: string | null; workflow_status: DirectPayable["status"] | null; factoring_issued_document_id: string | null; is_reference: boolean; reference_settled_at: string | null; reference_settlement_note: string | null };
 type DocumentDraft = { supplierName: string; supplierTaxId: string; documentNumber: string; documentType: string; issueDate: string; dueDate: string; paymentTermDays: string; netAmount: string; vatAmount: string; additionalTaxAmount: string; siiDocumentType: string; siiFolio: string; notes: string };
 type DirectAttachment = { id: string; fileName: string; mimeType: string; fileSize: number; createdAt: string; signedUrl: string | null };
+export type PayablePaymentSelection = {
+  receivedDocumentIds: string[];
+  directPayableIds: string[];
+};
 
 const money = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 const date = new Intl.DateTimeFormat("es-CL", { day: "2-digit", month: "short", year: "numeric" });
@@ -29,7 +33,10 @@ const isSettled = (item: Pick<Payable, "payment_status">) => { const status = no
 const outstandingOf = (item: Payable) => item.source === "direct" ? amount(item.outstanding_amount ?? item.total_amount) : amount(item.total_amount);
 const parseAnnulledFolio = (notes: string | null) => notes?.match(/anula\s+factura\s*(?:n[°º]?\s*)?(\d+)/i)?.[1] ?? null;
 
-export function ExpensesDashboard({ organizationId, canManage, canConfigureSii, onPrepareReceivedDocumentPayment }: { organizationId: string | null; canManage: boolean; canConfigureSii: boolean; onPrepareReceivedDocumentPayment?: (documentId: string) => void }) {
+export function ExpensesDashboard({ organizationId, canManage, canConfigureSii, onPreparePayments }: { organizationId: string | null; canManage: boolean; canConfigureSii: boolean; onPreparePayments?: (selection: PayablePaymentSelection) => void }) {
+  const onPrepareReceivedDocumentPayment = onPreparePayments
+    ? (documentId: string) => onPreparePayments({ receivedDocumentIds: [documentId], directPayableIds: [] })
+    : undefined;
   const [documents, setDocuments] = useState<ReceivedDocument[]>([]);
   const [directPayables, setDirectPayables] = useState<DirectPayable[]>([]);
   const [year, setYear] = useState(String(new Date().getFullYear()));
@@ -59,6 +66,7 @@ export function ExpensesDashboard({ organizationId, canManage, canConfigureSii, 
   const [queueFilter, setQueueFilter] = useState<Queue>("todo");
   const [siiOpen, setSiiOpen] = useState(false);
   const [expandedSuppliers, setExpandedSuppliers] = useState<Set<string>>(new Set());
+  const [selectedPaymentKeys, setSelectedPaymentKeys] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!organizationId) { setDocuments([]); setDirectPayables([]); setLoading(false); return; }
@@ -145,6 +153,63 @@ export function ExpensesDashboard({ organizationId, canManage, canConfigureSii, 
   };
 
   const queued = useMemo(() => visible.map((item) => ({ item, queue: queueOf(item) })), [visible, netting]);
+
+  const isSelectableForPayment = (item: Payable) =>
+    queueOf(item) === "pagar" &&
+    !item.is_reference &&
+    !isCredit(item) &&
+    !isGuide(item) &&
+    !isSettled(item) &&
+    item.currency_code === "CLP" &&
+    (item.source === "received" || item.workflow_status === "approved");
+  const paymentKey = (item: Payable) => `${item.source}:${item.id}`;
+  const selectableVisiblePayables = useMemo(
+    () =>
+      queued
+        .filter((entry) => queueFilter === "todo" || entry.queue === queueFilter)
+        .map((entry) => entry.item)
+        .filter(isSelectableForPayment),
+    [queued, queueFilter],
+  );
+  const selectedPayables = useMemo(
+    () => payables.filter((item) => selectedPaymentKeys.has(paymentKey(item)) && isSelectableForPayment(item)),
+    [payables, selectedPaymentKeys, netting],
+  );
+  const selectedPaymentTotal = useMemo(
+    () => selectedPayables.reduce((total, item) => total + (item.currency_code === "CLP" ? outstandingOf(item) : 0), 0),
+    [selectedPayables],
+  );
+  const selectableBySupplier = useMemo(() => {
+    const groups = new Map<string, { key: string; name: string; items: Payable[] }>();
+    for (const item of selectableVisiblePayables) {
+      const key = supplierKey(item);
+      const group = groups.get(key) ?? { key, name: item.supplier_name, items: [] };
+      group.items.push(item);
+      groups.set(key, group);
+    }
+    return [...groups.values()];
+  }, [selectableVisiblePayables]);
+
+  function togglePaymentSelection(items: Payable[]) {
+    const selectable = items.filter(isSelectableForPayment);
+    setSelectedPaymentKeys((current) => {
+      const next = new Set(current);
+      const shouldSelect = selectable.some((item) => !next.has(paymentKey(item)));
+      for (const item of selectable) {
+        if (shouldSelect) next.add(paymentKey(item));
+        else next.delete(paymentKey(item));
+      }
+      return next;
+    });
+  }
+
+  function prepareSelectedPayments() {
+    if (!onPreparePayments || !selectedPayables.length) return;
+    onPreparePayments({
+      receivedDocumentIds: selectedPayables.filter((item) => item.source === "received").map((item) => item.id),
+      directPayableIds: selectedPayables.filter((item) => item.source === "direct").map((item) => item.id),
+    });
+  }
 
   const queueSummary = useMemo(() => {
     const counts: Record<Queue, number> = { todo: queued.length, decidir: 0, aprobar: 0, pagar: 0, pagadas: 0, referencial: 0 };
@@ -435,6 +500,75 @@ export function ExpensesDashboard({ organizationId, canManage, canConfigureSii, 
     <section className="kpis kpis-six"><article className="kpi-card"><span>Vencido</span><strong className={queueSummary.overdue > 0 ? "is-negative" : ""}>{money.format(queueSummary.overdue)}</strong><small>{queueSummary.overdueCount} documento(s) con vencimiento cumplido</small></article><article className="kpi-card"><span>Vence en 7 días</span><strong>{money.format(queueSummary.dueSoon)}</strong><small>{queueSummary.dueSoonCount} documento(s) próximos</small></article><article className="kpi-card"><span>SII por decidir</span><strong>{siiPendingDecisions}</strong><small>Plazo de 8 días corriendo</small></article><article className="kpi-card"><span>Por aprobar</span><strong>{queueSummary.counts.aprobar}</strong><small>{money.format(queueSummary.approvalTotal)} comprometidos</small></article><article className="kpi-card"><span>Pendiente de pago</span><strong className={queueSummary.pendingTotal > 0 ? "is-negative" : ""}>{money.format(queueSummary.pendingTotal)}</strong><small>{queueSummary.counts.pagar + queueSummary.counts.decidir} documento(s) abiertos</small></article><article className="kpi-card accent"><span>Pagado</span><strong>{money.format(summary.paid)}</strong><small>Gasto del filtro: {money.format(summary.expense)}</small></article></section>
     <section className="table-section"><div className="table-heading"><div><span className="panel-label">SII</span><h2>Conexión tributaria</h2><p>{siiPendingDecisions > 0 ? `${siiPendingDecisions} DTE esperando aceptación o reclamo dentro del plazo.` : "Sin decisiones pendientes ante el SII."} El RCV se sincroniza a diario y el correo aporta el XML de detalle.</p></div><button type="button" className="secondary-button" onClick={() => setSiiOpen((current) => !current)}>{siiOpen ? "Ocultar detalle SII" : "Ver detalle SII"}</button></div></section>
     {siiOpen && <SiiDteIntegration organizationId={organizationId} canConfigure={canConfigureSii} documents={documents} onRefreshDocuments={refreshDocuments} />}
+    {canManage && onPreparePayments && (
+      <section className="table-section payable-proposal-picker" aria-label="Selección de cuentas para propuesta de pago">
+        <div className="table-heading">
+          <div>
+            <span className="panel-label">PAGO RÁPIDO</span>
+            <h2>Armar propuesta desde esta bandeja</h2>
+            <p>Selecciona cuentas individuales, un proveedor completo o todas las cuentas visibles.</p>
+          </div>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!selectableVisiblePayables.length}
+            onClick={() => togglePaymentSelection(selectableVisiblePayables)}
+          >
+            {selectableVisiblePayables.length > 0 && selectableVisiblePayables.every((item) => selectedPaymentKeys.has(paymentKey(item)))
+              ? "Quitar visibles"
+              : "Seleccionar visibles"}
+          </button>
+        </div>
+        {selectableBySupplier.length ? (
+          <div className="payable-proposal-groups">
+            {selectableBySupplier.map((group) => {
+              const selectedCount = group.items.filter((item) => selectedPaymentKeys.has(paymentKey(item))).length;
+              return (
+                <details key={group.key} className="payable-proposal-group" open={selectableBySupplier.length <= 3}>
+                  <summary>
+                    <label onClick={(event) => event.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedCount === group.items.length}
+                        onChange={() => togglePaymentSelection(group.items)}
+                        aria-label={`Seleccionar cuentas de ${group.name}`}
+                      />
+                      <strong>{group.name}</strong>
+                    </label>
+                    <span>{selectedCount}/{group.items.length} · {money.format(group.items.reduce((total, item) => total + (item.currency_code === "CLP" ? outstandingOf(item) : 0), 0))}</span>
+                  </summary>
+                  <div className="payable-proposal-items">
+                    {group.items.map((item) => (
+                      <label key={paymentKey(item)}>
+                        <input
+                          type="checkbox"
+                          checked={selectedPaymentKeys.has(paymentKey(item))}
+                          onChange={() => togglePaymentSelection([item])}
+                        />
+                        <span>
+                          <strong>{item.document_number || "Sin folio"}</strong>
+                          <small>{displayDate(item.due_date)}</small>
+                        </span>
+                        <b>{displayAmount(outstandingOf(item), item.currency_code)}</b>
+                      </label>
+                    ))}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="billing-empty">No hay cuentas elegibles en los filtros actuales.</p>
+        )}
+        <div className="p2p-selection-bar">
+          <span>{selectedPayables.length} cuenta(s) · Total seleccionado: {money.format(selectedPaymentTotal)}</span>
+          <div className="payable-proposal-actions">
+            {selectedPayables.length > 0 && <button type="button" className="secondary-button" onClick={() => setSelectedPaymentKeys(new Set())}>Limpiar</button>}
+            <button type="button" className="primary-button" disabled={!selectedPayables.length} onClick={prepareSelectedPayments}>Preparar propuesta de pago</button>
+          </div>
+        </div>
+      </section>
+    )}
     <section className="table-section"><div className="table-heading"><div><span className="panel-label">COLAS DE TRABAJO</span><h2>Qué hay que hacer</h2><p>Filtra por acción: decidir ante el SII, aprobar, pagar por urgencia de vencimiento, o revisar lo referencial (guías vinculadas, notas de crédito aplicadas y factoring).</p></div><button type="button" className="secondary-button" onClick={() => { setSupplier("all"); setStatus("all"); setSearch(""); setQueueFilter("todo"); }}>Limpiar filtros</button></div>
       <div className="cycle-actions">{(Object.keys(queueLabels) as Queue[]).map((queue) => <button key={queue} type="button" className={queueFilter === queue ? "primary-button" : "secondary-button"} onClick={() => setQueueFilter(queue)}>{queueLabels[queue]} ({queueSummary.counts[queue]})</button>)}</div>
       <div className="expense-filter-row"><label><span>Proveedor</span><select value={supplier} onChange={(event) => setSupplier(event.target.value)}><option value="all">Todos los proveedores</option>{suppliers.map((item) => <option key={supplierKey(item)} value={supplierKey(item)}>{item.supplier_name}{item.supplier_tax_id ? ` · ${item.supplier_tax_id}` : ""}</option>)}</select></label><label><span>Estado</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">Todos los estados</option>{statuses.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label><span>Buscar</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Proveedor, folio o detalle" /></label></div>

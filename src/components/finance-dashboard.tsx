@@ -33,7 +33,7 @@ import { PublicMarketCrm } from "@/components/public-market-crm";
 import { ReportsDashboard } from "@/components/reports-dashboard";
 import { CostCenterManagement } from "@/components/cost-center-management";
 import { CostCenterImputationInbox } from "@/components/cost-center-imputation-inbox";
-import { ExpensesDashboard } from "@/components/expenses-dashboard";
+import { ExpensesDashboard, type PayablePaymentSelection } from "@/components/expenses-dashboard";
 import { PreinvoiceWorkbench } from "@/components/preinvoice-workbench";
 import { TreasuryDashboard } from "@/components/treasury-dashboard";
 import { ApprovalInbox } from "@/components/approval-inbox";
@@ -2318,7 +2318,7 @@ export function FinanceDashboard() {
   const [paymentDraft, setPaymentDraft] = useState<PaymentDraft>(blankPaymentDraft);
   const [paymentInstallmentProof, setPaymentInstallmentProof] = useState<File | null>(null);
   const [isRegisteringPayment, setIsRegisteringPayment] = useState(false);
-  const [receivedDocumentToPay, setReceivedDocumentToPay] = useState<string | null>(null);
+  const [payablesToPropose, setPayablesToPropose] = useState<PayablePaymentSelection | null>(null);
   const [formError, setFormError] = useState("");
   const [sessionRecords, setSessionRecords] = useState<InvoiceRecord[]>([]);
   const [databaseRecords, setDatabaseRecords] = useState<InvoiceRecord[]>([]);
@@ -3395,8 +3395,8 @@ export function FinanceDashboard() {
               organizationId={access?.membership.organizationId ?? null}
               canManage={access?.membership.role === "administrator" || access?.membership.role === "finance"}
               canConfigureSii={access?.membership.role === "administrator"}
-              onPrepareReceivedDocumentPayment={(documentId) => {
-                setReceivedDocumentToPay(documentId);
+              onPreparePayments={(selection) => {
+                setPayablesToPropose(selection);
                 selectModule("Compras, obligaciones y pagos", "COMPRAS Y CAJA");
               }}
             />
@@ -3413,8 +3413,8 @@ export function FinanceDashboard() {
             organizationId={access?.membership.organizationId ?? null}
             canManage={hasEditPermission}
             canManagePayments={access?.membership.role === "administrator" || access?.membership.role === "finance"}
-            initialReceivedDocumentId={receivedDocumentToPay}
-            onInitialReceivedDocumentHandled={() => setReceivedDocumentToPay(null)}
+            initialPaymentSelection={payablesToPropose}
+            onInitialPaymentSelectionHandled={() => setPayablesToPropose(null)}
           />
         ) : activeModule === "Proveedores" ? (
           canReadExpenses ? (
