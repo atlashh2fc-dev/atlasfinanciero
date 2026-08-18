@@ -4,6 +4,7 @@ import {
   requireOrganizationFinanceAccess,
   requireOrganizationProcurementAccess,
 } from "@/lib/admin-access";
+import { paymentProposalItemAuthorization } from "@/lib/payment-execution";
 
 type Line = {
   description?: unknown;
@@ -1972,6 +1973,7 @@ export async function POST(request: NextRequest) {
         { error: "unable_to_create_payment_proposal" },
         { status: 409 },
       );
+    const itemAuthorizedAt = new Date().toISOString();
     const { error: itemsError } = await context.supabase
       .from("payment_batch_items")
       .insert([
@@ -1988,6 +1990,11 @@ export async function POST(request: NextRequest) {
             "received",
             document.id,
           ),
+          ...paymentProposalItemAuthorization(
+            batch.id,
+            documentAmountById.get(document.id) ?? 0,
+            itemAuthorizedAt,
+          ),
         })),
         ...directPayables.map((payable) => ({
           organization_id: organizationId,
@@ -2002,6 +2009,11 @@ export async function POST(request: NextRequest) {
             itemCategories,
             "payable",
             payable.id,
+          ),
+          ...paymentProposalItemAuthorization(
+            batch.id,
+            payableAmountById.get(payable.id) ?? 0,
+            itemAuthorizedAt,
           ),
         })),
       ]);

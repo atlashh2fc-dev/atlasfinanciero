@@ -2,9 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   groupPaymentItemsBySupplier,
+  paymentProposalItemAuthorization,
   sortPaymentProposalsByDate,
   validatePaymentAmount,
 } from "../src/lib/payment-execution.ts";
+
+test("incluye los campos de autorización requeridos al crear una propuesta", () => {
+  assert.deepEqual(
+    paymentProposalItemAuthorization(
+      "550e8400-e29b-41d4-a716-446655440000",
+      47_980,
+      "2026-08-18T15:00:00.000Z",
+    ),
+    {
+      authorization_status: "authorized",
+      authorized_amount: 47_980,
+      authorized_at: "2026-08-18T15:00:00.000Z",
+      authorization_source_batch_id:
+        "550e8400-e29b-41d4-a716-446655440000",
+    },
+  );
+});
 
 test("ordena propuestas por fecha sin mutar la colección original", () => {
   const proposals = [

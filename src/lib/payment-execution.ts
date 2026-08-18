@@ -6,6 +6,19 @@ export type PaymentProposalForSorting = {
 
 export type PaymentProposalSortDirection = "ascending" | "descending";
 
+export function paymentProposalItemAuthorization(
+  paymentBatchId: string,
+  amount: number,
+  authorizedAt: string,
+) {
+  return {
+    authorization_status: "authorized" as const,
+    authorized_amount: amount,
+    authorized_at: authorizedAt,
+    authorization_source_batch_id: paymentBatchId,
+  };
+}
+
 export function sortPaymentProposalsByDate<T extends PaymentProposalForSorting>(
   proposals: readonly T[],
   direction: PaymentProposalSortDirection = "ascending",
