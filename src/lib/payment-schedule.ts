@@ -8,6 +8,10 @@ export type SchedulablePaymentBatch = {
 export type SchedulablePaymentItem = {
   payment_batch_id: string;
   amount: number | string;
+  authorized_amount?: number | string | null;
+  outstanding_amount?: number | string | null;
+  status?: string | null;
+  authorization_status?: string | null;
 };
 
 export type PaymentWeekSummary = {
@@ -20,6 +24,8 @@ export type PaymentWeekSummary = {
   approvedAmount: number;
   processingAmount: number;
   paidAmount: number;
+  carryoverAmount: number;
+  carryoverItemCount: number;
 };
 
 function isoDate(value: Date) {
@@ -54,16 +60,39 @@ export function summarizePaymentWeeks(
   items: SchedulablePaymentItem[],
   weekDates: string[],
 ) {
-  const itemCountByBatch = new Map<string, number>();
-  for (const item of items)
-    itemCountByBatch.set(
-      item.payment_batch_id,
-      (itemCountByBatch.get(item.payment_batch_id) ?? 0) + 1,
+  const firstVisibleWeek = weekDates[0];
+  const itemSummaryByBatch = new Map<
+    string,
+    { itemCount: number; outstandingAmount: number }
+  >();
+  for (const item of items) {
+    if (
+      item.authorization_status === "cancelled" ||
+      ["cancelled", "paid"].includes(item.status ?? "")
+    )
+      continue;
+    const outstandingAmount = Number(
+      item.outstanding_amount ?? item.authorized_amount ?? item.amount ?? 0,
     );
+    if (!Number.isFinite(outstandingAmount) || outstandingAmount <= 0) continue;
+    const current = itemSummaryByBatch.get(item.payment_batch_id) ?? {
+      itemCount: 0,
+      outstandingAmount: 0,
+    };
+    itemSummaryByBatch.set(item.payment_batch_id, {
+      itemCount: current.itemCount + 1,
+      outstandingAmount: current.outstandingAmount + outstandingAmount,
+    });
+  }
 
   return weekDates.map<PaymentWeekSummary>((scheduledFor) => {
     const weekBatches = batches.filter(
-      (batch) => batch.scheduled_for === scheduledFor,
+      (batch) =>
+        batch.scheduled_for === scheduledFor ||
+        (scheduledFor === firstVisibleWeek &&
+          Boolean(firstVisibleWeek) &&
+          batch.scheduled_for < firstVisibleWeek &&
+          !["cancelled", "paid"].includes(batch.status)),
     );
     const activeBatches = weekBatches.filter(
       (batch) => !["cancelled", "paid"].includes(batch.status),
@@ -72,7 +101,8 @@ export function summarizePaymentWeeks(
       scheduledFor,
       batchIds: activeBatches.map((batch) => batch.id),
       itemCount: activeBatches.reduce(
-        (sum, batch) => sum + (itemCountByBatch.get(batch.id) ?? 0),
+        (sum, batch) =>
+          sum + (itemSummaryByBatch.get(batch.id)?.itemCount ?? 0),
         0,
       ),
       totalAmount: 0,
@@ -81,9 +111,16 @@ export function summarizePaymentWeeks(
       approvedAmount: 0,
       processingAmount: 0,
       paidAmount: 0,
+      carryoverAmount: 0,
+      carryoverItemCount: 0,
     };
     for (const batch of weekBatches) {
-      const amount = Number(batch.total_amount ?? 0);
+      const itemSummary = itemSummaryByBatch.get(batch.id);
+      const amount = itemSummary
+        ? itemSummary.outstandingAmount
+        : Number(batch.total_amount ?? 0);
+      const isCarryover =
+        Boolean(firstVisibleWeek) && batch.scheduled_for < firstVisibleWeek;
       if (!["cancelled", "paid"].includes(batch.status))
         result.totalAmount += amount;
       if (batch.status === "draft") result.draftAmount += amount;
@@ -91,6 +128,10 @@ export function summarizePaymentWeeks(
       if (batch.status === "approved") result.approvedAmount += amount;
       if (batch.status === "processing") result.processingAmount += amount;
       if (batch.status === "paid") result.paidAmount += amount;
+      if (isCarryover && !["cancelled", "paid"].includes(batch.status)) {
+        result.carryoverAmount += amount;
+        result.carryoverItemCount += itemSummary?.itemCount ?? 0;
+      }
     }
     return result;
   });

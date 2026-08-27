@@ -2103,6 +2103,13 @@ export function ProcureToPayWorkbench({
                       <span>Viernes {displayDate(week.scheduledFor)}</span>
                       <strong>{money.format(week.totalAmount)}</strong>
                       <small>{week.itemCount} pago(s) seleccionado(s)</small>
+                      {week.carryoverAmount > 0 && (
+                        <small>
+                          Incluye {week.carryoverItemCount} pendiente(s) de
+                          semanas anteriores por{" "}
+                          {money.format(week.carryoverAmount)}
+                        </small>
+                      )}
                       <div className="p2p-week-load" aria-label="Carga relativa de la semana">
                         <i style={{ width: `${Math.max(week.totalAmount ? 5 : 0, (week.totalAmount / maxWeeklyAmount) * 100)}%` }} />
                       </div>
