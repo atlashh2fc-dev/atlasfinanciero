@@ -376,12 +376,20 @@ export function ProcureToPayWorkbench({
   organizationId,
   canManage,
   canManagePayments,
+  canCreatePaymentProposals = canManagePayments,
+  canRecordPaymentTransfers = canManagePayments,
+  paymentsOnly = false,
   initialPaymentSelection,
   onInitialPaymentSelectionHandled,
 }: {
   organizationId: string | null;
   canManage: boolean;
   canManagePayments: boolean;
+  /** Individual capabilities for data entry; default to canManagePayments. */
+  canCreatePaymentProposals?: boolean;
+  canRecordPaymentTransfers?: boolean;
+  /** Limits navigation to payables and payment proposals. */
+  paymentsOnly?: boolean;
   initialPaymentSelection?: {
     receivedDocumentIds: string[];
     directPayableIds: string[];
@@ -399,7 +407,7 @@ export function ProcureToPayWorkbench({
     useState(false);
   const [tab, setTab] = useState<
     "summary" | "requests" | "orders" | "payables" | "proposals" | "financing"
-  >("summary");
+  >(paymentsOnly ? "payables" : "summary");
   const [year, setYear] = useState(String(new Date().getFullYear()));
   const [search, setSearch] = useState("");
   const [stateFilter, setStateFilter] = useState("all");
@@ -763,7 +771,7 @@ export function ProcureToPayWorkbench({
     if (!initialPaymentSelection || !data) return;
     setTab("payables");
     setStateFilter("all");
-    if (!canManagePayments) {
+    if (!canCreatePaymentProposals) {
       setMessage("Tu perfil puede consultar las cuentas, pero sólo Administración o Finanzas puede preparar la propuesta.");
       onInitialPaymentSelectionHandled?.();
       return;
@@ -1622,7 +1630,9 @@ export function ProcureToPayWorkbench({
               ["proposals", "Propuestas de pago"],
               ["financing", "Financiamientos"],
             ] as const
-          ).map(([value, name]) => (
+          )
+            .filter(([value]) => !paymentsOnly || value === "payables" || value === "proposals")
+            .map(([value, name]) => (
             <button
               type="button"
               key={value}
@@ -1818,7 +1828,7 @@ export function ProcureToPayWorkbench({
                 acción disponible.
               </p>
             </div>
-            {tab === "proposals" && canManagePayments && (
+            {tab === "proposals" && canCreatePaymentProposals && (
               <button
                 className="primary-button"
                 onClick={() => {
@@ -1974,7 +1984,7 @@ export function ProcureToPayWorkbench({
                           onClick={() => openPayableDetail(item)}
                         >
                           <td onClick={(event) => event.stopPropagation()}>
-                            {canManagePayments && (
+                            {canCreatePaymentProposals && (
                               <input
                                 aria-label={
                                   item.active_payment_batch
@@ -2053,7 +2063,7 @@ export function ProcureToPayWorkbench({
                   </tbody>
                 </table>
               </div>
-              {canManagePayments && (
+              {canCreatePaymentProposals && (
                 <div className="p2p-selection-bar">
                   <span>
                     {batch.documentIds.length + batch.directPayableIds.length}{" "}
@@ -3092,7 +3102,7 @@ export function ProcureToPayWorkbench({
         </section>
       )}
 
-      {showBatchForm && canManagePayments && (
+      {showBatchForm && canCreatePaymentProposals && (
         <section
           className="panel p2p-create-panel p2p-payment-batch-modal"
           id="p2p-payment-batch"
@@ -3832,7 +3842,7 @@ export function ProcureToPayWorkbench({
                   </button>
                 )}
               {detail.kind === "batch" &&
-                canManagePayments &&
+                canRecordPaymentTransfers &&
                 detail.item.status === "approved" && (
                   <button
                     className="primary-button"
@@ -3843,7 +3853,7 @@ export function ProcureToPayWorkbench({
                   </button>
                 )}
               {detail.kind === "batch" &&
-                canManagePayments &&
+                canRecordPaymentTransfers &&
                 detail.item.status === "processing" && (
                   <button
                     className="primary-button"

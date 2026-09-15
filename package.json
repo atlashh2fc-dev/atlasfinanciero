@@ -15,6 +15,7 @@
     "test:payment-schedule": "node --experimental-strip-types --test tests/payment-schedule.test.ts",
     "test:payment-execution": "node --experimental-strip-types --test tests/payment-execution.test.ts",
     "test:virtual-secretary": "node --experimental-strip-types --test tests/virtual-secretary.test.ts",
+    "test:payment-capabilities": "node --experimental-strip-types --test tests/payment-capabilities.test.ts",
     "verify:crm": "node scripts/verify-crm-workspace.mjs",
     "verify:contrast": "node scripts/verify-evolution-total-contrast.mjs",
     "verify:public-market": "node scripts/verify-public-market-intelligence.mjs"

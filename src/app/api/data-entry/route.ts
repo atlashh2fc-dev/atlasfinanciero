@@ -174,6 +174,8 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     canCreateSuppliers: context.membership?.can_create_suppliers === true,
+    canCreatePaymentProposals: context.membership?.can_create_payment_proposals === true,
+    canRecordPaymentTransfers: context.membership?.can_record_payment_transfers === true,
     customers: customers.data ?? [],
     suppliers: suppliers.data ?? [],
     costCenters: costCenters.data ?? [],

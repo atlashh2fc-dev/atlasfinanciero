@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isUuid, requireOrganizationFinanceAccess } from "@/lib/admin-access";
+import { isUuid, requireOrganizationPaymentCapability } from "@/lib/admin-access";
 
 const allowedMimeTypes = new Set([
   "application/pdf",
@@ -63,7 +63,7 @@ export async function POST(request: NextRequest) {
     reference.length > 180
   ) return NextResponse.json({ error: "invalid_payment_proof" }, { status: 400 });
 
-  const context = await requireOrganizationFinanceAccess(organizationId);
+  const context = await requireOrganizationPaymentCapability(organizationId, "record_transfers");
   if (context.error || !context.supabase)
     return NextResponse.json({ error: context.error }, { status: context.status });
 

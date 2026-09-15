@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { hasPaymentCapability, type PaymentCapability } from "@/lib/payment-capabilities";
 
 export type OrganizationRole = "administrator" | "finance" | "operations" | "auditor" | "data_entry";
 
@@ -61,7 +62,7 @@ export async function requireOrganizationDataEntryAccess(organizationId: string)
 
   const { data: membership, error } = await supabase
     .from("organization_memberships")
-    .select("organization_id, role, can_create_suppliers")
+    .select("organization_id, role, can_create_suppliers, can_create_payment_proposals, can_record_payment_transfers")
     .eq("organization_id", organizationId)
     .eq("user_id", user.id)
     .maybeSingle();
@@ -70,6 +71,28 @@ export async function requireOrganizationDataEntryAccess(organizationId: string)
   if (membership?.role !== "data_entry") return { error: "data_entry_access_required" as const, status: 403, supabase: null, user: null, membership: null };
 
   return { error: null, status: 200, supabase, user, membership };
+}
+
+/**
+ * Finance-only payment operations that a data entry membership may receive
+ * individually. Approval, rescheduling and cancellation stay Finance-only.
+ */
+export async function requireOrganizationPaymentCapability(organizationId: string, capability: PaymentCapability) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "authentication_required" as const, status: 401, supabase: null, user: null };
+
+  const { data: membership, error } = await supabase
+    .from("organization_memberships")
+    .select("organization_id, role, can_create_payment_proposals, can_record_payment_transfers")
+    .eq("organization_id", organizationId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (error) return { error: "unable_to_read_membership" as const, status: 500, supabase: null, user: null };
+  if (!hasPaymentCapability(membership, capability)) return { error: "finance_access_required" as const, status: 403, supabase: null, user: null };
+
+  return { error: null, status: 200, supabase, user };
 }
 
 export async function requireOrganizationExpenseReadAccess(organizationId: string) {

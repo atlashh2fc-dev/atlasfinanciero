@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   isUuid,
   requireOrganizationFinanceAccess,
+  requireOrganizationPaymentCapability,
   requireOrganizationProcurementAccess,
 } from "@/lib/admin-access";
 import { paymentProposalItemAuthorization } from "@/lib/payment-execution";
@@ -828,9 +829,12 @@ export async function POST(request: NextRequest) {
     action === "create_direct_payable" ||
     action === "create_asset_financing_plan" ||
     action === "link_received_document_to_purchase_order";
-  const context = financeOnly
-    ? await requireOrganizationFinanceAccess(organizationId)
-    : await requireOrganizationProcurementAccess(organizationId);
+  const context =
+    action === "create_payment_batch"
+      ? await requireOrganizationPaymentCapability(organizationId, "create_proposals")
+      : financeOnly
+        ? await requireOrganizationFinanceAccess(organizationId)
+        : await requireOrganizationProcurementAccess(organizationId);
   if (context.error || !context.supabase || !context.user)
     return NextResponse.json(
       { error: context.error },
@@ -1690,17 +1694,15 @@ export async function POST(request: NextRequest) {
       .filter((document) => !document.vendor_purchase_order_id)
       .map((document) => document.id);
     if (directDocumentIds.length) {
-      const { error: directDocumentsError } = await context.supabase
-        .from("received_documents")
-        .update({
-          purchase_match_status: "not_required",
-          purchase_match_note: "Documento directo sin orden de compra asociada.",
-          purchase_match_checked_at: new Date().toISOString(),
-          purchase_match_checked_by: context.user.id,
-        })
-        .eq("organization_id", organizationId)
-        .is("vendor_purchase_order_id", null)
-        .in("id", directDocumentIds);
+      // RPC: digitación con capacidad de propuestas no tiene update general
+      // sobre received_documents.
+      const { error: directDocumentsError } = await context.supabase.rpc(
+        "mark_direct_payment_documents",
+        {
+          p_organization_id: organizationId,
+          p_document_ids: directDocumentIds,
+        },
+      );
       if (directDocumentsError)
         return NextResponse.json(
           { error: "unable_to_validate_payment_documents" },

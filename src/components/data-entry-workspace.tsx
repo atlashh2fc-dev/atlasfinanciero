@@ -3,18 +3,19 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { BenefitsWorkflow } from "@/components/benefits-workflow";
+import { ProcureToPayWorkbench } from "@/components/procure-to-pay-workbench";
 
 type Counterparty = { id: string; legal_name: string; trade_name: string | null; tax_id: string | null };
 type CostCenter = { id: string; code: string; name: string };
 type EntryKind = "sale" | "cost" | "collection" | "support";
 type Entry = { id: string; kind: EntryKind; issuedDocumentId: string | null; number: string | null; documentType: string | null; counterpart: string | null; issuedOn: string | null; amount: number | string | null; status: string | null; attachmentName: string | null; hasAttachment: boolean; existingProof: boolean; createdAt: string };
 type Reference = { kind: "sale" | "collection"; id: string; issuedDocumentId: string; number: string | null; occurredOn: string | null; counterpart: string | null; amount: number | string | null; status: string | null; detail: string | null; hasProof: boolean; createdAt: string };
-type Payload = { canCreateSuppliers: boolean; customers: Counterparty[]; suppliers: Counterparty[]; costCenters: CostCenter[]; references: Reference[]; entries: Entry[] };
-type View = "register" | "history" | "support" | "benefits";
+type Payload = { canCreateSuppliers: boolean; canCreatePaymentProposals: boolean; canRecordPaymentTransfers: boolean; customers: Counterparty[]; suppliers: Counterparty[]; costCenters: CostCenter[]; references: Reference[]; entries: Entry[] };
+type View = "register" | "history" | "support" | "benefits" | "payments";
 type HistoryFilter = "all" | EntryKind;
 type SupplierDraft = { legalName: string; tradeName: string; taxId: string };
 
-const emptyPayload: Payload = { canCreateSuppliers: false, customers: [], suppliers: [], costCenters: [], references: [], entries: [] };
+const emptyPayload: Payload = { canCreateSuppliers: false, canCreatePaymentProposals: false, canRecordPaymentTransfers: false, customers: [], suppliers: [], costCenters: [], references: [], entries: [] };
 const emptySupplierDraft = (): SupplierDraft => ({ legalName: "", tradeName: "", taxId: "" });
 const today = () => new Date().toISOString().slice(0, 10);
 const label = (item: Counterparty) => item.trade_name?.trim() || item.legal_name;
@@ -50,6 +51,10 @@ function HistoryIcon() {
 
 function AttachmentIcon() {
   return <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9" /></svg>;
+}
+
+function PaymentsIcon() {
+  return <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M3 10h18" /><path d="M7 15h3" /></svg>;
 }
 
 function BenefitsIcon() {
@@ -261,7 +266,8 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
     window.location.assign("/login");
   }
 
-  const viewName = view === "history" ? "Historial" : view === "support" ? "Adjuntar respaldo" : view === "benefits" ? "Postulaciones" : "Registrar documento";
+  const canOperatePayments = data.canCreatePaymentProposals || data.canRecordPaymentTransfers;
+  const viewName = view === "history" ? "Historial" : view === "support" ? "Adjuntar respaldo" : view === "benefits" ? "Postulaciones" : view === "payments" ? "Pagos" : "Registrar documento";
 
   return <div className={`app-shell ${sidebarCollapsed ? "sidebar-is-collapsed" : ""}`}>
     <aside className={`sidebar ${sidebarCollapsed ? "is-collapsed" : ""}`}>
@@ -278,6 +284,7 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
           <button type="button" className={`nav-item ${view === "support" ? "active" : ""}`} onClick={() => startSupport()}><span className="nav-icon"><AttachmentIcon /></span><span className="nav-item-label">Adjuntar respaldo</span></button>
           <button type="button" className={`nav-item ${view === "register" ? "active" : ""}`} onClick={() => selectView("register")}><span className="nav-icon"><RegisterIcon /></span><span className="nav-item-label">Registrar documento</span></button>
           <button type="button" className={`nav-item ${view === "benefits" ? "active" : ""}`} onClick={() => selectView("benefits")}><span className="nav-icon"><BenefitsIcon /></span><span className="nav-item-label">Postulaciones</span></button>
+          {canOperatePayments && <button type="button" className={`nav-item ${view === "payments" ? "active" : ""}`} onClick={() => selectView("payments")}><span className="nav-icon"><PaymentsIcon /></span><span className="nav-item-label">Pagos</span></button>}
         </div>
       </section></nav>
       <div className="sidebar-bottom"><p>Digitación</p></div>
@@ -286,9 +293,9 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
     <section className="content-area">
       <header className="topbar"><div className="breadcrumb">Digitación <span>/</span> {viewName}</div><div className="topbar-actions"><span className="access-role">Digitador</span><button className="avatar" type="button" onClick={() => void signOut()} aria-label="Cerrar sesión" title="Cerrar sesión">DG</button></div></header>
       <main className="dashboard data-entry-content">
-        <header className="headline data-entry-header"><div><span className="eyebrow">OPERACIÓN · DOCUMENTOS</span><h1>{viewName}</h1><p>{view === "history" ? "Consulta facturas, cobros, costos y respaldos por categoría. Esta vista no contiene indicadores ni resultados consolidados." : view === "support" ? "Carga un comprobante o documento y vincúlalo a una factura o a un cobro ya registrado." : view === "benefits" ? "Actualiza la tipificación, responsable, documentos y gestiones de cada postulación." : "Registra facturas de venta y documentos de costo para revisión de Finanzas."}</p></div>{view === "history" ? <button type="button" className="primary-button" onClick={() => startSupport()}>Adjuntar respaldo</button> : <button type="button" className="secondary-button" onClick={() => selectView("history")}>Volver al historial</button>}</header>
+        <header className="headline data-entry-header"><div><span className="eyebrow">OPERACIÓN · DOCUMENTOS</span><h1>{viewName}</h1><p>{view === "history" ? "Consulta facturas, cobros, costos y respaldos por categoría. Esta vista no contiene indicadores ni resultados consolidados." : view === "support" ? "Carga un comprobante o documento y vincúlalo a una factura o a un cobro ya registrado." : view === "benefits" ? "Actualiza la tipificación, responsable, documentos y gestiones de cada postulación." : view === "payments" ? "Prepara propuestas de pago y registra las transferencias de propuestas aprobadas por Finanzas." :"Registra facturas de venta y documentos de costo para revisión de Finanzas."}</p></div>{view === "history" ? <button type="button" className="primary-button" onClick={() => startSupport()}>Adjuntar respaldo</button> : <button type="button" className="secondary-button" onClick={() => selectView("history")}>Volver al historial</button>}</header>
         {message && <p className="operation-message" role="status">{message}</p>}
-        {loading ? <section className="panel data-entry-loading">Cargando historial…</section> : view === "benefits" ? <BenefitsWorkflow organizationId={organizationId} compact /> : view === "history" ? <section className="panel data-entry-history">
+        {loading ? <section className="panel data-entry-loading">Cargando historial…</section> : view === "payments" && canOperatePayments ? <ProcureToPayWorkbench organizationId={organizationId} canManage={false} canManagePayments={false} canCreatePaymentProposals={data.canCreatePaymentProposals} canRecordPaymentTransfers={data.canRecordPaymentTransfers} paymentsOnly /> : view === "benefits" ?<BenefitsWorkflow organizationId={organizationId} compact /> : view === "history" ? <section className="panel data-entry-history">
           <div className="data-entry-history-heading"><div><span className="panel-label">REGISTRO OPERATIVO</span><h2>Movimientos y documentos</h2><p>Busca por persona, empresa, folio, tipo o estado y combina el resultado con las categorías.</p></div><button type="button" className="secondary-button" onClick={() => void load()}>Actualizar</button></div>
           <div className="data-entry-history-tools">
             <div className="data-entry-history-search">
