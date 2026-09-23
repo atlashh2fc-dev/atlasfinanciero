@@ -3118,6 +3118,10 @@ export function FinanceDashboard() {
     // Tras elegir una vista, conservamos una sola sección abierta: el menú
     // sigue siendo breve y el contexto del usuario queda siempre visible.
     setExpandedNavigationGroups([groupLabel]);
+    // En iPad no hay hover real: el menú contraído se abre por foco al tocarlo
+    // y quedaría desplegado sobre la vista. Soltar el foco lo vuelve a cerrar.
+    if (sidebarCollapsed && window.matchMedia("(hover: none)").matches)
+      (document.activeElement as HTMLElement | null)?.blur();
   }
 
   function toggleNavigationGroup(groupLabel: string) {

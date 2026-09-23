@@ -5484,3 +5484,31 @@ td small {
 .sv-check input { width: 17px; height: 17px; min-height: auto; }
 @media (max-width: 1250px) { .sv-kpis { grid-template-columns: repeat(3, 1fr); } .sv-layout.has-detail { grid-template-columns: 1fr; } .sv-layout.has-detail .sv-table-wrap { border-right: 0; border-bottom: 1px solid #e7ebf1; } .sv-detail { max-height: none; } .sv-plan-list > div { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 760px) { .sv-kpis { grid-template-columns: 1fr 1fr; } .sv-filters { grid-template-columns: 1fr; } .sv-plan-list > div { grid-template-columns: 1fr; } }
+
+/* Tablet (iPad): los modales viven dentro de .content-area, que forma su propio
+   contexto de apilamiento. Mientras haya uno abierto, el área de contenido debe
+   quedar por encima del menú lateral o éste tapa el formulario. */
+.app-shell:has(.content-area :is(.modal-backdrop, .supplier-document-zoom-backdrop, .p2p-workbench .p2p-create-panel)) .content-area {
+  z-index: 20;
+}
+@media (max-width: 1180px) {
+  .kpis-six { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .expense-filter-row { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+  .cycle-actions { flex-wrap: wrap; }
+  .table-heading { flex-wrap: wrap; }
+  .payable-proposal-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .kpi-card strong { overflow-wrap: anywhere; }
+  .p2p-detail-modal { max-height: calc(100dvh - 40px); }
+}
+@media (max-width: 760px) {
+  .kpis-six { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .payable-proposal-actions { justify-content: flex-start; }
+}
+.p2p-payable-hint { margin-top: 8px !important; padding: 10px 12px; border: 1px solid #dfe6fb; border-radius: 8px; background: #f5f8ff; color: #44536d !important; }
+.p2p-danger-text { display: block; margin-top: 14px; color: #b4493a; }
+.p2p-cancel-payable { display: grid; gap: 10px; margin-top: 14px; padding: 12px; border: 1px solid #f0d2cc; border-radius: 10px; background: #fff8f6; }
+.p2p-cancel-payable label { display: grid; gap: 6px; color: #7a3a30; font-size: 11px; font-weight: 800; }
+.p2p-cancel-payable input { min-height: 38px; padding: 0 10px; border: 1px solid #e7c6bf; border-radius: 8px; background: #fff; color: #334057; font: inherit; font-size: 12px; }
+.p2p-cancel-payable > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.p2p-danger-button { background: #c4513f; border-color: #c4513f; }
+.expense-queue-tabs { flex-wrap: wrap; padding: 0 20px 14px; }

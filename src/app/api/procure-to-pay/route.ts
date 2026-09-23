@@ -1370,6 +1370,29 @@ export async function POST(request: NextRequest) {
         { error: "invalid_direct_payable" },
         { status: 400 },
       );
+    // Un doble envío del formulario (o volver a cargar la misma factura)
+    // generaba dos cuentas idénticas en aprobación. Se rechaza el duplicado
+    // mientras la original siga abierta (sin pagar ni anular).
+    let duplicateQuery = context.supabase
+      .from("direct_payables")
+      .select("payable_number")
+      .eq("organization_id", organizationId)
+      .eq("supplier_counterparty_id", supplier.id)
+      .in("status", ["draft", "review", "approved"])
+      .limit(1);
+    duplicateQuery = invoiceNumber
+      ? duplicateQuery.eq("invoice_number", invoiceNumber)
+      : duplicateQuery
+          .is("invoice_number", null)
+          .eq("total_amount", totalAmount)
+          .eq("issue_date", issueDate)
+          .gte("created_at", new Date(Date.now() - 10 * 60_000).toISOString());
+    const { data: duplicate } = await duplicateQuery.maybeSingle();
+    if (duplicate)
+      return NextResponse.json(
+        { error: "duplicate_direct_payable", payableNumber: duplicate.payable_number },
+        { status: 409 },
+      );
     const { data, error } = await context.supabase
       .from("direct_payables")
       .insert({
@@ -2075,6 +2098,7 @@ export async function PATCH(request: NextRequest) {
     "mark_payment_batch_paid",
     "submit_direct_payable",
     "set_direct_payable_beneficiary",
+    "cancel_direct_payable",
     "submit_asset_financing_plan",
     "reschedule_payment_items",
     "cancel_payment_items",
@@ -2172,6 +2196,30 @@ export async function PATCH(request: NextRequest) {
     if (error || !data)
       return NextResponse.json({ error: "unable_to_update_direct_payable_beneficiary" }, { status: 409 });
     return NextResponse.json({ item: data });
+  }
+  if (action === "cancel_direct_payable") {
+    const reason = text(body?.reason, 500, true);
+    if (!reason || reason.length < 3)
+      return NextResponse.json({ error: "invalid_direct_payable_cancellation" }, { status: 400 });
+    const { data, error } = await context.supabase.rpc("cancel_direct_payable", {
+      p_organization_id: organizationId,
+      p_direct_payable_id: id,
+      p_reason: reason,
+    });
+    if (error)
+      return NextResponse.json(
+        {
+          error: error.message.includes("recorded payments")
+            ? "direct_payable_has_payments"
+            : "unable_to_cancel_direct_payable",
+          detail: error.message,
+        },
+        { status: 409 },
+      );
+    await context.supabase.rpc("refresh_payment_schedule_alerts", {
+      p_organization_id: organizationId,
+    });
+    return NextResponse.json({ result: data });
   }
   if (
     !financeOnly &&

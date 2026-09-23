@@ -315,6 +315,23 @@ function paymentBlockLabel(reason: string | null) {
     )[reason ?? ""] ?? "No cumple las condiciones para pago."
   );
 }
+/** Qué falta para poder pagar y quién debe hacerlo (se muestra en el expediente). */
+function paymentBlockHint(reason: string | null) {
+  return (
+    (
+      {
+        awaiting_approval:
+          "Para avanzar al pago, alguien con perfil Finanzas o Administración debe aprobarla en Aprobaciones. Una vez aprobada aparecerá como Elegible y podrás seleccionarla para una propuesta de pago.",
+        not_submitted:
+          "Debe enviarse a aprobación antes de poder incluirla en una propuesta de pago.",
+        not_approved:
+          "Fue rechazada en aprobaciones y no se puede pagar. Si fue un error de registro, Finanzas o Administración puede anularla.",
+        already_in_payment_batch:
+          "Abre la propuesta de pago en la pestaña Propuestas de pago para registrar la transferencia.",
+      } as Record<string, string>
+    )[reason ?? ""] ?? null
+  );
+}
 function paymentProposalErrorMessage(code: string | null) {
   return (
     (
@@ -458,6 +475,7 @@ export function ProcureToPayWorkbench({
   });
   const [directPayableFile, setDirectPayableFile] = useState<File | null>(null);
   const [payableBeneficiaryDraft, setPayableBeneficiaryDraft] = useState("");
+  const [payableCancellationReason, setPayableCancellationReason] = useState<string | null>(null);
   const [financing, setFinancing] = useState({
     planKind: "asset_financing",
     planNumber: "",
@@ -541,6 +559,7 @@ export function ProcureToPayWorkbench({
     return () => window.removeEventListener("payable-updated", refreshAfterPayableUpdate);
   }, [organizationId]);
   useEffect(() => {
+    setPayableCancellationReason(null);
     setPayableBeneficiaryDraft(
       detail?.kind === "payable"
         ? ((detail.item as DirectPayable).beneficiary_name ?? "")
@@ -1234,10 +1253,18 @@ export function ProcureToPayWorkbench({
         ...directPayable,
       }),
     });
-    const payload = (await response.json().catch(() => null)) as { id?: string } | null;
+    const payload = (await response.json().catch(() => null)) as {
+      id?: string;
+      error?: string;
+      payableNumber?: string;
+    } | null;
     if (!response.ok || !payload?.id) {
       setSaving(false);
-      setMessage("No fue posible crear la cuenta por pagar. Revisa los datos y tus permisos.");
+      setMessage(
+        payload?.error === "duplicate_direct_payable"
+          ? `Esta cuenta ya está registrada (${payload.payableNumber ?? "mismo proveedor y folio"}). No se creó un duplicado; búscala en la bandeja.`
+          : "No fue posible crear la cuenta por pagar. Revisa los datos y tus permisos.",
+      );
       return;
     }
     let attachmentError = false;
@@ -1317,6 +1344,35 @@ export function ProcureToPayWorkbench({
     await load();
     setDetail(null);
     setMessage("Beneficiario/a actualizado/a en el expediente de pago.");
+  }
+  async function cancelDirectPayable(payableId: string) {
+    const reason = payableCancellationReason?.trim() ?? "";
+    if (!organizationId || reason.length < 3) return;
+    setSaving(true);
+    const response = await fetch("/api/procure-to-pay", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        organizationId,
+        id: payableId,
+        action: "cancel_direct_payable",
+        reason,
+      }),
+    });
+    const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+    setSaving(false);
+    if (!response.ok) {
+      setMessage(
+        payload?.error === "direct_payable_has_payments"
+          ? "No se puede anular: la cuenta ya tiene pagos registrados o conciliados."
+          : "No fue posible anular la cuenta. Verifica tus permisos y vuelve a intentar.",
+      );
+      return;
+    }
+    setPayableCancellationReason(null);
+    setDetail(null);
+    await load();
+    setMessage("Cuenta anulada. Salió de la bandeja y de cualquier propuesta de pago pendiente.");
   }
   async function createFinancingPlan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -3715,6 +3771,11 @@ export function ProcureToPayWorkbench({
                     (detail.item as DirectPayable).payment_block_reason,
                   )}
                 </p>
+                {paymentBlockHint((detail.item as DirectPayable).payment_block_reason) && (
+                  <p className="p2p-payable-hint">
+                    {paymentBlockHint((detail.item as DirectPayable).payment_block_reason)}
+                  </p>
+                )}
                 {canManagePayments && (
                   <>
                     <div className="p2p-inline-action">
@@ -3747,6 +3808,49 @@ export function ProcureToPayWorkbench({
                         }
                       />
                     </label>
+                    {["draft", "review", "approved", "rejected"].includes(detail.item.status) && (
+                      payableCancellationReason === null ? (
+                        <button
+                          type="button"
+                          className="text-button p2p-danger-text"
+                          disabled={saving}
+                          onClick={() => setPayableCancellationReason("")}
+                        >
+                          Anular cuenta (duplicada, provisoria o mal registrada)
+                        </button>
+                      ) : (
+                        <div className="p2p-cancel-payable">
+                          <label>
+                            Motivo de anulación
+                            <input
+                              autoFocus
+                              value={payableCancellationReason}
+                              maxLength={500}
+                              onChange={(event) => setPayableCancellationReason(event.target.value)}
+                              placeholder="Ej.: duplicada de CXP-…, era provisoria, error de registro"
+                            />
+                          </label>
+                          <div>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              disabled={saving}
+                              onClick={() => setPayableCancellationReason(null)}
+                            >
+                              Volver
+                            </button>
+                            <button
+                              type="button"
+                              className="primary-button p2p-danger-button"
+                              disabled={saving || payableCancellationReason.trim().length < 3}
+                              onClick={() => void cancelDirectPayable(detail.item.id)}
+                            >
+                              Confirmar anulación
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    )}
                   </>
                 )}
               </div>

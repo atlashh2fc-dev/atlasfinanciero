@@ -1279,7 +1279,7 @@ export function ExpensesDashboard({
             </button>
           </div>
         </div>
-        <div className="cycle-actions">
+        <div className="cycle-actions expense-queue-tabs">
           {(Object.keys(queueLabels) as Queue[]).map((queue) => (
             <button
               key={queue}
