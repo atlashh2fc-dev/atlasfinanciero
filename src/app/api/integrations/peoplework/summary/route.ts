@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isUuid, requireOrganizationExpenseReadAccess } from "@/lib/admin-access";
 import { isDateRangeActiveInPeriod, periodMonth } from "@/lib/peoplework/sync-utils";
+import { isPayrollCategory } from "@/lib/expense-categories";
 import { buildEffectivePayrollByMonth } from "@/lib/payroll-reporting";
 
 export const dynamic = "force-dynamic";
@@ -36,7 +37,7 @@ export async function GET(request: NextRequest) {
     supabase.from("payroll_provisions").select("id, period_month, posted_amount").eq("organization_id", organizationId).gte("period_month", `${year}-01-01`).lte("period_month", `${year}-12-01`),
     supabase.from("issued_documents").select("issue_date, document_type, net_amount, counterparty_id, cost_center_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
     supabase.from("received_documents").select("issue_date, document_type, net_amount, cost_center_id").eq("organization_id", organizationId).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
-    supabase.from("direct_payables").select("issue_date, total_amount, cost_center_id, currency_code").eq("organization_id", organizationId).in("status", ["approved", "paid"]).is("asset_financing_installment_id", null).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
+    supabase.from("direct_payables").select("issue_date, total_amount, cost_center_id, currency_code, category").eq("organization_id", organizationId).in("status", ["approved", "paid"]).is("asset_financing_installment_id", null).gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`),
     supabase.from("issued_document_receivable_balances").select("issued_document_id, issue_date, document_type, net_amount, due_date, payment_date, outstanding_amount, collection_status, is_collectible").eq("organization_id", organizationId),
     supabase.from("cost_centers").select("id, code, name").eq("organization_id", organizationId).eq("is_active", true),
     supabase.from("cost_center_customer_links").select("cost_center_id, counterparty_id, allocation_percentage, effective_from, effective_to").eq("organization_id", organizationId),
@@ -146,6 +147,9 @@ export async function GET(request: NextRequest) {
   }
   const receivedExpenseByMonth = new Map<string, number>();
   const directExpenseByMonth = new Map<string, number>();
+  // Sueldos, leyes sociales y finiquitos pagados como cuenta directa son
+  // remuneraciones (cuenta 610200), no gasto de proveedores ni honorarios.
+  const directPayrollByMonth = new Map<string, number>();
   for (const document of receivedExpensesResult.data ?? []) {
     if (!document.issue_date) continue;
     const type = normalizedType(document.document_type);
@@ -158,7 +162,8 @@ export async function GET(request: NextRequest) {
   for (const payable of directPayablesResult.data ?? []) {
     if (!payable.issue_date || payable.currency_code !== "CLP") continue;
     const key = payable.issue_date.slice(0, 7);
-    directExpenseByMonth.set(key, (directExpenseByMonth.get(key) ?? 0) + asNumber(payable.total_amount));
+    const target = isPayrollCategory(payable.category) ? directPayrollByMonth : directExpenseByMonth;
+    target.set(key, (target.get(key) ?? 0) + asNumber(payable.total_amount));
   }
   const planByPeriod = new Map<string, { revenue: number; expense: number }>();
   for (const line of budgetLinesResult.data ?? []) {
@@ -173,7 +178,8 @@ export async function GET(request: NextRequest) {
     const revenue = revenueByMonth.get(period) ?? 0;
     const receivedExpenses = receivedExpenseByMonth.get(period) ?? 0;
     const directExpenses = directExpenseByMonth.get(period) ?? 0;
-    const expenses = receivedExpenses + directExpenses;
+    const directPayrollExpenses = directPayrollByMonth.get(period) ?? 0;
+    const expenses = receivedExpenses + directExpenses + directPayrollExpenses;
     const laborCost = effectivePayrollByMonth.get(period) ?? { amount: 0, basis: "missing" as const };
     const plan = planByPeriod.get(period);
     const budgetRevenue = plan ? plan.revenue : null;
@@ -188,6 +194,7 @@ export async function GET(request: NextRequest) {
       expenses,
       receivedExpenses,
       directExpenses,
+      directPayrollExpenses,
       laborCost: laborCost.amount,
       laborCostBasis: laborCost.basis,
       laborCostAvailable: laborCost.basis !== "missing",
@@ -245,7 +252,9 @@ export async function GET(request: NextRequest) {
   for (const payable of directPayablesResult.data ?? []) {
     if (!payable.cost_center_id || payable.currency_code !== "CLP") continue;
     const target = centerPerformance.get(payable.cost_center_id);
-    if (target) target.expenses += asNumber(payable.total_amount);
+    if (!target) continue;
+    if (isPayrollCategory(payable.category)) target.laborCost += asNumber(payable.total_amount);
+    else target.expenses += asNumber(payable.total_amount);
   }
   const today = new Date().toISOString().slice(0, 10);
   const inSevenDays = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);

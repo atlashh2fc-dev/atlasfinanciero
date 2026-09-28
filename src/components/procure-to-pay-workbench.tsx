@@ -19,6 +19,12 @@ import {
   upcomingFridays,
 } from "@/lib/payment-schedule";
 import { CostCenterPicker } from "@/components/cost-center-picker";
+import {
+  directPayableCategoryLabel,
+  directPayableCategoryLabels,
+  isPayrollCategory,
+  payrollCategoryHint,
+} from "@/lib/expense-categories";
 import { matchesSearch } from "@/lib/search";
 
 type PurchaseRequest = {
@@ -497,6 +503,7 @@ export function ProcureToPayWorkbench({
     supplierId: "",
     supplierName: "",
     beneficiaryName: "",
+    beneficiaryTaxId: "",
     invoiceNumber: "",
     category: "utilities",
     categoryDetail: "",
@@ -1352,7 +1359,9 @@ export function ProcureToPayWorkbench({
       setMessage(
         payload?.error === "duplicate_direct_payable"
           ? `Esta cuenta ya está registrada (${payload.payableNumber ?? "mismo proveedor y folio"}). No se creó un duplicado; búscala en la bandeja.`
-          : payload?.error === "duplicate_payable_folio" && payload.message
+          : (payload?.error === "duplicate_payable_folio" ||
+                payload?.error === "payroll_category_required") &&
+              payload.message
             ? payload.message
             : "No fue posible crear la cuenta por pagar. Revisa los datos y tus permisos.",
       );
@@ -1379,6 +1388,7 @@ export function ProcureToPayWorkbench({
         supplierId: "",
         supplierName: "",
         beneficiaryName: "",
+        beneficiaryTaxId: "",
         invoiceNumber: "",
         category: "utilities",
         categoryDetail: "",
@@ -2186,8 +2196,16 @@ export function ProcureToPayWorkbench({
                           </td>
                           <td>
                             <strong>{item.supplier_name}</strong>
-                            {!isDocument && item.beneficiary_name && (
-                              <small>Beneficiario/a: {item.beneficiary_name}</small>
+                            {!isDocument && isPayrollCategory(item.category) ? (
+                              <small>
+                                Remuneración ·{" "}
+                                {directPayableCategoryLabel(item.category, item.category_detail)}
+                              </small>
+                            ) : (
+                              !isDocument &&
+                              item.beneficiary_name && (
+                                <small>Beneficiario/a: {item.beneficiary_name}</small>
+                              )
                             )}
                           </td>
                           <td>{displayDate(item.due_date)}</td>
@@ -2682,121 +2700,45 @@ export function ProcureToPayWorkbench({
               }
             />
             <label>
-              Proveedor
-              <select
-                value={directPayable.supplierId}
-                onChange={(event) =>
-                  selectDirectPayableSupplier(event.target.value)
-                }
-              >
-                <option value="">Proveedor no registrado</option>
-                {data?.suppliers.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.trade_name || item.legal_name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Nombre proveedor *
-              <input
-                required
-                value={directPayable.supplierName}
-                onChange={(event) =>
-                  setDirectPayable((current) => ({
-                    ...current,
-                    supplierName: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label className="p2p-form-wide p2p-inline-check">
-              <input
-                type="checkbox"
-                checked={directPayable.pendingDocument}
-                onChange={(event) =>
-                  setDirectPayable((current) => ({
-                    ...current,
-                    pendingDocument: event.target.checked,
-                  }))
-                }
-              />
-              Documento pendiente de recepción
-              <small>
-                El pago va antes que la factura o boleta. Cuando llegue, se
-                vincula a esta cuenta para no contarla ni pagarla dos veces.
-              </small>
-            </label>
-            {directPayable.pendingDocument && (
-              <label>
-                Documento esperado *
-                <select
-                  required
-                  value={directPayable.expectedDocumentType}
-                  onChange={(event) =>
-                    setDirectPayable((current) => ({
-                      ...current,
-                      expectedDocumentType: event.target.value,
-                    }))
-                  }
-                >
-                  {expectedDocumentTypes.map((item) => (
-                    <option key={item}>{item}</option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <label>
-              {directPayable.pendingDocument ? "Folio esperado (si se conoce)" : "Folio factura"}
-              <input
-                value={directPayable.invoiceNumber}
-                onChange={(event) =>
-                  setDirectPayable((current) => ({
-                    ...current,
-                    invoiceNumber: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            {directPayable.category === "termination" && (
-              <label>
-                Persona beneficiaria *
-                <input
-                  required
-                  maxLength={300}
-                  value={directPayable.beneficiaryName}
-                  onChange={(event) =>
-                    setDirectPayable((current) => ({
-                      ...current,
-                      beneficiaryName: event.target.value,
-                    }))
-                  }
-                  placeholder="Nombre de la persona desvinculada"
-                />
-              </label>
-            )}
-            <label>
               Tipo
               <select
                 value={directPayable.category}
-                onChange={(event) =>
+                onChange={(event) => {
+                  const category = event.target.value;
+                  // Sueldos, leyes sociales y finiquitos son remuneraciones:
+                  // sin proveedor, sin folio de factura ni documento pendiente.
+                  const payroll = isPayrollCategory(category);
                   setDirectPayable((current) => ({
                     ...current,
-                    category: event.target.value,
+                    category,
                     categoryDetail:
-                      event.target.value === "other"
+                      category === "other" && current.category === "other"
                         ? current.categoryDetail
                         : "",
-                  }))
-                }
+                    ...(payroll
+                      ? {
+                          supplierId: "",
+                          supplierName: "",
+                          invoiceNumber: "",
+                          pendingDocument: false,
+                        }
+                      : {}),
+                  }));
+                }}
               >
-                <option value="utilities">Servicios básicos</option>
-                <option value="rent">Arriendo</option>
-                <option value="taxes">Impuestos / contribuciones</option>
-                <option value="insurance">Seguros</option>
-                <option value="subscriptions">Suscripciones</option>
-                <option value="termination">Finiquito</option>
-                <option value="other">Otro</option>
+                <optgroup label="Gastos de proveedores">
+                  <option value="utilities">Servicios básicos</option>
+                  <option value="rent">Arriendo</option>
+                  <option value="taxes">Impuestos / contribuciones</option>
+                  <option value="insurance">Seguros</option>
+                  <option value="subscriptions">Suscripciones</option>
+                  <option value="other">Otro</option>
+                </optgroup>
+                <optgroup label="Remuneraciones (no son facturas)">
+                  <option value="payroll">Sueldos y remuneraciones</option>
+                  <option value="social_security">Leyes sociales / cotizaciones</option>
+                  <option value="termination">Finiquito</option>
+                </optgroup>
               </select>
             </label>
             {directPayable.category === "other" && (
@@ -2804,6 +2746,7 @@ export function ProcureToPayWorkbench({
                 Especifica el tipo *
                 <input
                   required
+                  minLength={2}
                   maxLength={120}
                   value={directPayable.categoryDetail}
                   onChange={(event) =>
@@ -2815,6 +2758,187 @@ export function ProcureToPayWorkbench({
                   placeholder="Ej. Mantención, asesoría o licencia"
                 />
               </label>
+            )}
+            {directPayable.category === "other" &&
+              payrollCategoryHint(directPayable.categoryDetail) && (
+                <p className="p2p-form-wide p2p-payable-hint">
+                  Esto es una remuneración, no una factura de proveedor: se
+                  registra como{" "}
+                  <strong>
+                    {
+                      directPayableCategoryLabels[
+                        payrollCategoryHint(directPayable.categoryDetail)!
+                      ]
+                    }
+                  </strong>{" "}
+                  a nombre de la persona beneficiaria.{" "}
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() =>
+                      setDirectPayable((current) => ({
+                        ...current,
+                        category:
+                          payrollCategoryHint(current.categoryDetail) ??
+                          current.category,
+                        categoryDetail: "",
+                        supplierId: "",
+                        supplierName: "",
+                        invoiceNumber: "",
+                        pendingDocument: false,
+                      }))
+                    }
+                  >
+                    Cambiar tipo
+                  </button>
+                </p>
+              )}
+            {isPayrollCategory(directPayable.category) ? (
+              <>
+                <label>
+                  {directPayable.category === "social_security"
+                    ? "Institución o persona beneficiaria *"
+                    : "Persona beneficiaria *"}
+                  <input
+                    required
+                    maxLength={300}
+                    value={directPayable.beneficiaryName}
+                    onChange={(event) =>
+                      setDirectPayable((current) => ({
+                        ...current,
+                        beneficiaryName: event.target.value,
+                      }))
+                    }
+                    placeholder={
+                      directPayable.category === "termination"
+                        ? "Nombre de la persona desvinculada"
+                        : directPayable.category === "social_security"
+                          ? "Ej. Previred, AFP o Isapre"
+                          : "Nombre del trabajador/a"
+                    }
+                  />
+                </label>
+                <label>
+                  RUT beneficiario/a (opcional)
+                  <input
+                    maxLength={20}
+                    value={directPayable.beneficiaryTaxId}
+                    onChange={(event) =>
+                      setDirectPayable((current) => ({
+                        ...current,
+                        beneficiaryTaxId: event.target.value,
+                      }))
+                    }
+                    placeholder="12.345.678-5"
+                  />
+                </label>
+                {directPayable.category !== "termination" && (
+                  <label>
+                    Detalle (opcional)
+                    <input
+                      minLength={2}
+                      maxLength={120}
+                      value={directPayable.categoryDetail}
+                      onChange={(event) =>
+                        setDirectPayable((current) => ({
+                          ...current,
+                          categoryDetail: event.target.value,
+                        }))
+                      }
+                      placeholder={
+                        directPayable.category === "social_security"
+                          ? "Ej. Cotizaciones agosto 2026"
+                          : "Ej. Sueldo agosto 2026"
+                      }
+                    />
+                  </label>
+                )}
+                <p className="p2p-form-wide p2p-payable-hint">
+                  Remuneración: se imputa a la cuenta 610200 Remuneraciones y
+                  cargas sociales, no a gasto de proveedores. No lleva folio de
+                  factura ni documento tributario.
+                </p>
+              </>
+            ) : (
+              <>
+                <label>
+                  Proveedor
+                  <select
+                    value={directPayable.supplierId}
+                    onChange={(event) =>
+                      selectDirectPayableSupplier(event.target.value)
+                    }
+                  >
+                    <option value="">Proveedor no registrado</option>
+                    {data?.suppliers.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.trade_name || item.legal_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Nombre proveedor *
+                  <input
+                    required
+                    value={directPayable.supplierName}
+                    onChange={(event) =>
+                      setDirectPayable((current) => ({
+                        ...current,
+                        supplierName: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label className="p2p-form-wide p2p-inline-check">
+                  <input
+                    type="checkbox"
+                    checked={directPayable.pendingDocument}
+                    onChange={(event) =>
+                      setDirectPayable((current) => ({
+                        ...current,
+                        pendingDocument: event.target.checked,
+                      }))
+                    }
+                  />
+                  Documento pendiente de recepción
+                  <small>
+                    El pago va antes que la factura o boleta. Cuando llegue, se
+                    vincula a esta cuenta para no contarla ni pagarla dos veces.
+                  </small>
+                </label>
+                {directPayable.pendingDocument && (
+                  <label>
+                    Documento esperado *
+                    <select
+                      required
+                      value={directPayable.expectedDocumentType}
+                      onChange={(event) =>
+                        setDirectPayable((current) => ({
+                          ...current,
+                          expectedDocumentType: event.target.value,
+                        }))
+                      }
+                    >
+                      {expectedDocumentTypes.map((item) => (
+                        <option key={item}>{item}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label>
+                  {directPayable.pendingDocument ? "Folio esperado (si se conoce)" : "Folio factura"}
+                  <input
+                    value={directPayable.invoiceNumber}
+                    onChange={(event) =>
+                      setDirectPayable((current) => ({
+                        ...current,
+                        invoiceNumber: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </>
             )}
             <label>
               Monto total *
@@ -3557,16 +3681,28 @@ export function ProcureToPayWorkbench({
                         <strong>{payable.supplier_name}</strong>
                         <small>
                           {payable.invoice_number || payable.payable_number} ·
-                          Cuenta directa
+                          {isPayrollCategory(payable.category)
+                            ? ` Remuneración · ${directPayableCategoryLabel(payable.category, payable.category_detail)}`
+                            : " Cuenta directa"}
                         </small>
                       </td>
                       <td>{displayDate(payable.due_date)}</td>
                       <td>
                         <select
                           aria-label={`Clasificación IAS 7 de ${payable.supplier_name}`}
+                          // Remuneraciones: siempre operación (pagos a y por
+                          // cuenta de los empleados); la API lo fuerza igual.
+                          disabled={isPayrollCategory(payable.category)}
+                          title={
+                            isPayrollCategory(payable.category)
+                              ? "Remuneración: pagos a y por cuenta de los empleados (operación)"
+                              : undefined
+                          }
                           value={
-                            cashFlowCategories[`payable:${payable.id}`] ??
-                            "operating"
+                            isPayrollCategory(payable.category)
+                              ? "operating"
+                              : (cashFlowCategories[`payable:${payable.id}`] ??
+                                "operating")
                           }
                           onChange={(event) =>
                             setCashFlowCategories((current) => ({
@@ -4136,7 +4272,9 @@ export function ProcureToPayWorkbench({
                 )}
               </div>
             )}
-            {detail.kind === "payable" && organizationId && (
+            {detail.kind === "payable" &&
+              organizationId &&
+              !isPayrollCategory((detail.item as DirectPayable).category) && (
               <PendingDocumentLinkPanel
                 organizationId={organizationId}
                 payable={detail.item as DirectPayable}

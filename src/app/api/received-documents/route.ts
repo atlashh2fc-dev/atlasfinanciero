@@ -91,7 +91,7 @@ export async function GET(request: NextRequest) {
   const directPayablesPage = (from: number, to: number) => {
     let query = supabase
       .from("direct_payables")
-      .select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, status, notes, payment_reference, paid_at, factoring_issued_document_id, is_reference, reference_settled_at, reference_settlement_note, reference_settled_by")
+      .select("id, payable_number, supplier_counterparty_id, supplier_name, beneficiary_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, status, notes, payment_reference, paid_at, factoring_issued_document_id, is_reference, reference_settled_at, reference_settlement_note, reference_settled_by")
       .eq("organization_id", organizationId)
       .neq("status", "cancelled");
     if (year !== null) query = query.gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`);
