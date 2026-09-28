@@ -1635,6 +1635,10 @@ export function ProcureToPayWorkbench({
         : [...current.itemIds, id],
     }));
   }
+  // Un pago abonado no se cancela ni se mueve completo: sólo su saldo cambia de viernes.
+  const selectedPaymentsHavePaid = (data?.paymentBatchItems ?? []).some(
+    (line) => reschedule.itemIds.includes(line.id) && amount(line.paid_amount) > 0,
+  );
   async function rescheduleSelectedPayments() {
     if (!organizationId || !reschedule.itemIds.length) return;
     setSaving(true);
@@ -1658,6 +1662,10 @@ export function ProcureToPayWorkbench({
       }
       const moved = reschedule.itemIds.length;
       const target = reschedule.scheduledFor;
+      const result = (await response.json().catch(() => null)) as {
+        result?: { split_items?: number };
+      } | null;
+      const split = result?.result?.split_items ?? 0;
       setDetail(null);
       setReschedule({
         itemIds: [],
@@ -1666,7 +1674,9 @@ export function ProcureToPayWorkbench({
       });
       await load();
       setMessage(
-        `${moved} pago(s) movido(s) al viernes ${displayDate(target)}. Los totales semanales fueron actualizados.`,
+        split
+          ? `Saldo de ${split} pago(s) abonado(s) programado para el viernes ${displayDate(target)}. Lo abonado quedó registrado en la propuesta original.`
+          : `${moved} pago(s) movido(s) al viernes ${displayDate(target)}. Los totales semanales fueron actualizados.`,
       );
     } catch {
       setMessage("No fue posible reprogramar por un problema de conexión.");
@@ -2211,8 +2221,18 @@ export function ProcureToPayWorkbench({
                           <td>{displayDate(item.due_date)}</td>
                           <td className="money-col">
                             {money.format(amount(item.total_amount))}
-                            {!isDocument && payableOutstandingAmount(item) < amount(item.total_amount) && (
-                              <small>Saldo: {money.format(payableOutstandingAmount(item))}</small>
+                            {(isDocument
+                              ? documentOutstandingAmount(item as Document)
+                              : payableOutstandingAmount(item as DirectPayable)) <
+                              amount(item.total_amount) && (
+                              <small>
+                                Saldo:{" "}
+                                {money.format(
+                                  isDocument
+                                    ? documentOutstandingAmount(item as Document)
+                                    : payableOutstandingAmount(item as DirectPayable),
+                                )}
+                              </small>
                             )}
                           </td>
                           <td>
@@ -2234,7 +2254,9 @@ export function ProcureToPayWorkbench({
                                 : paymentBlockLabel(item.payment_block_reason)}
                             </span>
                             {item.active_payment_batch && (
-                              <small>Abre esta fila para ver la propuesta o registrar el abono.</small>
+                              <small>
+                                Programado viernes {displayDate(item.active_payment_batch.scheduled_for)}. Abre esta fila para ver la propuesta, registrar el abono o reprogramar el saldo.
+                              </small>
                             )}
                           </td>
                         </tr>
@@ -4136,7 +4158,11 @@ export function ProcureToPayWorkbench({
                             <td>{displayDate(line.due_date_current || line.due_date_snapshot)}</td>
                             <td>{cashFlowLabel(line.cash_flow_category)}</td>
                             <td className="money-col">
-                              {money.format(amount(line.amount))}
+                              {money.format(amount(line.authorized_amount ?? line.amount))}
+                              {line.authorized_amount !== undefined &&
+                                amount(line.authorized_amount) < amount(line.amount) - 0.01 && (
+                                  <small>Propuesto: {money.format(amount(line.amount))}</small>
+                                )}
                               {line.outstanding_amount !== undefined && (
                                 <small>Saldo: {money.format(amount(line.outstanding_amount))}</small>
                               )}
@@ -4167,11 +4193,21 @@ export function ProcureToPayWorkbench({
                     </tbody>
                   </table>
                 </div>
-                {["draft", "approved"].includes(detail.item.status) && canManagePayments && (
+                {["draft", "approved", "processing"].includes(detail.item.status) && canManagePayments && (
                   <div className="p2p-reschedule-box">
                     <div>
-                      <strong>Reprogramar o cancelar pagos seleccionados</strong>
-                      <small>{detail.item.status === "approved" ? "La orden ya autorizada conservará su aprobación; sólo cambian las líneas pendientes seleccionadas." : "La deuda conserva su expediente, monto, IAS 7 e historial."}</small>
+                      <strong>
+                        {selectedPaymentsHavePaid
+                          ? "Reprogramar saldo pendiente"
+                          : "Reprogramar o cancelar pagos seleccionados"}
+                      </strong>
+                      <small>
+                        {selectedPaymentsHavePaid
+                          ? "Lo abonado queda en esta propuesta con su comprobante; el saldo pasa al viernes elegido con la misma aprobación."
+                          : detail.item.status === "draft"
+                            ? "La deuda conserva su expediente, monto, IAS 7 e historial."
+                            : "La orden ya autorizada conservará su aprobación; sólo cambian las líneas pendientes seleccionadas."}
+                      </small>
                     </div>
                     <label>
                       Nuevo viernes
@@ -4216,8 +4252,11 @@ export function ProcureToPayWorkbench({
                       }
                       onClick={() => void rescheduleSelectedPayments()}
                     >
-                      Mover {reschedule.itemIds.length || ""} pago(s)
+                      {selectedPaymentsHavePaid
+                        ? "Mover saldo"
+                        : `Mover ${reschedule.itemIds.length || ""} pago(s)`}
                     </button>
+                    {!selectedPaymentsHavePaid && (<>
                     <label>
                       Motivo de cancelación
                       <input
@@ -4234,6 +4273,7 @@ export function ProcureToPayWorkbench({
                     >
                       Cancelar {reschedule.itemIds.length || ""} pago(s)
                     </button>
+                    </>)}
                   </div>
                 )}
                 {(data?.paymentRescheduleEvents ?? []).some(

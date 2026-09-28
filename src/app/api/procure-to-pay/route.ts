@@ -593,10 +593,25 @@ export async function GET(request: NextRequest) {
     string,
     { item_id: string; id: string; batch_number: string; status: string; scheduled_for: string }
   >();
+  const executedByItem = new Map<string, number>();
+  for (const execution of executions.data ?? [])
+    if (execution.payment_batch_item_id)
+      executedByItem.set(
+        execution.payment_batch_item_id,
+        (executedByItem.get(execution.payment_batch_item_id) ?? 0) +
+          Number(execution.amount ?? 0),
+      );
   for (const item of batchItems.data ?? []) {
     if (item.authorization_status === "cancelled") continue;
     const batch = activeBatchesById.get(item.payment_batch_id);
     if (!batch) continue;
+    // Un abono ya ejecutado por completo no retiene el documento: su saldo,
+    // si existe, vive en el ítem reprogramado.
+    if (
+      (executedByItem.get(item.id) ?? 0) >=
+      Number(item.authorized_amount ?? item.amount ?? 0) - 0.01
+    )
+      continue;
     const activePayment = {
       item_id: item.id,
       id: batch.id,
@@ -2011,7 +2026,7 @@ export async function POST(request: NextRequest) {
         .in("vendor_purchase_order_id", queryIds(purchaseOrderIds)),
       context.supabase
         .from("payment_batch_items")
-        .select("payment_batch_id, received_document_id, authorization_status")
+        .select("id, payment_batch_id, received_document_id, authorization_status, authorized_amount, amount")
         .eq("organization_id", organizationId)
         .in("received_document_id", queryIds(documentIds)),
       context.supabase
@@ -2023,7 +2038,7 @@ export async function POST(request: NextRequest) {
         .in("id", queryIds(directPayableIds)),
       context.supabase
         .from("payment_batch_items")
-        .select("payment_batch_id, direct_payable_id, authorization_status")
+        .select("id, payment_batch_id, direct_payable_id, authorization_status, authorized_amount, amount")
         .eq("organization_id", organizationId)
         .in("direct_payable_id", queryIds(directPayableIds)),
     ]);
@@ -2175,15 +2190,40 @@ export async function POST(request: NextRequest) {
         { error: "payment_documents_not_validated_against_purchase_order" },
         { status: 409 },
       );
+    const reservingItems = [...(existingItems ?? []), ...(existingDirectItems ?? [])]
+      .filter((item) => item.authorization_status !== "cancelled");
+    // Un ítem ya ejecutado por completo no reserva el documento: el saldo
+    // puede volver a proponerse aunque su propuesta siga con instrucción emitida.
+    const executedByReservingItem = new Map<string, number>();
+    if (reservingItems.length) {
+      const { data: reservingExecutions, error: reservingExecutionsError } =
+        await context.supabase
+          .from("payment_executions")
+          .select("payment_batch_item_id, amount")
+          .eq("organization_id", organizationId)
+          .in("payment_batch_item_id", queryIds(reservingItems.map((item) => item.id)));
+      if (reservingExecutionsError)
+        return NextResponse.json(
+          { error: "unable_to_validate_payment_documents" },
+          { status: 500 },
+        );
+      for (const execution of reservingExecutions ?? [])
+        executedByReservingItem.set(
+          execution.payment_batch_item_id,
+          (executedByReservingItem.get(execution.payment_batch_item_id) ?? 0) +
+            Number(execution.amount ?? 0),
+        );
+    }
     const existingBatchIds = [
-      ...new Set([
-        ...(existingItems ?? [])
-          .filter((item) => item.authorization_status !== "cancelled")
+      ...new Set(
+        reservingItems
+          .filter(
+            (item) =>
+              (executedByReservingItem.get(item.id) ?? 0) <
+              Number(item.authorized_amount ?? item.amount ?? 0) - 0.01,
+          )
           .map((item) => item.payment_batch_id),
-        ...(existingDirectItems ?? [])
-          .filter((item) => item.authorization_status !== "cancelled")
-          .map((item) => item.payment_batch_id),
-      ]),
+      ),
     ];
     if (existingBatchIds.length) {
       const { data: existingBatches, error: existingBatchesError } =
