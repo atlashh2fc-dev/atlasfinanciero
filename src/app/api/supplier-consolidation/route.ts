@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isUuid, requireOrganizationFinanceAccess } from "@/lib/admin-access";
+import { findCounterpartyByRut, unionKind, upsertCounterpartyRole } from "@/lib/counterparties";
+import { companyNameKey } from "@/lib/counterparty-names";
+import { canonicalTaxId, rutKey } from "@/lib/rut";
 
 type ConsolidationBody = {
   action?: unknown;
@@ -40,11 +43,38 @@ function displayName(supplier: Pick<Supplier, "legal_name" | "trade_name">) {
   return supplier.trade_name?.trim() || supplier.legal_name;
 }
 
-function normalize(value: string) {
-  return value
-    .toLocaleLowerCase("es-CL")
-    .replace(/[^\p{L}\p{N}]+/gu, "")
-    .replace(/(spa|ltda|limitada|eirl|sa)$/u, "");
+// Agrupa fichas que comparten RUT normalizado, razón social o nombre de
+// fantasía (en cualquier combinación), sin importar si son clientes o
+// proveedores.
+function duplicateGroups(counterparties: Supplier[]) {
+  const parent = new Map<string, string>();
+  const find = (id: string): string => {
+    const root = parent.get(id) ?? id;
+    if (root === id) return id;
+    const resolved = find(root);
+    parent.set(id, resolved);
+    return resolved;
+  };
+  const ownerByKey = new Map<string, string>();
+  for (const counterparty of counterparties) {
+    parent.set(counterparty.id, counterparty.id);
+    const taxKey = rutKey(counterparty.tax_id)?.replace(/^0+/, "");
+    const keys = [
+      taxKey ? `rut:${taxKey}` : null,
+      ...[counterparty.legal_name, counterparty.trade_name].map((name) => companyNameKey(name)).map((key) => (key ? `name:${key}` : null)),
+    ].filter((key): key is string => Boolean(key));
+    for (const key of keys) {
+      const owner = ownerByKey.get(key);
+      if (!owner) ownerByKey.set(key, counterparty.id);
+      else parent.set(find(counterparty.id), find(owner));
+    }
+  }
+  const groups = new Map<string, Supplier[]>();
+  for (const counterparty of counterparties) {
+    const root = find(counterparty.id);
+    groups.set(root, [...(groups.get(root) ?? []), counterparty]);
+  }
+  return [...groups.values()].filter((members) => members.length > 1 && members.some((member) => member.kind === "supplier" || member.kind === "both"));
 }
 
 export async function GET(request: NextRequest) {
@@ -117,34 +147,29 @@ export async function GET(request: NextRequest) {
     });
   }
 
+  // Se revisan clientes y proveedores: una misma empresa puede estar como
+  // cliente sin RUT y como proveedor con RUT.
   const { data, error } = await context.supabase
     .from("counterparties")
     .select("id, legal_name, trade_name, tax_id, kind")
     .eq("organization_id", organizationId)
-    .in("kind", ["supplier", "both"])
     .eq("is_active", true)
     .is("merged_into_counterparty_id", null)
     .order("legal_name");
   if (error) return NextResponse.json({ error: "unable_to_load_suppliers" }, { status: 500 });
 
-  const suppliers = (data ?? []) as Supplier[];
-  const grouped = new Map<string, Supplier[]>();
-  for (const supplier of suppliers) {
-    const key = normalize(displayName(supplier));
-    if (!key) continue;
-    grouped.set(key, [...(grouped.get(key) ?? []), supplier]);
-  }
-  const candidates = [...grouped.entries()]
-    .filter(([, members]) => members.length > 1)
-    .map(([key, members]) => ({
-      key,
-      members: members.map((supplier) => ({
-        id: supplier.id,
-        name: displayName(supplier),
-        legalName: supplier.legal_name,
-        taxId: supplier.tax_id,
-      })),
-    }));
+  const counterparties = (data ?? []) as Supplier[];
+  const suppliers = counterparties.filter((counterparty) => counterparty.kind === "supplier" || counterparty.kind === "both");
+  const candidates = duplicateGroups(counterparties).map((members) => ({
+    key: members.map((member) => member.id).sort().join(":"),
+    members: members.map((member) => ({
+      id: member.id,
+      name: displayName(member),
+      legalName: member.legal_name,
+      taxId: member.tax_id,
+      kind: member.kind,
+    })),
+  }));
 
   return NextResponse.json({
     suppliers: suppliers.map((supplier) => ({
@@ -193,25 +218,46 @@ export async function POST(request: NextRequest) {
     const supplierId = profile?.id;
     if (!profile || !legalName || terms === undefined || (supplierId && !isUuid(supplierId))) return NextResponse.json({ error: "invalid_supplier_profile" }, { status: 400 });
     const values = {
-      legal_name: legalName, trade_name: text(profile.tradeName, 180), tax_id: text(profile.taxId, 40), business_activity: text(profile.businessActivity, 500), address_line1: text(profile.addressLine1, 300), commune: text(profile.commune, 120), city: text(profile.city, 120), website: text(profile.website, 300), email: text(profile.email, 320), phone: text(profile.phone, 80), payment_term_days: terms, billing_email: text(profile.billingEmail, 320), billing_phone: text(profile.billingPhone, 80), legal_representative_name: text(profile.legalRepresentativeName, 180), legal_representative_tax_id: text(profile.legalRepresentativeTaxId, 40), legal_representative_phone: text(profile.legalRepresentativePhone, 80), legal_representative_email: text(profile.legalRepresentativeEmail, 320), is_active: profile.isActive !== false,
+      legal_name: legalName, trade_name: text(profile.tradeName, 180), tax_id: canonicalTaxId(text(profile.taxId, 40)), business_activity: text(profile.businessActivity, 500), address_line1: text(profile.addressLine1, 300), commune: text(profile.commune, 120), city: text(profile.city, 120), website: text(profile.website, 300), email: text(profile.email, 320), phone: text(profile.phone, 80), payment_term_days: terms, billing_email: text(profile.billingEmail, 320), billing_phone: text(profile.billingPhone, 80), legal_representative_name: text(profile.legalRepresentativeName, 180), legal_representative_tax_id: text(profile.legalRepresentativeTaxId, 40), legal_representative_phone: text(profile.legalRepresentativePhone, 80), legal_representative_email: text(profile.legalRepresentativeEmail, 320), is_active: profile.isActive !== false,
     };
-    let counterpartyId: string;
-    if (isUuid(supplierId)) {
-      const { data: existing, error: existingError } = await context.supabase.from("counterparties").select("id, kind").eq("id", supplierId).eq("organization_id", organizationId).in("kind", ["supplier", "both"]).maybeSingle();
-      if (existingError || !existing) return NextResponse.json({ error: "supplier_not_found" }, { status: 404 });
-      const { data, error } = await context.supabase.from("counterparties").update({ ...values, kind: existing.kind === "both" ? "both" : "supplier" }).eq("id", supplierId).eq("organization_id", organizationId).select("id").maybeSingle();
-      if (error || !data) return NextResponse.json({ error: "unable_to_update_supplier" }, { status: 409 });
-      counterpartyId = data.id;
-    } else {
-      const { data, error } = await context.supabase.from("counterparties").insert({ ...values, organization_id: organizationId, kind: "supplier" }).select("id").single();
-      if (error || !data) return NextResponse.json({ error: "unable_to_create_supplier" }, { status: 409 });
-      counterpartyId = data.id;
-    }
     const contacts = (Array.isArray(body.contacts) ? body.contacts : []).map((item) => item as Record<string, unknown>).map((contact) => ({
       contact_area: typeof contact.area === "string" && contactAreas.has(contact.area) ? contact.area : null,
       job_title: text(contact.jobTitle, 160), full_name: text(contact.fullName, 180, true), phone: text(contact.phone, 80), email: text(contact.email, 320), is_primary: contact.isPrimary === true,
     })).filter((contact) => contact.full_name || contact.contact_area || contact.job_title || contact.phone || contact.email);
     if (contacts.some((contact) => !contact.contact_area || !contact.full_name)) return NextResponse.json({ error: "invalid_supplier_contact" }, { status: 400 });
+    let counterpartyId: string;
+    if (isUuid(supplierId)) {
+      const { data: existing, error: existingError } = await context.supabase.from("counterparties").select("id, kind").eq("id", supplierId).eq("organization_id", organizationId).in("kind", ["supplier", "both"]).maybeSingle();
+      if (existingError || !existing) return NextResponse.json({ error: "supplier_not_found" }, { status: 404 });
+      const { data, error } = await context.supabase.from("counterparties").update({ ...values, kind: unionKind(existing.kind, "supplier") }).eq("id", supplierId).eq("organization_id", organizationId).select("id").maybeSingle();
+      if (error || !data) return NextResponse.json({ error: error?.code === "23505" ? "tax_id_already_registered" : "unable_to_update_supplier" }, { status: 409 });
+      counterpartyId = data.id;
+    } else {
+      // Un RUT que ya existe como cliente suma el rol de proveedor ("both")
+      // en vez de crear otra ficha; se conservan sus nombres y contactos.
+      const { data: existing, error: existingError } = await findCounterpartyByRut(context.supabase, organizationId, values.tax_id);
+      if (existingError) return NextResponse.json({ error: "unable_to_check_supplier_tax_id" }, { status: 500 });
+      if (existing) {
+        const { id, error } = await upsertCounterpartyRole(context.supabase, organizationId, values.tax_id!, legalName, "supplier");
+        if (error || id !== existing.id) return NextResponse.json({ error: "unable_to_create_supplier" }, { status: 409 });
+        const missingData = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== null && !["legal_name", "trade_name", "tax_id", "is_active"].includes(key)));
+        if (Object.keys(missingData).length) {
+          const { error: fillError } = await context.supabase.from("counterparties").update(missingData).eq("id", existing.id).eq("organization_id", organizationId);
+          if (fillError) return NextResponse.json({ error: "unable_to_update_supplier" }, { status: 409 });
+        }
+        if (contacts.length) {
+          const { error: contactsError } = await context.supabase.from("counterparty_contacts").upsert(
+            contacts.map((contact) => ({ ...contact, organization_id: organizationId, counterparty_id: existing.id })),
+            { onConflict: "counterparty_id,contact_area,full_name", ignoreDuplicates: true },
+          );
+          if (contactsError) return NextResponse.json({ error: "unable_to_save_supplier_contacts" }, { status: 409 });
+        }
+        return NextResponse.json({ id: existing.id, promoted: true });
+      }
+      const { data, error } = await context.supabase.from("counterparties").insert({ ...values, organization_id: organizationId, kind: "supplier" }).select("id").single();
+      if (error || !data) return NextResponse.json({ error: error?.code === "23505" ? "tax_id_already_registered" : "unable_to_create_supplier" }, { status: 409 });
+      counterpartyId = data.id;
+    }
     const { error: deleteError } = await context.supabase.from("counterparty_contacts").delete().eq("organization_id", organizationId).eq("counterparty_id", counterpartyId);
     if (deleteError) return NextResponse.json({ error: "unable_to_replace_supplier_contacts" }, { status: 409 });
     if (contacts.length) {

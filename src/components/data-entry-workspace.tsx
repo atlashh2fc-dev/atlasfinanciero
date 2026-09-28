@@ -4,16 +4,19 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { BenefitsWorkflow } from "@/components/benefits-workflow";
 import { ProcureToPayWorkbench } from "@/components/procure-to-pay-workbench";
+import { duplicateMatchLabel, expectedDocumentTypes, type DuplicateMatch } from "@/lib/pending-documents";
 
 type Counterparty = { id: string; legal_name: string; trade_name: string | null; tax_id: string | null };
 type CostCenter = { id: string; code: string; name: string };
-type EntryKind = "sale" | "cost" | "collection" | "support";
+type EntryKind = "sale" | "cost" | "collection" | "support" | "pending";
 type Entry = { id: string; kind: EntryKind; issuedDocumentId: string | null; number: string | null; documentType: string | null; counterpart: string | null; issuedOn: string | null; amount: number | string | null; status: string | null; attachmentName: string | null; hasAttachment: boolean; existingProof: boolean; createdAt: string };
 type Reference = { kind: "sale" | "collection"; id: string; issuedDocumentId: string; number: string | null; occurredOn: string | null; counterpart: string | null; amount: number | string | null; status: string | null; detail: string | null; hasProof: boolean; createdAt: string };
 type Payload = { canCreateSuppliers: boolean; canCreatePaymentProposals: boolean; canRecordPaymentTransfers: boolean; customers: Counterparty[]; suppliers: Counterparty[]; costCenters: CostCenter[]; references: Reference[]; entries: Entry[] };
 type View = "register" | "history" | "support" | "benefits" | "payments";
 type HistoryFilter = "all" | EntryKind;
 type SupplierDraft = { legalName: string; tradeName: string; taxId: string };
+type CostMode = "invoice" | "pending";
+type DuplicatePrompt = { mode: CostMode; form: FormData; formElement: HTMLFormElement; matches: DuplicateMatch[]; reason: string };
 
 const emptyPayload: Payload = { canCreateSuppliers: false, canCreatePaymentProposals: false, canRecordPaymentTransfers: false, customers: [], suppliers: [], costCenters: [], references: [], entries: [] };
 const emptySupplierDraft = (): SupplierDraft => ({ legalName: "", tradeName: "", taxId: "" });
@@ -26,18 +29,28 @@ const searchable = (value: string | number | null | undefined) => String(value ?
   .replace(/[\u0300-\u036f]/g, "")
   .toLocaleLowerCase("es-CL");
 
-const kindLabels: Record<EntryKind, string> = { sale: "Factura", cost: "Costo", collection: "Cobro", support: "Respaldo" };
+const kindLabels: Record<EntryKind, string> = { sale: "Factura", cost: "Costo", collection: "Cobro", support: "Respaldo", pending: "Gasto sin documento" };
+const expenseCategories = [
+  { value: "utilities", label: "Servicios básicos" },
+  { value: "rent", label: "Arriendo" },
+  { value: "taxes", label: "Impuestos y contribuciones" },
+  { value: "insurance", label: "Seguros" },
+  { value: "subscriptions", label: "Suscripciones" },
+  { value: "other", label: "Otro gasto" },
+];
 const filterLabels: { value: HistoryFilter; label: string }[] = [
   { value: "all", label: "Todos" },
   { value: "sale", label: "Facturas" },
   { value: "collection", label: "Cobros" },
   { value: "cost", label: "Costos" },
+  { value: "pending", label: "Gastos sin documento" },
   { value: "support", label: "Respaldos" },
 ];
 
 function reviewStatus(entry: Entry) {
   if (entry.kind === "support") return "Respaldo cargado";
   if (entry.kind === "collection") return "Cobro registrado";
+  if (entry.kind === "pending") return entry.status ?? "En aprobación";
   return !entry.status || entry.status === "Pendiente" ? "En revisión" : entry.status;
 }
 
@@ -78,6 +91,9 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
   const [selectedSupplierId, setSelectedSupplierId] = useState("");
   const [supplierDraft, setSupplierDraft] = useState<SupplierDraft | null>(null);
   const [savingSupplier, setSavingSupplier] = useState(false);
+  const [costMode, setCostMode] = useState<CostMode>("invoice");
+  const [pendingCategory, setPendingCategory] = useState("utilities");
+  const [duplicatePrompt, setDuplicatePrompt] = useState<DuplicatePrompt | null>(null);
 
   const load = useCallback(async () => {
     const response = await fetch(`/api/data-entry?organizationId=${encodeURIComponent(organizationId)}`, { cache: "no-store" });
@@ -163,30 +179,58 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
   async function submitCost(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedSupplierId) {
-      setMessage("Busca y selecciona un proveedor antes de registrar el costo.");
+      setMessage(costMode === "pending" ? "Busca y selecciona un proveedor antes de registrar el gasto." : "Busca y selecciona un proveedor antes de registrar el costo.");
       return;
     }
-    setSavingCost(true); setMessage(null);
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     form.set("organizationId", organizationId);
-    form.set("action", "cost");
+    form.set("action", costMode === "pending" ? "pending_expense" : "cost");
     form.set("supplierId", selectedSupplierId);
+    await sendCost(form, formElement, costMode);
+  }
+
+  async function sendCost(form: FormData, formElement: HTMLFormElement, mode: CostMode) {
+    setSavingCost(true); setMessage(null);
     const response = await fetch("/api/data-entry", { method: "POST", body: form });
     if (response.ok) {
       formElement.reset();
       setSupplierQuery("");
       setSelectedSupplierId("");
+      setPendingCategory("utilities");
+      setDuplicatePrompt(null);
       await load();
-      setView("history"); setHistoryFilter("cost");
-      setMessage("Costo registrado. Ya aparece en el historial.");
+      setView("history"); setHistoryFilter(mode === "pending" ? "pending" : "cost");
+      setMessage(mode === "pending"
+        ? "Gasto registrado con documento pendiente. Finanzas lo revisará y lo vinculará a la factura o boleta cuando llegue."
+        : "Costo registrado. Ya aparece en el historial.");
     } else {
-      const payload = await response.json().catch(() => null) as { error?: string } | null;
-      setMessage(payload?.error === "duplicate_received_document"
-        ? "Esta factura ya está registrada para el mismo proveedor, tipo y folio."
-        : "No se pudo registrar el costo. Revisa los campos obligatorios.");
+      const payload = await response.json().catch(() => null) as { error?: string; message?: string; matches?: DuplicateMatch[] } | null;
+      if (payload?.error === "possible_duplicate" && payload.matches?.length) {
+        setDuplicatePrompt({ mode, form, formElement, matches: payload.matches, reason: "" });
+      } else {
+        setMessage(payload?.error === "duplicate_payable_folio" && payload.message
+          ? payload.message
+          : payload?.error === "duplicate_received_document"
+            ? "Esta factura ya está registrada para el mismo proveedor, tipo y folio."
+            : payload?.error === "duplicate_pending_expense"
+              ? "Este gasto ya fue registrado hace unos minutos. Revísalo en el historial antes de volver a enviarlo."
+              : payload?.error === "approval_policy_missing"
+                ? "No hay una política de aprobación para este monto. Avisa a Finanzas."
+                : mode === "pending"
+                  ? "No se pudo registrar el gasto. Revisa los campos obligatorios."
+                  : "No se pudo registrar el costo. Revisa los campos obligatorios.");
+      }
     }
     setSavingCost(false);
+  }
+
+  async function confirmDuplicate() {
+    if (!duplicatePrompt || duplicatePrompt.reason.trim().length < 3) return;
+    const form = duplicatePrompt.form;
+    form.set("confirmDuplicate", "true");
+    form.set("duplicateReason", duplicatePrompt.reason.trim());
+    await sendCost(form, duplicatePrompt.formElement, duplicatePrompt.mode);
   }
 
   function chooseSupplier(item: Counterparty) {
@@ -293,7 +337,7 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
     <section className="content-area">
       <header className="topbar"><div className="breadcrumb">Digitación <span>/</span> {viewName}</div><div className="topbar-actions"><span className="access-role">Digitador</span><button className="avatar" type="button" onClick={() => void signOut()} aria-label="Cerrar sesión" title="Cerrar sesión">DG</button></div></header>
       <main className="dashboard data-entry-content">
-        <header className="headline data-entry-header"><div><span className="eyebrow">OPERACIÓN · DOCUMENTOS</span><h1>{viewName}</h1><p>{view === "history" ? "Consulta facturas, cobros, costos y respaldos por categoría. Esta vista no contiene indicadores ni resultados consolidados." : view === "support" ? "Carga un comprobante o documento y vincúlalo a una factura o a un cobro ya registrado." : view === "benefits" ? "Actualiza la tipificación, responsable, documentos y gestiones de cada postulación." : view === "payments" ? "Prepara propuestas de pago y registra las transferencias de propuestas aprobadas por Finanzas." :"Registra facturas de venta y documentos de costo para revisión de Finanzas."}</p></div>{view === "history" ? <button type="button" className="primary-button" onClick={() => startSupport()}>Adjuntar respaldo</button> : <button type="button" className="secondary-button" onClick={() => selectView("history")}>Volver al historial</button>}</header>
+        <header className="headline data-entry-header"><div><span className="eyebrow">OPERACIÓN · DOCUMENTOS</span><h1>{viewName}</h1><p>{view === "history" ? "Consulta facturas, cobros, costos y respaldos por categoría. Esta vista no contiene indicadores ni resultados consolidados." : view === "support" ? "Carga un comprobante o documento y vincúlalo a una factura o a un cobro ya registrado." : view === "benefits" ? "Actualiza la tipificación, responsable, documentos y gestiones de cada postulación." : view === "payments" ? "Prepara propuestas de pago y registra las transferencias de propuestas aprobadas por Finanzas." :"Registra facturas de venta, documentos de costo y gastos pagados antes de recibir su documento."}</p></div>{view === "history" ? <button type="button" className="primary-button" onClick={() => startSupport()}>Adjuntar respaldo</button> : <button type="button" className="secondary-button" onClick={() => selectView("history")}>Volver al historial</button>}</header>
         {message && <p className="operation-message" role="status">{message}</p>}
         {loading ? <section className="panel data-entry-loading">Cargando historial…</section> : view === "payments" && canOperatePayments ? <ProcureToPayWorkbench organizationId={organizationId} canManage={false} canManagePayments={false} canCreatePaymentProposals={data.canCreatePaymentProposals} canRecordPaymentTransfers={data.canRecordPaymentTransfers} paymentsOnly /> : view === "benefits" ?<BenefitsWorkflow organizationId={organizationId} compact /> : view === "history" ? <section className="panel data-entry-history">
           <div className="data-entry-history-heading"><div><span className="panel-label">REGISTRO OPERATIVO</span><h2>Movimientos y documentos</h2><p>Busca por persona, empresa, folio, tipo o estado y combina el resultado con las categorías.</p></div><button type="button" className="secondary-button" onClick={() => void load()}>Actualizar</button></div>
@@ -319,8 +363,12 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
         </section> : <div className="data-entry-register-grid">
           <section className="panel data-entry-form-panel"><div className="panel-heading"><div><span className="panel-label">VENTAS</span><h2>Ingresar factura de venta</h2><p>Se envía a revisión de Finanzas y queda visible en el historial.</p></div></div><form className="admin-form" onSubmit={(event) => void submitSale(event)}><div className="form-grid"><label>Cliente *<select name="clientId" required defaultValue=""><option value="" disabled>Selecciona cliente</option>{data.customers.map((item) => <option key={item.id} value={item.id}>{label(item)}{item.tax_id ? ` · ${item.tax_id}` : ""}</option>)}</select></label><label>Folio / número *<input name="invoiceNumber" required maxLength={80} /></label><label>Tipo *<select name="documentType" defaultValue="Factura afecta"><option>Factura afecta</option><option>Factura exenta</option><option>Nota de crédito</option><option>Nota de débito</option></select></label><label>Fecha emisión *<input name="issueDate" type="date" required defaultValue={today()} /></label><label>Vencimiento *<input name="dueDate" type="date" required defaultValue={today()} /></label><label>Monto neto *<input name="netAmount" type="number" min="0" step="1" required /></label><label className="data-entry-wide-field">Adjunto (PDF o imagen)<input name="file" type="file" accept="application/pdf,image/jpeg,image/png" /></label></div><button className="primary-button" disabled={savingSale || !data.customers.length}>{savingSale ? "Guardando…" : "Registrar factura"}</button></form></section>
           <section className="panel data-entry-form-panel">
-            <div className="panel-heading"><div><span className="panel-label">COSTOS</span><h2>Ingresar factura de proveedor</h2><p>No crea pagos ni aprobaciones; deja el documento listo para revisión.</p></div></div>
-            <form className="admin-form" onSubmit={(event) => void submitCost(event)}>
+            <div className="panel-heading"><div><span className="panel-label">COSTOS Y GASTOS</span><h2>{costMode === "pending" ? "Gasto con documento pendiente" : "Ingresar factura de proveedor"}</h2><p>{costMode === "pending" ? "Para pagos hechos o comprometidos antes de recibir la factura o boleta. Pasa a aprobación de Finanzas y, cuando llegue el documento, se vincula a este gasto para no contarlo dos veces." : "No crea pagos ni aprobaciones; deja el documento listo para revisión."}</p></div></div>
+            <div className="data-entry-cost-mode" role="radiogroup" aria-label="Tipo de registro">
+              <button type="button" role="radio" aria-checked={costMode === "invoice"} className={costMode === "invoice" ? "is-active" : ""} onClick={() => { setCostMode("invoice"); setMessage(null); }}><strong>Factura recibida</strong><small>Ya tengo el documento con folio.</small></button>
+              <button type="button" role="radio" aria-checked={costMode === "pending"} className={costMode === "pending" ? "is-active" : ""} onClick={() => { setCostMode("pending"); setMessage(null); }}><strong>Gasto con documento pendiente</strong><small>El pago va antes que la factura o boleta.</small></button>
+            </div>
+            <form key={costMode} className="admin-form" onSubmit={(event) => void submitCost(event)}>
               <div className="form-grid">
                 <div className="data-entry-supplier-picker">
                   <label>Proveedor *<input type="search" value={supplierQuery} onChange={(event) => { setSupplierQuery(event.target.value); setSelectedSupplierId(""); }} placeholder="Buscar por nombre o RUT" autoComplete="off" /></label>
@@ -330,21 +378,41 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
                   {!selectedSupplier && data.canCreateSuppliers && <div className="data-entry-supplier-create-action"><button type="button" className="secondary-button" onClick={startSupplierCreation}>Crear proveedor nuevo</button></div>}
                 </div>
                 <label>Centro de costo *<select name="costCenterId" required defaultValue=""><option value="" disabled>Selecciona centro</option>{data.costCenters.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}</select></label>
-                <label>Folio / número *<input name="documentNumber" required maxLength={80} /></label>
-                <label>Tipo *<select name="documentType" defaultValue="Factura afecta"><option>Factura afecta</option><option>Factura exenta</option><option>Nota de crédito</option><option>Nota de débito</option><option>Boleta</option><option>Otro</option></select></label>
-                <label>Fecha emisión *<input name="issueDate" type="date" required defaultValue={today()} /></label>
-                <label>Vencimiento<input name="dueDate" type="date" /></label>
-                <label>Monto neto *<input name="netAmount" type="number" min="0" step="0.01" required /></label>
-                <label>IVA *<input name="vatAmount" type="number" min="0" step="0.01" required /></label>
-                <label>Otros impuestos *<input name="additionalTaxAmount" type="number" min="0" step="0.01" defaultValue="0" required /></label>
-                <label>Adjunto (PDF o imagen)<input name="file" type="file" accept="application/pdf,image/jpeg,image/png" /></label>
+                {costMode === "pending" ? <>
+                  <label>Categoría *<select name="category" value={pendingCategory} onChange={(event) => setPendingCategory(event.target.value)} required>{expenseCategories.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+                  {pendingCategory === "other" && <label>Detalle de la categoría *<input name="categoryDetail" required minLength={2} maxLength={120} placeholder="Ej.: mantención de equipos" /></label>}
+                  <label className="data-entry-wide-field">Descripción *<input name="description" required maxLength={2000} placeholder="Qué se pagó o se pagará y por qué" /></label>
+                  <label>Monto total *<input name="totalAmount" type="number" min="1" step="1" required /></label>
+                  <label>Documento esperado *<select name="expectedDocumentType" defaultValue="Factura afecta" required>{expectedDocumentTypes.map((item) => <option key={item}>{item}</option>)}</select></label>
+                  <label>Fecha del gasto *<input name="issueDate" type="date" required defaultValue={today()} /></label>
+                  <label>Fecha de pago comprometida<input name="dueDate" type="date" /></label>
+                  <label className="data-entry-wide-field">Respaldo del pago (PDF o imagen)<input name="file" type="file" accept="application/pdf,image/jpeg,image/png" /></label>
+                </> : <>
+                  <label>Folio / número *<input name="documentNumber" required maxLength={80} /></label>
+                  <label>Tipo *<select name="documentType" defaultValue="Factura afecta"><option>Factura afecta</option><option>Factura exenta</option><option>Nota de crédito</option><option>Nota de débito</option><option>Boleta</option><option>Otro</option></select></label>
+                  <label>Fecha emisión *<input name="issueDate" type="date" required defaultValue={today()} /></label>
+                  <label>Vencimiento<input name="dueDate" type="date" /></label>
+                  <label>Monto neto *<input name="netAmount" type="number" min="0" step="0.01" required /></label>
+                  <label>IVA *<input name="vatAmount" type="number" min="0" step="0.01" required /></label>
+                  <label>Otros impuestos *<input name="additionalTaxAmount" type="number" min="0" step="0.01" defaultValue="0" required /></label>
+                  <label>Adjunto (PDF o imagen)<input name="file" type="file" accept="application/pdf,image/jpeg,image/png" /></label>
+                </>}
               </div>
+              {costMode === "pending" && <p className="data-entry-pending-hint">Cuando llegue la factura o boleta no la ingreses como costo nuevo: Finanzas la vinculará a este gasto desde Compras y pagos.</p>}
               <label>Observación<textarea name="notes" maxLength={2000} /></label>
-              <button className="primary-button" disabled={savingCost || !selectedSupplierId || !data.costCenters.length}>{savingCost ? "Guardando…" : "Registrar costo"}</button>
+              <button className="primary-button" disabled={savingCost || !selectedSupplierId || !data.costCenters.length}>{savingCost ? "Guardando…" : costMode === "pending" ? "Registrar gasto pendiente" : "Registrar costo"}</button>
             </form>
           </section>
         </div>}
       </main>
+      {duplicatePrompt && <div className="modal-backdrop" role="presentation"><section className="entry-modal data-entry-duplicate-modal" role="dialog" aria-modal="true" aria-labelledby="data-entry-duplicate-title">
+        <div className="modal-header"><div><span className="eyebrow">CONTROL DE DUPLICADOS</span><h2 id="data-entry-duplicate-title">Posible duplicado</h2><p>Ya existe un registro del mismo proveedor y monto con fecha cercana. ¿Es un documento distinto?</p></div><button type="button" className="close-button" onClick={() => setDuplicatePrompt(null)} aria-label="Cerrar">×</button></div>
+        <ul className="data-entry-duplicate-list">{duplicatePrompt.matches.map((match) => <li key={`${match.source}-${match.id}`}><strong>{duplicateMatchLabel(match)}</strong><span>{displayDate(match.issue_date)} · {money.format(Number(match.total_amount ?? 0))}{match.status ? ` · ${match.status}` : ""}</span></li>)}</ul>
+        <form className="admin-form" onSubmit={(event) => { event.preventDefault(); void confirmDuplicate(); }}>
+          <label>Motivo por el que no es duplicado *<textarea required minLength={3} maxLength={500} value={duplicatePrompt.reason} onChange={(event) => setDuplicatePrompt({ ...duplicatePrompt, reason: event.target.value })} placeholder="Ej.: es la cuota de octubre; la anterior corresponde a septiembre" /></label>
+          <div className="form-actions"><button type="button" className="secondary-button" onClick={() => setDuplicatePrompt(null)}>Revisar antes</button><button className="primary-button" disabled={savingCost || duplicatePrompt.reason.trim().length < 3}>{savingCost ? "Guardando…" : "Sí, es distinto: registrar"}</button></div>
+        </form>
+      </section></div>}
       {supplierDraft && <div className="modal-backdrop" role="presentation"><section className="entry-modal data-entry-supplier-modal" role="dialog" aria-modal="true" aria-labelledby="data-entry-supplier-title">
         <div className="modal-header"><div><span className="eyebrow">MAESTRO DE PROVEEDORES</span><h2 id="data-entry-supplier-title">Crear proveedor</h2><p>Quedará disponible de inmediato para registrar esta factura.</p></div><button type="button" className="close-button" onClick={() => setSupplierDraft(null)} aria-label="Cerrar">×</button></div>
         <form className="admin-form" onSubmit={(event) => void createSupplier(event)}><div className="form-grid">

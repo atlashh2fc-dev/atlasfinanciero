@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { findCounterpartyByRut, unionKind, upsertCounterpartyRole } from "@/lib/counterparties";
+import { canonicalTaxId } from "@/lib/rut";
 import { createClient } from "@/lib/supabase/server";
 
 const writeRoles = new Set(["administrator", "finance", "operations"]);
@@ -83,19 +85,38 @@ export async function POST(request: NextRequest) {
   if (!profile || !legalName || paymentTermDays === undefined) return NextResponse.json({ error: "invalid_customer_profile" }, { status: 400 });
 
   const values = {
-    legal_name: legalName, trade_name: clean(profile.tradeName, 180), tax_id: clean(profile.taxId, 40), kind: "customer", business_activity: clean(profile.businessActivity, 500), address_line1: clean(profile.addressLine1, 300), commune: clean(profile.commune, 120), city: clean(profile.city, 120), website: clean(profile.website, 300), email: clean(profile.email, 320), phone: clean(profile.phone, 80), payment_term_days: paymentTermDays, billing_email: clean(profile.billingEmail, 320), billing_phone: clean(profile.billingPhone, 80), legal_representative_name: clean(profile.legalRepresentativeName, 180), legal_representative_tax_id: clean(profile.legalRepresentativeTaxId, 40), legal_representative_address: clean(profile.legalRepresentativeAddress, 300), legal_representative_phone: clean(profile.legalRepresentativePhone, 80), legal_representative_email: clean(profile.legalRepresentativeEmail, 320), is_active: profile.isActive !== false,
+    legal_name: legalName, trade_name: clean(profile.tradeName, 180), tax_id: canonicalTaxId(clean(profile.taxId, 40)), business_activity: clean(profile.businessActivity, 500), address_line1: clean(profile.addressLine1, 300), commune: clean(profile.commune, 120), city: clean(profile.city, 120), website: clean(profile.website, 300), email: clean(profile.email, 320), phone: clean(profile.phone, 80), payment_term_days: paymentTermDays, billing_email: clean(profile.billingEmail, 320), billing_phone: clean(profile.billingPhone, 80), legal_representative_name: clean(profile.legalRepresentativeName, 180), legal_representative_tax_id: clean(profile.legalRepresentativeTaxId, 40), legal_representative_address: clean(profile.legalRepresentativeAddress, 300), legal_representative_phone: clean(profile.legalRepresentativePhone, 80), legal_representative_email: clean(profile.legalRepresentativeEmail, 320), is_active: profile.isActive !== false,
   };
 
   const requestedId = profile.id;
   let counterpartyId: string;
+  // Un RUT que ya existe como proveedor no crea otra ficha: se le suma el rol
+  // de cliente ("both") y se conservan sus nombres y contactos.
+  let promotedExisting = false;
   if (isUuid(requestedId)) {
-    const { data, error } = await supabase.from("counterparties").update(values).eq("id", requestedId).eq("organization_id", organizationId).select("id").maybeSingle();
-    if (error || !data) return NextResponse.json({ error: "unable_to_update_customer_profile" }, { status: 409 });
+    const { data: current, error: currentError } = await supabase.from("counterparties").select("kind").eq("id", requestedId).eq("organization_id", organizationId).maybeSingle();
+    if (currentError || !current) return NextResponse.json({ error: "unable_to_update_customer_profile" }, { status: 409 });
+    const { data, error } = await supabase.from("counterparties").update({ ...values, kind: unionKind(current.kind, "customer") }).eq("id", requestedId).eq("organization_id", organizationId).select("id").maybeSingle();
+    if (error || !data) return NextResponse.json({ error: error?.code === "23505" ? "tax_id_already_registered" : "unable_to_update_customer_profile" }, { status: 409 });
     counterpartyId = data.id;
   } else {
-    const { data, error } = await supabase.from("counterparties").insert({ ...values, organization_id: organizationId }).select("id").single();
-    if (error || !data) return NextResponse.json({ error: "unable_to_create_customer_profile" }, { status: 409 });
-    counterpartyId = data.id;
+    const { data: existing, error: existingError } = await findCounterpartyByRut(supabase, organizationId, values.tax_id);
+    if (existingError) return NextResponse.json({ error: "unable_to_check_customer_tax_id" }, { status: 500 });
+    if (existing) {
+      const { id, error } = await upsertCounterpartyRole(supabase, organizationId, values.tax_id!, legalName, "customer");
+      if (error || id !== existing.id) return NextResponse.json({ error: "unable_to_create_customer_profile" }, { status: 409 });
+      const missingData = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== null && !["legal_name", "trade_name", "tax_id", "is_active"].includes(key)));
+      if (Object.keys(missingData).length) {
+        const { error: fillError } = await supabase.from("counterparties").update(missingData).eq("id", existing.id).eq("organization_id", organizationId);
+        if (fillError) return NextResponse.json({ error: "unable_to_update_customer_profile" }, { status: 409 });
+      }
+      counterpartyId = existing.id;
+      promotedExisting = true;
+    } else {
+      const { data, error } = await supabase.from("counterparties").insert({ ...values, kind: "customer", organization_id: organizationId }).select("id").single();
+      if (error || !data) return NextResponse.json({ error: error?.code === "23505" ? "tax_id_already_registered" : "unable_to_create_customer_profile" }, { status: 409 });
+      counterpartyId = data.id;
+    }
   }
 
   const inputContacts = Array.isArray(body.contacts) ? body.contacts : [];
@@ -105,6 +126,17 @@ export async function POST(request: NextRequest) {
   })).filter((contact) => contact.full_name || contact.contact_area || contact.job_title || contact.phone || contact.email);
   if (contacts.some((contact) => !contact.contact_area || !contact.full_name)) return NextResponse.json({ error: "invalid_customer_contact" }, { status: 400 });
 
+  if (promotedExisting) {
+    // Ficha existente: se agregan contactos nuevos sin borrar los que ya tenía.
+    if (contacts.length) {
+      const { error: insertError } = await supabase.from("counterparty_contacts").upsert(
+        contacts.map((contact) => ({ ...contact, organization_id: organizationId, counterparty_id: counterpartyId })),
+        { onConflict: "counterparty_id,contact_area,full_name", ignoreDuplicates: true },
+      );
+      if (insertError) return NextResponse.json({ error: "unable_to_save_customer_contacts" }, { status: 409 });
+    }
+    return NextResponse.json({ id: counterpartyId, promoted: true });
+  }
   const { error: deleteError } = await supabase.from("counterparty_contacts").delete().eq("organization_id", organizationId).eq("counterparty_id", counterpartyId);
   if (deleteError) return NextResponse.json({ error: "unable_to_replace_customer_contacts" }, { status: 409 });
   if (contacts.length) {

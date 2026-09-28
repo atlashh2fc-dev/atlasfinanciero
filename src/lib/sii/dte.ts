@@ -1,9 +1,9 @@
 import { SignedXml } from "xml-crypto";
+import { parseRut } from "@/lib/rut";
 
 export type SiiEnvironment = "certification" | "production";
 export type SiiDteAction = "CNS" | "ACD" | "ERM" | "RCD" | "RFP" | "RFT";
 
-type Rut = { body: string; dv: string; formatted: string };
 export type SiiResponse = { code: number | null; message: string | null; raw: string };
 
 const SII_NAMESPACE = "http://ws.registroreclamodte.diii.sdi.sii.cl";
@@ -40,22 +40,7 @@ function endpoints(environment: SiiEnvironment) {
   };
 }
 
-export function parseRut(value: string): Rut | null {
-  const clean = value.replace(/[^0-9kK]/g, "").toUpperCase();
-  if (clean.length < 2) return null;
-  const body = clean.slice(0, -1).replace(/^0+/, "");
-  const dv = clean.at(-1)!;
-  if (!/^\d{7,8}$/.test(body) || !/^[0-9K]$/.test(dv)) return null;
-  let total = 0;
-  let factor = 2;
-  for (const digit of [...body].reverse()) {
-    total += Number(digit) * factor;
-    factor = factor === 7 ? 2 : factor + 1;
-  }
-  const expected = 11 - (total % 11);
-  const verifier = expected === 11 ? "0" : expected === 10 ? "K" : String(expected);
-  return verifier === dv ? { body, dv, formatted: `${body}-${dv}` } : null;
-}
+export { parseRut };
 
 async function postXml(url: string, body: string, token?: string) {
   let response: Response;

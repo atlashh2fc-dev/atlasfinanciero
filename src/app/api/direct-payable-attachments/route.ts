@@ -4,6 +4,7 @@ import {
   requireOrganizationFinanceAccess,
   requireOrganizationProcurementAccess,
 } from "@/lib/admin-access";
+import { duplicateFolioMessage, parseDuplicateFolioError } from "@/lib/pending-documents";
 
 const allowedMimeTypes = new Set([
   "application/pdf",
@@ -142,41 +143,28 @@ export async function PATCH(request: NextRequest) {
     .eq("organization_id", organizationId)
     .select("id, invoice_number, supplier_name")
     .maybeSingle();
-  if (error || !data)
-    return NextResponse.json({ error: "unable_to_update_payable_invoice" }, { status: 409 });
-  const { data: activeItems, error: activeItemsError } = await context.supabase
-    .from("payment_batch_items")
-    .select("id, payment_batch_id")
-    .eq("organization_id", organizationId)
-    .eq("direct_payable_id", payableId);
-  if (activeItemsError)
-    return NextResponse.json({ error: "unable_to_sync_payable_payment_items" }, { status: 409 });
-  const itemBatchIds = [...new Set((activeItems ?? []).map((item) => item.payment_batch_id))];
-  const batchesResult = itemBatchIds.length
-    ? await context.supabase
-        .from("payment_batches")
-        .select("id")
-        .eq("organization_id", organizationId)
-        .in("id", itemBatchIds)
-        .in("status", ["draft", "review"])
-    : { data: [], error: null };
-  if (batchesResult.error)
-    return NextResponse.json({ error: "unable_to_sync_payable_payment_items" }, { status: 409 });
-  const activeBatchIds = (batchesResult.data ?? []).map((item) => item.id);
-  const activeItemIds = (activeItems ?? [])
-    .filter((item) => activeBatchIds.includes(item.payment_batch_id))
-    .map((item) => item.id);
-  if (activeItemIds.length) {
-    const { error: syncError } = await context.supabase
-      .from("payment_batch_items")
-      .update({
-        supplier_name_snapshot: data.supplier_name,
-        document_number_snapshot: data.invoice_number,
-      })
-      .eq("organization_id", organizationId)
-      .in("id", activeItemIds);
-    if (syncError)
-      return NextResponse.json({ error: "unable_to_sync_payable_payment_items" }, { status: 409 });
+  if (error || !data) {
+    const folioDuplicate = parseDuplicateFolioError(error);
+    return NextResponse.json(
+      folioDuplicate
+        ? { error: "duplicate_payable_folio", message: duplicateFolioMessage(folioDuplicate) }
+        : {
+            error: error?.message.includes("keep the linked document folio")
+              ? "payable_document_already_linked"
+              : "unable_to_update_payable_invoice",
+          },
+      { status: 409 },
+    );
   }
+  // UPDATE sobre payment_batch_items está revocado para authenticated
+  // (20260812013000): los snapshots de propuestas en borrador o revisión se
+  // alinean con una RPC atómica en base.
+  const { error: syncError } = await context.supabase.rpc("sync_direct_payable_payment_snapshots", {
+    p_organization_id: organizationId,
+    p_direct_payable_id: payableId,
+  });
+  // PGRST202: la RPC aún no existe (migración 20260928183206 sin aplicar).
+  if (syncError && syncError.code !== "PGRST202")
+    return NextResponse.json({ error: "unable_to_sync_payable_payment_items", payable: data }, { status: 409 });
   return NextResponse.json({ payable: data });
 }

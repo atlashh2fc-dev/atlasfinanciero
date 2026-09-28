@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { SiiDteIntegration } from "@/components/sii-dte-integration";
+import { matchesSearch } from "@/lib/search";
 
 type ReceivedDocument = {
   id: string;
@@ -37,6 +38,10 @@ type ReceivedDocument = {
   sii_response_deadline: string | null;
   sii_event_status: string | null;
   sii_last_checked_at: string | null;
+  // Documento ya respaldado por una cuenta directa (gasto con documento
+  // pendiente vinculado): se paga y se cuenta a través de esa cuenta.
+  covered_by_direct_payable_id?: string | null;
+  covered_by_direct_payable_number?: string | null;
 };
 type DirectPayable = {
   id: string;
@@ -59,8 +64,21 @@ type DirectPayable = {
   paid_at: string | null;
   factoring_issued_document_id: string | null;
   is_reference: boolean;
+  document_status?: "not_required" | "pending_document" | "documented";
+  expected_document_type?: string | null;
   reference_settled_at: string | null;
   reference_settlement_note: string | null;
+};
+// Vínculo persistente del flujo documental (tabla received_document_links).
+type DocumentLink = {
+  id: string;
+  source_document_id: string;
+  target_document_id: string | null;
+  vendor_purchase_order_id: string | null;
+  link_type: "credit_note" | "debit_note" | "dispatch_guide" | "purchase_order";
+  reference_folio: string | null;
+  origin: "dte_reference" | "notes_reference" | "amount_rule" | "manual";
+  status: "confirmed" | "suggested";
 };
 type Payable = {
   id: string;
@@ -69,6 +87,7 @@ type Payable = {
   supplier_name: string;
   supplier_tax_id: string | null;
   document_number: string | null;
+  payable_number?: string | null;
   issue_date: string;
   document_type: string;
   net_amount: number | string;
@@ -205,7 +224,16 @@ const queueLabels: Record<Queue, string> = {
   aprobar: "Aprobar",
   pagar: "Pagar",
   pagadas: "Pagadas",
-  referencial: "Referencial",
+  referencial: "Sin pago directo",
+};
+const queueHints: Record<Queue, string> = {
+  todo: "Todos los documentos del periodo filtrado.",
+  decidir: "Documentos recibidos que esperan aceptación o reclamo ante el SII.",
+  aprobar: "Cuentas directas en borrador o revisión que requieren aprobación.",
+  pagar: "Documentos aprobados con saldo por pagar.",
+  pagadas: "Documentos pagados, liquidados o anulados.",
+  referencial:
+    "Documentos que se registran pero no generan un pago propio: facturas cedidas en factoring, guías de despacho, notas de crédito aplicadas y facturas anuladas por nota de crédito.",
 };
 const isSettled = (item: Pick<Payable, "payment_status">) => {
   const status = normal(item.payment_status);
@@ -244,6 +272,7 @@ export function ExpensesDashboard({
     : undefined;
   const [documents, setDocuments] = useState<ReceivedDocument[]>([]);
   const [directPayables, setDirectPayables] = useState<DirectPayable[]>([]);
+  const [documentLinks, setDocumentLinks] = useState<DocumentLink[]>([]);
   const [year, setYear] = useState(String(new Date().getFullYear()));
   const [supplier, setSupplier] = useState("all");
   const [status, setStatus] = useState("all");
@@ -310,6 +339,7 @@ export function ExpensesDashboard({
           ? (response.json() as Promise<{
               documents: ReceivedDocument[];
               directPayables: DirectPayable[];
+              documentLinks?: DocumentLink[];
             }>)
           : Promise.reject(new Error("Unable to load accounts payable")),
       )
@@ -317,6 +347,7 @@ export function ExpensesDashboard({
         if (active) {
           setDocuments(payload.documents ?? []);
           setDirectPayables(payload.directPayables ?? []);
+          setDocumentLinks(payload.documentLinks ?? []);
           setMessage("");
         }
       })
@@ -343,6 +374,7 @@ export function ExpensesDashboard({
     const payload = (await response.json().catch(() => null)) as {
       documents?: ReceivedDocument[];
       directPayables?: DirectPayable[];
+      documentLinks?: DocumentLink[];
     } | null;
     if (!response.ok || !payload?.documents) {
       setMessage("No fue posible refrescar los documentos recibidos.");
@@ -350,11 +382,16 @@ export function ExpensesDashboard({
     }
     setDocuments(payload.documents);
     if (payload.directPayables) setDirectPayables(payload.directPayables);
+    if (payload.documentLinks) setDocumentLinks(payload.documentLinks);
   }
 
   const payables = useMemo<Payable[]>(
     () => [
-      ...documents.map((document) => ({
+      // Una factura cubierta por una cuenta directa ya está representada por
+      // esa cuenta: listarla también la contaría y pagaría dos veces.
+      ...documents
+        .filter((document) => !document.covered_by_direct_payable_id)
+        .map((document) => ({
         ...document,
         source: "received" as const,
         currency_code: "CLP",
@@ -371,10 +408,15 @@ export function ExpensesDashboard({
         supplier_name: payable.supplier_name,
         supplier_tax_id: null,
         document_number: payable.invoice_number || payable.payable_number,
+        payable_number: payable.payable_number,
         issue_date: payable.issue_date,
         document_type: payable.is_reference
           ? "Referencia de factoring"
-          : "Cuenta por pagar directa",
+          : payable.document_status === "pending_document"
+            ? `Gasto con documento pendiente${payable.expected_document_type ? ` (${payable.expected_document_type.toLowerCase()})` : ""}`
+            : payable.document_status === "documented"
+              ? "Cuenta directa documentada"
+              : "Cuenta por pagar directa",
         net_amount: payable.total_amount,
         vat_amount: 0,
         additional_tax_amount: 0,
@@ -425,6 +467,89 @@ export function ExpensesDashboard({
     ],
     [documents, directPayables],
   );
+  // Vinculación documental persistida en la base (received_document_links):
+  // NC/ND con su factura, guías con la factura que las cobra y referencias a
+  // OC. La base la recalcula al registrar o corregir cualquier documento.
+  const netting = useMemo(() => {
+    const creditLinks = new Map<string, string>();
+    const invoiceNetted = new Map<string, string>();
+    const guideLinks = new Map<string, string>();
+    const suggestedLinks = new Map<string, string>();
+    const purchaseOrders = new Map<string, string[]>();
+    const creditedAmount = new Map<string, number>();
+    const byId = new Map(
+      payables
+        .filter((item) => item.source === "received")
+        .map((item) => [item.id, item]),
+    );
+    const numberById = new Map(
+      payables.map((item) => [item.id, item.document_number]),
+    );
+    for (const link of documentLinks) {
+      if (link.link_type === "purchase_order") {
+        if (link.reference_folio)
+          purchaseOrders.set(link.source_document_id, [
+            ...(purchaseOrders.get(link.source_document_id) ?? []),
+            link.reference_folio,
+          ]);
+        continue;
+      }
+      const target = link.target_document_id;
+      if (!target) continue;
+      if (link.status === "suggested") {
+        suggestedLinks.set(link.source_document_id, target);
+        continue;
+      }
+      if (link.link_type === "dispatch_guide") {
+        guideLinks.set(link.source_document_id, target);
+        continue;
+      }
+      creditLinks.set(link.source_document_id, target);
+      if (link.link_type === "credit_note") {
+        const credit = byId.get(link.source_document_id);
+        creditedAmount.set(
+          target,
+          (creditedAmount.get(target) ?? 0) +
+            (credit ? amount(credit.total_amount) : 0),
+        );
+        invoiceNetted.set(target, link.source_document_id);
+      }
+    }
+    // Una NC parcial (abono) no anula la factura: sólo sale de "Pagar" si
+    // las notas de crédito cubren el total.
+    for (const [invoiceId] of invoiceNetted) {
+      const invoice = byId.get(invoiceId);
+      if (
+        invoice &&
+        (creditedAmount.get(invoiceId) ?? 0) < amount(invoice.total_amount) - 1
+      )
+        invoiceNetted.delete(invoiceId);
+    }
+    // Folios relacionados de cada documento, para que buscar el folio de una
+    // guía, NC u OC encuentre también la factura y viceversa.
+    const relatedFolios = new Map<string, string[]>();
+    const relate = (id: string, folio: string | null | undefined) => {
+      if (folio) relatedFolios.set(id, [...(relatedFolios.get(id) ?? []), folio]);
+    };
+    for (const link of documentLinks) {
+      if (link.status !== "confirmed") continue;
+      if (link.target_document_id) {
+        relate(link.source_document_id, numberById.get(link.target_document_id));
+        relate(link.target_document_id, numberById.get(link.source_document_id));
+      } else relate(link.source_document_id, link.reference_folio);
+    }
+    return {
+      creditLinks,
+      invoiceNetted,
+      guideLinks,
+      suggestedLinks,
+      purchaseOrders,
+      creditedAmount,
+      relatedFolios,
+      numberById,
+    };
+  }, [payables, documentLinks]);
+
   const years = useMemo(
     () =>
       [...new Set(payables.map((item) => item.issue_date.slice(0, 4)))].sort(
@@ -453,22 +578,35 @@ export function ExpensesDashboard({
   const visible = useMemo(
     () =>
       payables.filter((item) => {
+        // Una búsqueda activa recorre todos los años: un folio antiguo no
+        // debe quedar oculto por el filtro de año por defecto.
         const matchesYear =
-          year === "all" || item.issue_date.startsWith(`${year}-`);
+          search.trim() !== "" ||
+          year === "all" ||
+          item.issue_date.startsWith(`${year}-`);
         const matchesSupplier =
           supplier === "all" || supplierKey(item) === supplier;
         const matchesStatus =
           status === "all" || item.payment_status === status;
-        const haystack =
-          `${item.supplier_name} ${item.supplier_tax_id ?? ""} ${item.document_number ?? ""} ${item.notes ?? ""}`.toLocaleLowerCase();
         return (
           matchesYear &&
           matchesSupplier &&
           matchesStatus &&
-          haystack.includes(search.trim().toLocaleLowerCase())
+          matchesSearch(search, [
+            item.supplier_name,
+            item.supplier_tax_id,
+            item.document_number,
+            item.sii_folio,
+            item.payable_number,
+            item.notes,
+            ...(netting.relatedFolios.get(item.id) ?? []),
+            ...(netting.purchaseOrders.get(item.id) ?? []).map(
+              (folio) => `OC ${folio}`,
+            ),
+          ])
         );
       }),
-    [payables, year, supplier, status, search],
+    [payables, year, supplier, status, search, netting],
   );
   const summary = useMemo(() => {
     const recognized = visible
@@ -535,50 +673,6 @@ export function ExpensesDashboard({
         )
       : null;
 
-  // Vinculación automática: notas de crédito con su factura anulada (por
-  // referencia "ANULA FACTURA <folio>" o por proveedor + monto exacto) y guías
-  // de despacho con la factura del mismo proveedor y monto en fechas cercanas.
-  const netting = useMemo(() => {
-    const creditLinks = new Map<string, string>();
-    const invoiceNetted = new Map<string, string>();
-    const guideLinks = new Map<string, string>();
-    const numberById = new Map(
-      payables.map((item) => [item.id, item.document_number]),
-    );
-    const invoices = payables.filter(isInvoice);
-    for (const credit of payables.filter(isCredit)) {
-      const folio = parseAnnulledFolio(credit.notes);
-      const match = invoices.find(
-        (invoice) =>
-          supplierKey(invoice) === supplierKey(credit) &&
-          (folio
-            ? invoice.document_number === folio
-            : Math.abs(
-                amount(invoice.total_amount) - amount(credit.total_amount),
-              ) < 1),
-      );
-      if (match) {
-        creditLinks.set(credit.id, match.id);
-        invoiceNetted.set(match.id, credit.id);
-      }
-    }
-    for (const guide of payables.filter(isGuide)) {
-      const match = invoices.find(
-        (invoice) =>
-          supplierKey(invoice) === supplierKey(guide) &&
-          amount(guide.total_amount) > 0 &&
-          Math.abs(amount(invoice.total_amount) - amount(guide.total_amount)) <
-            1 &&
-          Math.abs(
-            new Date(`${invoice.issue_date}T00:00:00`).valueOf() -
-              new Date(`${guide.issue_date}T00:00:00`).valueOf(),
-          ) <=
-            15 * 86_400_000,
-      );
-      if (match) guideLinks.set(guide.id, match.id);
-    }
-    return { creditLinks, invoiceNetted, guideLinks, numberById };
-  }, [payables]);
 
   const queueOf = (item: Payable): Exclude<Queue, "todo"> => {
     if (item.is_reference || isGuide(item)) return "referencial";
@@ -808,15 +902,47 @@ export function ExpensesDashboard({
   };
 
   const linkNote = (item: Payable) => {
+    const notes: string[] = [];
     const creditTarget = netting.creditLinks.get(item.id);
     if (creditTarget)
-      return `Anula la factura ${netting.numberById.get(creditTarget) || ""}`.trim();
+      notes.push(
+        `${isCredit(item) ? "Aplicada a" : "Ajusta"} la factura ${netting.numberById.get(creditTarget) || ""}`.trim(),
+      );
     const nettedBy = netting.invoiceNetted.get(item.id);
     if (nettedBy)
-      return `Anulada por NC ${netting.numberById.get(nettedBy) || ""}`.trim();
+      notes.push(`Anulada por NC ${netting.numberById.get(nettedBy) || ""}`.trim());
+    else if (netting.creditedAmount.has(item.id))
+      notes.push(
+        `NC aplicadas por ${money.format(netting.creditedAmount.get(item.id) ?? 0)}`,
+      );
     const guideTarget = netting.guideLinks.get(item.id);
     if (guideTarget)
-      return `Vinculada a factura ${netting.numberById.get(guideTarget) || ""} · sin doble conteo`.trim();
+      notes.push(
+        `Cobrada en factura ${netting.numberById.get(guideTarget) || ""} · sin doble conteo`.trim(),
+      );
+    const suggested = netting.suggestedLinks.get(item.id);
+    if (suggested)
+      notes.push(
+        `Posible vínculo con factura ${netting.numberById.get(suggested) || ""} (por confirmar)`.trim(),
+      );
+    const orders = netting.purchaseOrders.get(item.id);
+    if (orders?.length) notes.push(`OC ${orders.join(", ")}`);
+    return notes.length ? notes.join(" · ") : null;
+  };
+  // Explica por qué un documento cae en "Sin pago directo" y no en "Pagar".
+  const referenceReason = (item: Payable) => {
+    if (item.is_reference)
+      return "Factura cedida en factoring: la paga el factoring; aquí solo se controla su liquidación.";
+    if (isGuide(item) && amount(item.total_amount) === 0)
+      return "Guía sin valor (entrega o retiro): respalda un movimiento físico, no genera factura ni pago.";
+    if (isGuide(item))
+      return netting.guideLinks.has(item.id)
+        ? "Guía de despacho: se paga a través de su factura vinculada."
+        : "Guía de despacho: no se paga; queda a la espera de su factura.";
+    if (netting.creditLinks.has(item.id))
+      return "Nota de crédito ya aplicada a su factura: no genera pago ni descuento adicional.";
+    if (netting.invoiceNetted.has(item.id))
+      return "Factura anulada por nota de crédito: no hay saldo que pagar.";
     return null;
   };
 
@@ -951,9 +1077,15 @@ export function ExpensesDashboard({
     );
     const refreshedPayload = (await refreshedResponse
       .json()
-      .catch(() => null)) as { documents?: ReceivedDocument[] } | null;
-    if (refreshedResponse.ok && refreshedPayload?.documents)
+      .catch(() => null)) as {
+      documents?: ReceivedDocument[];
+      documentLinks?: DocumentLink[];
+    } | null;
+    if (refreshedResponse.ok && refreshedPayload?.documents) {
       setDocuments(refreshedPayload.documents);
+      if (refreshedPayload.documentLinks)
+        setDocumentLinks(refreshedPayload.documentLinks);
+    }
     setSavingDocument(false);
     closeDocumentDetail();
     setMessage("Factura actualizada correctamente.");
@@ -1209,6 +1341,13 @@ export function ExpensesDashboard({
           </div>
           <button
             type="button"
+            className={siiPendingDecisions > 0 ? "primary-button" : "secondary-button"}
+            onClick={() => setQueueFilter("decidir")}
+          >
+            Bandeja de decisión SII ({siiPendingDecisions})
+          </button>
+          <button
+            type="button"
             className="secondary-button"
             onClick={() => setSiiOpen((current) => !current)}
           >
@@ -1273,6 +1412,7 @@ export function ExpensesDashboard({
                 setStatus("all");
                 setSearch("");
                 setQueueFilter("todo");
+                setYear(String(new Date().getFullYear()));
               }}
             >
               Limpiar filtros
@@ -1288,6 +1428,7 @@ export function ExpensesDashboard({
                 queueFilter === queue ? "primary-button" : "secondary-button"
               }
               onClick={() => setQueueFilter(queue)}
+              title={queueHints[queue]}
             >
               {queueLabels[queue]} ({queueSummary.counts[queue]})
             </button>
@@ -1332,11 +1473,18 @@ export function ExpensesDashboard({
             />
           </label>
         </div>
+        {queueFilter === "referencial" && (
+          <p className="form-note">{queueHints.referencial}</p>
+        )}
         {queueFilter === "decidir" ? (
-          <p className="form-note">
-            Las decisiones ante el SII se gestionan en la bandeja de abajo, con
-            su plazo y acciones directas de aceptación o reclamo.
-          </p>
+          // La bandeja se muestra aquí mismo, no debajo de otras secciones.
+          <SiiDteIntegration
+            organizationId={organizationId}
+            canConfigure={canConfigureSii}
+            documents={documents}
+            onRefreshDocuments={refreshDocuments}
+            view="decisions"
+          />
         ) : loading ? (
           <p className="billing-empty">Cargando cuentas por pagar…</p>
         ) : (
@@ -1463,6 +1611,7 @@ export function ExpensesDashboard({
                           const item = entry.item!;
                           const aging = agingBadge(item);
                           const link = linkNote(item);
+                          const reason = referenceReason(item);
                           return (
                             <tr
                               key={`${item.source}-${item.id}`}
@@ -1494,6 +1643,7 @@ export function ExpensesDashboard({
                                   · Folio: {item.document_number || "—"}
                                 </small>
                                 {link && <small>{link}</small>}
+                                {reason && <small>{reason}</small>}
                               </td>
                               <td>
                                 <strong>{item.supplier_name}</strong>
@@ -1627,15 +1777,6 @@ export function ExpensesDashboard({
           </>
         )}
       </section>
-      {queueFilter === "decidir" && (
-        <SiiDteIntegration
-          organizationId={organizationId}
-          canConfigure={canConfigureSii}
-          documents={documents}
-          onRefreshDocuments={refreshDocuments}
-          view="decisions"
-        />
-      )}
       <section className="table-section">
         <div className="table-heading">
           <div>

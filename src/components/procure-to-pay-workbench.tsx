@@ -2,11 +2,23 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
+  PendingDocumentBadge,
+  PendingDocumentLinkPanel,
+  PendingDocumentsQueue,
+  type PendingDocumentSuggestion,
+} from "@/components/pending-document-link";
+import {
+  duplicateMatchLabel,
+  expectedDocumentTypes,
+  type DuplicateMatch,
+} from "@/lib/pending-documents";
+import {
   nextFriday,
   summarizePaymentWeeks,
   upcomingFridays,
 } from "@/lib/payment-schedule";
 import { CostCenterPicker } from "@/components/cost-center-picker";
+import { matchesSearch } from "@/lib/search";
 
 type PurchaseRequest = {
   id: string;
@@ -113,6 +125,12 @@ type Document = {
   payment_eligible: boolean;
   payment_block_reason: string | null;
   active_payment_batch?: ActivePaymentBatch | null;
+  supplier_tax_id?: string | null;
+  document_type?: string | null;
+  sii_document_type?: number | null;
+  sii_folio?: number | string | null;
+  covered_by_direct_payable_id?: string | null;
+  covered_by_direct_payable_number?: string | null;
 };
 type ActivePaymentBatch = {
   item_id: string;
@@ -146,6 +164,16 @@ type DirectPayable = {
   payment_eligible: boolean;
   payment_block_reason: string | null;
   active_payment_batch?: ActivePaymentBatch | null;
+  document_status?: "not_required" | "pending_document" | "documented" | null;
+  expected_document_type?: string | null;
+  received_document_id?: string | null;
+  linked_document?: {
+    id: string;
+    document_number: string | null;
+    document_type?: string | null;
+    issue_date: string;
+    total_amount: number | string;
+  } | null;
 };
 const directPayableDocumentNumber = (payable: Pick<DirectPayable, "invoice_number" | "payable_number">) =>
   payable.invoice_number?.trim() || payable.payable_number;
@@ -236,6 +264,7 @@ type Payload = {
   costCenters: CostCenter[];
   paymentScheduleAlerts: PaymentScheduleAlert[];
   paymentRescheduleEvents: PaymentRescheduleEvent[];
+  pendingDocumentSuggestions?: PendingDocumentSuggestion[];
 };
 const money = new Intl.NumberFormat("es-CL", {
   style: "currency",
@@ -311,6 +340,8 @@ function paymentBlockLabel(reason: string | null) {
         already_paid: "Esta cuenta ya fue pagada.",
         reference_only:
           "Referencia de factoring: se controla desde Cuentas por pagar, sin propuesta ni salida de caja.",
+        covered_by_direct_payable:
+          "Respaldada por una cuenta directa: se paga desde esa cuenta, no por separado.",
       } as Record<string, string>
     )[reason ?? ""] ?? "No cumple las condiciones para pago."
   );
@@ -472,7 +503,13 @@ export function ProcureToPayWorkbench({
     dueDate: "",
     totalAmount: "",
     notes: "",
+    pendingDocument: false,
+    expectedDocumentType: "Factura afecta",
   });
+  const [directPayableDuplicate, setDirectPayableDuplicate] = useState<{
+    matches: DuplicateMatch[];
+    reason: string;
+  } | null>(null);
   const [directPayableFile, setDirectPayableFile] = useState<File | null>(null);
   const [payableBeneficiaryDraft, setPayableBeneficiaryDraft] = useState("");
   const [payableCancellationReason, setPayableCancellationReason] = useState<string | null>(null);
@@ -596,7 +633,10 @@ export function ProcureToPayWorkbench({
       (data?.receivedDocuments ?? []).filter(
         (document) =>
           amount(document.total_amount) > 0 &&
-          !["paid", "cancelled"].includes(document.payment_status ?? ""),
+          !["paid", "cancelled"].includes(document.payment_status ?? "") &&
+          // Un documento que respalda una cuenta directa ya está en la
+          // bandeja como esa cuenta: no se suma ni se paga dos veces.
+          !document.covered_by_direct_payable_id,
       ),
     [data],
   );
@@ -741,19 +781,19 @@ export function ProcureToPayWorkbench({
     () => dueDocuments.filter(isOverdue),
     [dueDocuments],
   );
+  // Una búsqueda activa recorre todos los años: un folio antiguo no debe
+  // quedar oculto por el filtro de año vigente.
+  const searching = search.trim().length > 0;
   const inYear = (value: string | null | undefined) =>
-    !value || value.slice(0, 4) === year;
-  const matches = (value: string) =>
-    !search.trim() ||
-    value.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase());
+    searching || year === "all" || !value || value.slice(0, 4) === year;
+  const matches = (fields: Array<string | number | null | undefined>) =>
+    matchesSearch(search, fields);
   const visibleRequests = useMemo(
     () =>
       (data?.purchaseRequests ?? []).filter(
         (item) =>
           inYear(item.requested_on) &&
-          matches(
-            `${item.request_number} ${item.supplier_name} ${item.description}`,
-          ) &&
+          matches([item.request_number, item.supplier_name, item.description]) &&
           (stateFilter === "all" || item.status === stateFilter),
       ),
     [data?.purchaseRequests, year, search, stateFilter],
@@ -763,7 +803,7 @@ export function ProcureToPayWorkbench({
       (data?.purchaseOrders ?? []).filter(
         (item) =>
           inYear(item.ordered_on) &&
-          matches(`${item.purchase_order_number} ${item.supplier_name}`) &&
+          matches([item.purchase_order_number, item.supplier_name]) &&
           (stateFilter === "all" || item.status === stateFilter),
       ),
     [data?.purchaseOrders, year, search, stateFilter],
@@ -774,7 +814,15 @@ export function ProcureToPayWorkbench({
         (item) =>
           inYear("issue_date" in item ? item.issue_date : null) &&
           matches(
-            `${item.supplier_name} ${"document_number" in item ? (item.document_number ?? "") : `${item.invoice_number ?? ""} ${item.payable_number}`}`,
+            "document_number" in item
+              ? [item.supplier_name, item.document_number]
+              : [
+                  item.supplier_name,
+                  item.beneficiary_name,
+                  item.invoice_number,
+                  item.payable_number,
+                  item.description,
+                ],
           ) &&
           (stateFilter === "all" ||
             (stateFilter === "overdue" &&
@@ -860,12 +908,15 @@ export function ProcureToPayWorkbench({
         ]);
       }
       return (data?.paymentBatches ?? []).filter((item) => {
-        const suppliers = (itemsByBatch.get(item.id) ?? [])
-          .map((line) => line.supplier_name_current || line.supplier_name_snapshot)
-          .join(" ");
+        const lines = itemsByBatch.get(item.id) ?? [];
         return (
           inYear(item.scheduled_for) &&
-          matches(`${item.batch_number} ${item.payment_reference ?? ""} ${suppliers}`) &&
+          matches([
+            item.batch_number,
+            item.payment_reference,
+            ...lines.map((line) => line.supplier_name_current || line.supplier_name_snapshot),
+            ...lines.map((line) => line.document_number_current || line.document_number_snapshot),
+          ]) &&
           // Los pagos ejecutados siguen disponibles en el filtro de historial,
           // pero no distraen de la bandeja operativa diaria.
           (stateFilter === "all"
@@ -924,9 +975,7 @@ export function ProcureToPayWorkbench({
       (data?.financingPlans ?? []).filter(
         (item) =>
           inYear(item.first_due_date) &&
-          matches(
-            `${item.plan_number} ${item.supplier_name} ${item.asset_name ?? ""}`,
-          ) &&
+          matches([item.plan_number, item.supplier_name, item.asset_name]) &&
           (stateFilter === "all" || item.status === stateFilter),
       ),
     [data?.financingPlans, year, search, stateFilter],
@@ -1251,22 +1300,35 @@ export function ProcureToPayWorkbench({
         organizationId,
         action: "create_direct_payable",
         ...directPayable,
+        ...(directPayableDuplicate && directPayableDuplicate.reason.trim().length >= 3
+          ? { confirmDuplicate: true, duplicateReason: directPayableDuplicate.reason.trim() }
+          : {}),
       }),
     });
     const payload = (await response.json().catch(() => null)) as {
       id?: string;
       error?: string;
+      message?: string;
       payableNumber?: string;
+      matches?: DuplicateMatch[];
     } | null;
     if (!response.ok || !payload?.id) {
       setSaving(false);
+      if (payload?.error === "possible_duplicate" && payload.matches?.length) {
+        setDirectPayableDuplicate({ matches: payload.matches, reason: "" });
+        setMessage("Posible duplicado: revisa los registros similares y confirma con un motivo si es un documento distinto.");
+        return;
+      }
       setMessage(
         payload?.error === "duplicate_direct_payable"
           ? `Esta cuenta ya está registrada (${payload.payableNumber ?? "mismo proveedor y folio"}). No se creó un duplicado; búscala en la bandeja.`
-          : "No fue posible crear la cuenta por pagar. Revisa los datos y tus permisos.",
+          : payload?.error === "duplicate_payable_folio" && payload.message
+            ? payload.message
+            : "No fue posible crear la cuenta por pagar. Revisa los datos y tus permisos.",
       );
       return;
     }
+    setDirectPayableDuplicate(null);
     let attachmentError = false;
     if (directPayableFile) {
       const attachment = new FormData();
@@ -1295,13 +1357,17 @@ export function ProcureToPayWorkbench({
         dueDate: "",
         totalAmount: "",
         notes: "",
+        pendingDocument: false,
+        expectedDocumentType: "Factura afecta",
       });
       setDirectPayableFile(null);
       setShowDirectPayableForm(false);
       setMessage(
         attachmentError
           ? "Cuenta por pagar enviada a aprobación, pero no se pudo adjuntar el respaldo. Ábrela desde la bandeja para reintentar."
-          : "Cuenta por pagar enviada a aprobación. Quedará disponible para pago al aprobarse.",
+          : directPayable.pendingDocument
+            ? "Gasto enviado a aprobación con documento pendiente. Cuando llegue la factura o boleta, vincúlala desde la bandeja."
+            : "Cuenta por pagar enviada a aprobación. Quedará disponible para pago al aprobarse.",
       );
     }
   }
@@ -1710,6 +1776,7 @@ export function ProcureToPayWorkbench({
               value={year}
               onChange={(event) => setYear(event.target.value)}
             >
+              <option value="all">Todos los años</option>
               {availableYears.map((value) => (
                 <option key={value}>{value}</option>
               ))}
@@ -1867,7 +1934,9 @@ export function ProcureToPayWorkbench({
         <section className="panel p2p-dense-panel">
           <div className="panel-heading">
             <div>
-              <span className="panel-label">{year} · BANDEJA OPERATIVA</span>
+              <span className="panel-label">
+                {searching || year === "all" ? "TODOS LOS AÑOS" : year} · BANDEJA OPERATIVA
+              </span>
               <h2>
                 {
                   {
@@ -2010,6 +2079,18 @@ export function ProcureToPayWorkbench({
           )}
           {tab === "payables" && (
             <>
+              {canManagePayments && (
+                <PendingDocumentsQueue
+                  payables={data?.directPayables ?? []}
+                  suggestions={data?.pendingDocumentSuggestions ?? []}
+                  onOpen={(payable) =>
+                    setDetail({
+                      kind: "payable",
+                      item: (data?.directPayables ?? []).find((item) => item.id === payable.id) ?? payable,
+                    })
+                  }
+                />
+              )}
               <div className="table-scroll">
                 <table className="p2p-dense-table">
                   <thead>
@@ -2064,6 +2145,9 @@ export function ProcureToPayWorkbench({
                                 ? item.document_number || "Sin folio"
                                 : directPayableDocumentNumber(item)}
                             </strong>
+                            {!isDocument && (
+                              <PendingDocumentBadge status={item.document_status} />
+                            )}
                             <small>
                               {isDocument
                                 ? "Factura recibida"
@@ -2582,8 +2666,44 @@ export function ProcureToPayWorkbench({
                 }
               />
             </label>
+            <label className="p2p-form-wide p2p-inline-check">
+              <input
+                type="checkbox"
+                checked={directPayable.pendingDocument}
+                onChange={(event) =>
+                  setDirectPayable((current) => ({
+                    ...current,
+                    pendingDocument: event.target.checked,
+                  }))
+                }
+              />
+              Documento pendiente de recepción
+              <small>
+                El pago va antes que la factura o boleta. Cuando llegue, se
+                vincula a esta cuenta para no contarla ni pagarla dos veces.
+              </small>
+            </label>
+            {directPayable.pendingDocument && (
+              <label>
+                Documento esperado *
+                <select
+                  required
+                  value={directPayable.expectedDocumentType}
+                  onChange={(event) =>
+                    setDirectPayable((current) => ({
+                      ...current,
+                      expectedDocumentType: event.target.value,
+                    }))
+                  }
+                >
+                  {expectedDocumentTypes.map((item) => (
+                    <option key={item}>{item}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label>
-              Folio factura
+              {directPayable.pendingDocument ? "Folio esperado (si se conoce)" : "Folio factura"}
               <input
                 value={directPayable.invoiceNumber}
                 onChange={(event) =>
@@ -2731,8 +2851,55 @@ export function ProcureToPayWorkbench({
               />
               <small>PDF, JPG o PNG · máximo 50 MB. Quedará disponible para quien apruebe el pago.</small>
             </label>
-            <button className="primary-button" disabled={saving} type="submit">
-              Crear cuenta por pagar
+            {directPayableDuplicate && (
+              <div className="p2p-form-wide pending-document-link" role="alert">
+                <strong>Posible duplicado</strong>
+                <small>
+                  Ya existe un registro del mismo proveedor y monto con fecha
+                  cercana. ¿Es un documento distinto?
+                </small>
+                <ul>
+                  {directPayableDuplicate.matches.map((match) => (
+                    <li key={`${match.source}-${match.id}`}>
+                      <span>
+                        <strong>{duplicateMatchLabel(match)}</strong>
+                        <small>
+                          {displayDate(match.issue_date)} ·{" "}
+                          {money.format(amount(match.total_amount))}
+                          {match.status ? ` · ${label(match.status)}` : ""}
+                        </small>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <label>
+                  Motivo por el que no es duplicado *
+                  <input
+                    maxLength={500}
+                    value={directPayableDuplicate.reason}
+                    onChange={(event) =>
+                      setDirectPayableDuplicate((current) =>
+                        current ? { ...current, reason: event.target.value } : current,
+                      )
+                    }
+                    placeholder="Ej.: cuota de octubre; la anterior es de septiembre"
+                  />
+                </label>
+              </div>
+            )}
+            <button
+              className="primary-button"
+              disabled={
+                saving ||
+                Boolean(directPayableDuplicate && directPayableDuplicate.reason.trim().length < 3)
+              }
+              type="submit"
+            >
+              {directPayableDuplicate
+                ? "Sí, es distinto: crear cuenta"
+                : directPayable.pendingDocument
+                  ? "Crear gasto con documento pendiente"
+                  : "Crear cuenta por pagar"}
             </button>
           </form>
         </section>
@@ -3759,6 +3926,29 @@ export function ProcureToPayWorkbench({
                   </p>
                 )}
               </div>
+            )}
+            {detail.kind === "payable" && organizationId && (
+              <PendingDocumentLinkPanel
+                organizationId={organizationId}
+                payable={detail.item as DirectPayable}
+                documents={data?.receivedDocuments ?? []}
+                suggestions={data?.pendingDocumentSuggestions ?? []}
+                supplierTaxId={
+                  data?.suppliers.find(
+                    (supplier) =>
+                      supplier.id === (detail.item as DirectPayable).supplier_counterparty_id,
+                  )?.tax_id ?? null
+                }
+                canLink={canManagePayments}
+                onChanged={async (text) => {
+                  const refreshed = await load();
+                  const updated = refreshed?.directPayables.find(
+                    (item) => item.id === detail.item.id,
+                  );
+                  setDetail(updated ? { kind: "payable", item: updated } : null);
+                  setMessage(text);
+                }}
+              />
             )}
             {detail.kind === "payable" && (
               <div className="p2p-detail-section">

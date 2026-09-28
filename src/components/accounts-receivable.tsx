@@ -19,6 +19,7 @@ import {
   outstandingDocumentBalance,
   recognizedNetAmount,
 } from "@/lib/document-revenue";
+import { matchesSearch, normalizeSearchText } from "@/lib/search";
 import {
   DocumentNormalizer,
   type NormalizationTarget,
@@ -79,14 +80,6 @@ function displayFollowupStatus(status: FollowupStatus) {
   return { open: "Abierta", committed: "Compromiso", resolved: "Resuelta" }[
     status
   ];
-}
-
-function normalizeSearchText(value: string | null | undefined) {
-  return (value ?? "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase("es-CL")
-    .trim();
 }
 
 function customerName(record: InvoiceRecord) {
@@ -189,34 +182,34 @@ export function AccountsReceivable({
     const normalized = status?.trim().toLocaleLowerCase("es-CL") ?? "";
     return normalized === "pendiente" || normalized.startsWith("abon");
   };
+  const isOpenReceivable = (record: InvoiceRecord) =>
+    !isPurchaseOrderDocument(record) &&
+    !isCreditNoteDocument(record) &&
+    hasOpenBalanceStatus(record.status) &&
+    outstandingBalance(record) > 0;
   const receivables = useMemo(
-    () =>
-      recordsForYear.filter(
-        (record) =>
-          !isPurchaseOrderDocument(record) &&
-          !isCreditNoteDocument(record) &&
-          hasOpenBalanceStatus(record.status) &&
-          outstandingBalance(record) > 0,
-      ),
+    () => recordsForYear.filter(isOpenReceivable),
     [recordsForYear, paidAmountByDocument],
   );
+  const isSearchingPortfolio = normalizeSearchText(portfolioSearch).length > 0;
   const filteredReceivables = useMemo(() => {
-    const search = normalizeSearchText(portfolioSearch);
-    if (!search) return receivables;
+    if (!isSearchingPortfolio) return receivables;
 
-    return receivables.filter((record) =>
-      normalizeSearchText(
-        [
+    // Una búsqueda activa recorre la cartera de todos los años cargados: un
+    // folio emitido en un año anterior no debe quedar oculto por el filtro.
+    return records.filter(
+      (record) =>
+        isOpenReceivable(record) &&
+        matchesSearch(portfolioSearch, [
           customerName(record),
           record.recipient,
           record.recipientRut,
           record.invoiceNumber,
           record.documentType,
           record.notes,
-        ].join(" "),
-      ).includes(search),
+        ]),
     );
-  }, [portfolioSearch, receivables]);
+  }, [isSearchingPortfolio, portfolioSearch, receivables, records, paidAmountByDocument]);
   const customerGroups = useMemo(() => {
     const groups = new Map<
       string,
@@ -695,8 +688,8 @@ export function AccountsReceivable({
               {isLoading
                 ? "Cargando gestión…"
                 : portfolioView === "customers"
-                  ? `${customerGroups.length} cliente(s) con saldo pendiente.`
-                  : `${filteredReceivables.length} documento(s) priorizados por vencimiento.`}
+                  ? `${customerGroups.length} cliente(s) con saldo pendiente${isSearchingPortfolio ? " · búsqueda en todos los años" : ""}.`
+                  : `${filteredReceivables.length} documento(s) priorizados por vencimiento${isSearchingPortfolio ? " · búsqueda en todos los años" : ""}.`}
             </p>
           </div>
           <div className="receivables-toolbar">
@@ -743,7 +736,10 @@ export function AccountsReceivable({
               </thead>
               <tbody>
                 {customerGroups.map((group) => {
-                  const isExpanded = expandedCustomers.includes(group.key);
+                  // Al buscar, los grupos coincidentes se muestran abiertos para
+                  // que el documento encontrado quede visible.
+                  const isExpanded =
+                    isSearchingPortfolio || expandedCustomers.includes(group.key);
                   return (
                     <Fragment key={group.key}>
                       <tr>

@@ -4,7 +4,9 @@
 // cruda; el merge vincula o crea documentos, y ante montos distintos marca la
 // discrepancia sin sobrescribir valores existentes.
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { fetchRcvPeriod, type RcvEntry, type RcvOperation } from "@/lib/sii/rcv";
+import { syncCounterpartyRole } from "@/lib/counterparties";
+import { rcvReference } from "@/lib/sii/dte-references";
+import { fetchRcvPeriod, type RcvAccountingState, type RcvEntry, type RcvOperation } from "@/lib/sii/rcv";
 
 export type RcvSyncTrigger = "cron" | "manual";
 
@@ -75,19 +77,7 @@ function amountsDiffer(existing: number | string | null | undefined, reported: n
   return Math.abs(Number(existing) - reported) > 1;
 }
 
-async function upsertCounterparty(admin: SupabaseClient, organizationId: string, taxId: string, name: string | null, kind: "supplier" | "client") {
-  const legalName = name?.trim() || taxId;
-  const { data } = await admin.from("counterparties").upsert({
-    organization_id: organizationId,
-    legal_name: legalName,
-    trade_name: legalName,
-    tax_id: taxId,
-    kind,
-  }, { onConflict: "organization_id,tax_id" }).select("id").single();
-  return data?.id ?? null;
-}
-
-async function stageEntry(admin: SupabaseClient, organizationId: string, runId: string, operation: "purchase" | "sale", period: string, entry: RcvEntry) {
+async function stageEntry(admin: SupabaseClient, organizationId: string, runId: string, operation: "purchase" | "sale", period: string, entry: RcvEntry, accountingState: RcvAccountingState) {
   const identity = {
     organization_id: organizationId,
     operation,
@@ -101,7 +91,7 @@ async function stageEntry(admin: SupabaseClient, organizationId: string, runId: 
   const values = {
     ...identity,
     period,
-    estado_contab: "REGISTRO",
+    estado_contab: accountingState,
     counterpart_name: entry.counterpartName,
     issue_date: entry.issueDate,
     reception_date: entry.receptionDate,
@@ -140,14 +130,21 @@ async function mergePurchase(admin: SupabaseClient, organizationId: string, entr
   }
 
   if (documentId) {
-    const { data: current } = await admin.from("received_documents").select("id, total_amount, sii_event_status").eq("id", documentId).maybeSingle();
+    const { data: current } = await admin.from("received_documents").select("id, total_amount, sii_event_status, supplier_counterparty_id, sii_references").eq("id", documentId).maybeSingle();
     if (!current) return { outcome: "unmatched" as const };
     const mismatch = amountsDiffer(current.total_amount, entry.totalAmount);
+    // Completa sin pisar: la ficha sólo si faltaba y la referencia del RCV
+    // sólo si el XML no trajo referencias propias.
+    const references = rcvReference(entry.referenceDocumentType, entry.referenceFolio);
+    const hasReferences = Array.isArray(current.sii_references) && current.sii_references.length > 0;
+    const counterpartyId = current.supplier_counterparty_id ? null : await syncCounterpartyRole(admin, organizationId, entry.counterpartTaxId, entry.counterpartName, "supplier");
     await admin.from("received_documents").update({
       sii_received_at: entry.receptionDate,
       sii_response_deadline: toDeadline(entry.receptionDate),
       sii_event_status: eventStatus(entry.receptorEvent) ?? current.sii_event_status,
       sii_last_checked_at: new Date().toISOString(),
+      ...(counterpartyId ? { supplier_counterparty_id: counterpartyId } : {}),
+      ...(!hasReferences && references.length ? { sii_references: references } : {}),
     }).eq("id", documentId).eq("organization_id", organizationId);
     await admin.from("sii_rcv_entries").update({
       received_document_id: documentId,
@@ -161,7 +158,7 @@ async function mergePurchase(admin: SupabaseClient, organizationId: string, entr
     await admin.from("sii_rcv_entries").update({ match_status: "unmatched", match_detail: "El SII no informó fecha de emisión; se requiere revisión manual antes de crear el documento." }).eq("id", entryId);
     return { outcome: "unmatched" as const };
   }
-  const counterpartyId = await upsertCounterparty(admin, organizationId, entry.counterpartTaxId, entry.counterpartName, "supplier");
+  const counterpartyId = await syncCounterpartyRole(admin, organizationId, entry.counterpartTaxId, entry.counterpartName, "supplier");
   const { data: created, error } = await admin.from("received_documents").insert({
     organization_id: organizationId,
     supplier_counterparty_id: counterpartyId,
@@ -184,6 +181,7 @@ async function mergePurchase(admin: SupabaseClient, organizationId: string, entr
     sii_response_deadline: toDeadline(entry.receptionDate),
     sii_event_status: eventStatus(entry.receptorEvent),
     sii_last_checked_at: new Date().toISOString(),
+    sii_references: rcvReference(entry.referenceDocumentType, entry.referenceFolio),
   }).select("id").single();
   if (error || !created) {
     await admin.from("sii_rcv_entries").update({ match_status: "unmatched", match_detail: `No fue posible crear el documento recibido desde el RCV${error ? `: ${error.message.slice(0, 200)}` : "."}` }).eq("id", entryId);
@@ -229,6 +227,11 @@ async function mergeSale(admin: SupabaseClient, organizationId: string, entryId:
   }
 
   if (documentId) {
+    const { data: current } = await admin.from("issued_documents").select("counterparty_id").eq("id", documentId).eq("organization_id", organizationId).maybeSingle();
+    if (current && !current.counterparty_id) {
+      const counterpartyId = await syncCounterpartyRole(admin, organizationId, entry.counterpartTaxId, entry.counterpartName, "customer");
+      if (counterpartyId) await admin.from("issued_documents").update({ counterparty_id: counterpartyId }).eq("id", documentId).eq("organization_id", organizationId).is("counterparty_id", null);
+    }
     await admin.from("sii_rcv_entries").update({
       issued_document_id: documentId,
       match_status: mismatch ? "amount_mismatch" : "linked",
@@ -241,7 +244,7 @@ async function mergeSale(admin: SupabaseClient, organizationId: string, entryId:
     await admin.from("sii_rcv_entries").update({ match_status: "unmatched", match_detail: "El SII no informó fecha de emisión; se requiere revisión manual antes de crear el documento." }).eq("id", entryId);
     return { outcome: "unmatched" as const };
   }
-  const counterpartyId = await upsertCounterparty(admin, organizationId, entry.counterpartTaxId, entry.counterpartName, "client");
+  const counterpartyId = await syncCounterpartyRole(admin, organizationId, entry.counterpartTaxId, entry.counterpartName, "customer");
   const { data: created, error } = await admin.from("issued_documents").insert({
     organization_id: organizationId,
     counterparty_id: counterpartyId,
@@ -307,13 +310,28 @@ export async function syncRcv(admin: SupabaseClient, organizationId: string, tri
   try {
     let sharedToken: string | undefined;
     for (const period of periods) {
-      for (const operation of ["COMPRA", "VENTA"] satisfies RcvOperation[]) {
-        const { token, entries } = await fetchRcvPeriod(integration.taxpayer_rut, period, operation, sharedToken);
+      // Las compras PENDIENTE son las que esperan aceptación o reclamo: sin
+      // ellas la bandeja de decisión SII queda vacía.
+      const passes: Array<[RcvOperation, RcvAccountingState]> = [
+        ["COMPRA", "REGISTRO"],
+        ["COMPRA", "PENDIENTE"],
+        ["VENTA", "REGISTRO"],
+      ];
+      for (const [operation, accountingState] of passes) {
+        let fetched: Awaited<ReturnType<typeof fetchRcvPeriod>>;
+        try {
+          fetched = await fetchRcvPeriod(integration.taxpayer_rut, period, operation, sharedToken, accountingState);
+        } catch (error) {
+          // Un período sin compras pendientes no debe tumbar la sincronización.
+          if (accountingState === "PENDIENTE") continue;
+          throw error;
+        }
+        const { token, entries } = fetched;
         sharedToken = token;
         if (operation === "COMPRA") result.purchasesFetched += entries.length;
         else result.salesFetched += entries.length;
         for (const entry of entries) {
-          const staged = await stageEntry(admin, organizationId, run.id, operation === "COMPRA" ? "purchase" : "sale", period, entry);
+          const staged = await stageEntry(admin, organizationId, run.id, operation === "COMPRA" ? "purchase" : "sale", period, entry, accountingState);
           if (staged.created) result.entriesCreated += 1;
           else result.entriesUpdated += 1;
           const merge = operation === "COMPRA"
