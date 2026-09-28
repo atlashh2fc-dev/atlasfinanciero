@@ -7,7 +7,16 @@ import {
 } from "@/lib/admin-access";
 import { upsertCounterpartyRole } from "@/lib/counterparties";
 import { paymentProposalItemAuthorization } from "@/lib/payment-execution";
-import { canonicalTaxId, rutKey, sameRut } from "@/lib/rut";
+import { canonicalTaxId, formatRut, rutKey, sameRut } from "@/lib/rut";
+import {
+  directPayableCategoryLabel,
+  isDirectPayableCategory,
+  isPayrollCategory,
+  PAYROLL_NOT_SUPPLIER_MESSAGE,
+  payrollCategories,
+  payrollCategoryDetails,
+  payrollCategoryHint,
+} from "@/lib/expense-categories";
 import { fetchAllRows } from "@/lib/supabase/fetch-all-rows";
 import {
   classifyDuplicates,
@@ -1423,8 +1432,19 @@ export async function POST(request: NextRequest) {
   }
 
   if (action === "create_direct_payable") {
-    const supplierName = text(body?.supplierName, 300, true);
+    const category = isDirectPayableCategory(body?.category)
+      ? body.category
+      : "other";
+    // Sueldos, leyes sociales y finiquitos son remuneraciones: el acreedor es
+    // la persona (o institución previsional) beneficiaria, no un proveedor, y
+    // no llevan folio de factura ni documento tributario pendiente.
+    const payroll = isPayrollCategory(category);
+    const supplierName = payroll ? null : text(body?.supplierName, 300, true);
     const beneficiaryName = text(body?.beneficiaryName, 300);
+    const beneficiaryTaxInput = text(body?.beneficiaryTaxId, 20);
+    const beneficiaryTaxId = beneficiaryTaxInput
+      ? formatRut(beneficiaryTaxInput)
+      : null;
     const description = text(body?.description, 2_000, true);
     const totalAmount = positive(body?.totalAmount);
     const issueDate =
@@ -1435,24 +1455,23 @@ export async function POST(request: NextRequest) {
       organizationId,
       body?.costCenterId,
     );
-    const invoiceNumber = text(body?.invoiceNumber, 180);
-    const category =
-      typeof body?.category === "string" &&
-      [
-        "utilities",
-        "rent",
-        "taxes",
-        "insurance",
-        "subscriptions",
-        "termination",
-        "other",
-      ].includes(body.category)
-        ? body.category
-        : "other";
+    const invoiceNumber = payroll ? null : text(body?.invoiceNumber, 180);
     const categoryDetail = text(body?.categoryDetail, 120);
+    const suggestedPayrollCategory =
+      category === "other" ? payrollCategoryHint(categoryDetail) : null;
+    if (suggestedPayrollCategory)
+      return NextResponse.json(
+        {
+          error: "payroll_category_required",
+          message: PAYROLL_NOT_SUPPLIER_MESSAGE,
+          suggestedCategory: suggestedPayrollCategory,
+        },
+        { status: 400 },
+      );
     // Gasto pagado o comprometido antes de recibir su factura/boleta: queda
     // "documento pendiente" hasta que Finanzas lo vincule al documento real.
-    const pendingDocument = body?.pendingDocument === true;
+    // Una remuneración nunca espera factura.
+    const pendingDocument = !payroll && body?.pendingDocument === true;
     const expectedDocumentType = pendingDocument ? body?.expectedDocumentType : null;
     const confirmDuplicate = body?.confirmDuplicate === true;
     const duplicateReason = confirmDuplicate ? validDuplicateReason(body?.duplicateReason) : null;
@@ -1466,13 +1485,14 @@ export async function POST(request: NextRequest) {
         )
       : null;
     if (
-      !supplierName ||
-      !supplier ||
       !description ||
       !totalAmount ||
       !costCenterId ||
-      (category === "termination" && !beneficiaryName) ||
+      (payroll
+        ? !beneficiaryName || (beneficiaryTaxInput && !beneficiaryTaxId)
+        : !supplierName || !supplier) ||
       (category === "other" && !categoryDetail) ||
+      (categoryDetail && categoryDetail.length < 2) ||
       (body?.dueDate && !dueDate) ||
       (dueDate && dueDate < issueDate) ||
       (pendingDocument && !isExpectedDocumentType(expectedDocumentType)) ||
@@ -1482,67 +1502,117 @@ export async function POST(request: NextRequest) {
         { error: "invalid_direct_payable" },
         { status: 400 },
       );
-    // Un doble envío del formulario (o volver a cargar la misma factura)
-    // generaba dos cuentas idénticas en aprobación. Se rechaza el duplicado
-    // mientras la original siga abierta (sin pagar ni anular).
-    let duplicateQuery = context.supabase
-      .from("direct_payables")
-      .select("payable_number")
-      .eq("organization_id", organizationId)
-      .eq("supplier_counterparty_id", supplier.id)
-      .in("status", ["draft", "review", "approved"])
-      .limit(1);
-    duplicateQuery = invoiceNumber
-      ? duplicateQuery.eq("invoice_number", invoiceNumber)
-      : duplicateQuery
-          .is("invoice_number", null)
+    if (payroll) {
+      // Misma persona beneficiaria, monto y fecha en otra remuneración
+      // vigente: probable doble registro; se confirma con un motivo.
+      const { data: payrollMatches, error: payrollMatchesError } =
+        await context.supabase
+          .from("direct_payables")
+          .select(
+            "id, payable_number, category, category_detail, supplier_name, beneficiary_name, total_amount, issue_date, status",
+          )
+          .eq("organization_id", organizationId)
+          .in("category", [...payrollCategories])
+          .not("status", "in", "(cancelled,rejected)")
           .eq("total_amount", totalAmount)
           .eq("issue_date", issueDate)
-          .gte("created_at", new Date(Date.now() - 10 * 60_000).toISOString());
-    const { data: duplicate } = await duplicateQuery.maybeSingle();
-    if (duplicate)
-      return NextResponse.json(
-        { error: "duplicate_direct_payable", payableNumber: duplicate.payable_number },
-        { status: 409 },
-      );
-    // La misma factura registrada antes como documento recibido (o como otra
-    // cuenta) bloquea; mismo proveedor + monto + fecha cercana pide confirmar.
-    const { data: duplicateMatches, error: duplicateError } =
-      await context.supabase.rpc("find_payable_duplicates", {
-        p_organization_id: organizationId,
-        p_supplier_counterparty_id: supplier.id,
-        p_supplier_tax_id: supplier.taxId,
-        p_supplier_name: supplier.name,
-        p_folio: invoiceNumber,
-        p_total: totalAmount,
-        p_issue_date: issueDate,
-      });
-    if (!duplicateError) {
-      const { sameFolio, sameAmount } = classifyDuplicates(
-        (duplicateMatches ?? []) as DuplicateMatch[],
-      );
-      if (sameFolio.length)
+          .limit(20);
+      const beneficiaryKey = normalizedSupplierName(beneficiaryName ?? "");
+      const sameBeneficiary = payrollMatchesError
+        ? []
+        : (payrollMatches ?? []).filter(
+            (match) =>
+              normalizedSupplierName(
+                match.beneficiary_name ?? match.supplier_name,
+              ) === beneficiaryKey,
+          );
+      if (sameBeneficiary.length && !duplicateReason)
         return NextResponse.json(
           {
-            error: "duplicate_payable_folio",
-            message: duplicateFolioMessage({
-              source: sameFolio[0].source,
-              id: sameFolio[0].id,
-              number: sameFolio[0].number,
-              label:
-                sameFolio[0].source === "received"
-                  ? sameFolio[0].document_type
-                  : sameFolio[0].number,
-            }),
-            matches: sameFolio,
+            error: "possible_duplicate",
+            matches: sameBeneficiary.map(
+              (match): DuplicateMatch => ({
+                source: "direct",
+                id: match.id,
+                number: match.payable_number,
+                document_type: directPayableCategoryLabel(
+                  match.category,
+                  match.category_detail,
+                ),
+                supplier_name: match.beneficiary_name ?? match.supplier_name,
+                total_amount: match.total_amount,
+                issue_date: match.issue_date,
+                status: match.status,
+                match: "same_amount",
+              }),
+            ),
           },
           { status: 409 },
         );
-      if (sameAmount.length && !duplicateReason)
+    }
+    if (supplier) {
+      // Un doble envío del formulario (o volver a cargar la misma factura)
+      // generaba dos cuentas idénticas en aprobación. Se rechaza el duplicado
+      // mientras la original siga abierta (sin pagar ni anular).
+      let duplicateQuery = context.supabase
+        .from("direct_payables")
+        .select("payable_number")
+        .eq("organization_id", organizationId)
+        .eq("supplier_counterparty_id", supplier.id)
+        .in("status", ["draft", "review", "approved"])
+        .limit(1);
+      duplicateQuery = invoiceNumber
+        ? duplicateQuery.eq("invoice_number", invoiceNumber)
+        : duplicateQuery
+            .is("invoice_number", null)
+            .eq("total_amount", totalAmount)
+            .eq("issue_date", issueDate)
+            .gte("created_at", new Date(Date.now() - 10 * 60_000).toISOString());
+      const { data: duplicate } = await duplicateQuery.maybeSingle();
+      if (duplicate)
         return NextResponse.json(
-          { error: "possible_duplicate", matches: sameAmount },
+          { error: "duplicate_direct_payable", payableNumber: duplicate.payable_number },
           { status: 409 },
         );
+      // La misma factura registrada antes como documento recibido (o como otra
+      // cuenta) bloquea; mismo proveedor + monto + fecha cercana pide confirmar.
+      const { data: duplicateMatches, error: duplicateError } =
+        await context.supabase.rpc("find_payable_duplicates", {
+          p_organization_id: organizationId,
+          p_supplier_counterparty_id: supplier.id,
+          p_supplier_tax_id: supplier.taxId,
+          p_supplier_name: supplier.name,
+          p_folio: invoiceNumber,
+          p_total: totalAmount,
+          p_issue_date: issueDate,
+        });
+      if (!duplicateError) {
+        const { sameFolio, sameAmount } = classifyDuplicates(
+          (duplicateMatches ?? []) as DuplicateMatch[],
+        );
+        if (sameFolio.length)
+          return NextResponse.json(
+            {
+              error: "duplicate_payable_folio",
+              message: duplicateFolioMessage({
+                source: sameFolio[0].source,
+                id: sameFolio[0].id,
+                number: sameFolio[0].number,
+                label:
+                  sameFolio[0].source === "received"
+                    ? sameFolio[0].document_type
+                    : sameFolio[0].number,
+              }),
+              matches: sameFolio,
+            },
+            { status: 409 },
+          );
+        if (sameAmount.length && !duplicateReason)
+          return NextResponse.json(
+            { error: "possible_duplicate", matches: sameAmount },
+            { status: 409 },
+          );
+      }
     }
     const payableNotes = text(body?.notes, 2_000);
     const { data, error } = await context.supabase
@@ -1550,12 +1620,21 @@ export async function POST(request: NextRequest) {
       .insert({
         organization_id: organizationId,
         payable_number: payableNumber,
-        supplier_counterparty_id: supplier.id,
-        supplier_name: supplier.name,
+        supplier_counterparty_id: supplier?.id ?? null,
+        // supplier_name es obligatorio: en remuneraciones nombra al acreedor.
+        supplier_name: supplier?.name ?? beneficiaryName,
         beneficiary_name: beneficiaryName,
+        ...(beneficiaryTaxId && beneficiaryName
+          ? { beneficiary_tax_id: beneficiaryTaxId }
+          : {}),
         invoice_number: invoiceNumber,
         category,
-        category_detail: category === "other" ? categoryDetail : category === "termination" ? "Finiquito" : null,
+        category_detail:
+          category === "other"
+            ? categoryDetail
+            : isPayrollCategory(category)
+              ? (payrollCategoryDetails[category] ?? categoryDetail)
+              : null,
         description,
         issue_date: issueDate,
         due_date: dueDate,
@@ -1938,7 +2017,7 @@ export async function POST(request: NextRequest) {
       context.supabase
         .from("direct_payables")
         .select(
-          "id, payable_number, supplier_name, invoice_number, due_date, total_amount, status, is_reference",
+          "id, payable_number, supplier_name, invoice_number, due_date, total_amount, status, is_reference, category",
         )
         .eq("organization_id", organizationId)
         .in("id", queryIds(directPayableIds)),
@@ -2128,13 +2207,18 @@ export async function POST(request: NextRequest) {
           { status: 409 },
         );
     }
+    // Remuneraciones: NIC 7 operación (pagos a y por cuenta de los empleados).
+    const payableCashFlowCategory = (payable: { id: string; category: string }) =>
+      isPayrollCategory(payable.category)
+        ? ("operating" as const)
+        : itemCashFlowCategory(itemCategories, "payable", payable.id);
     const selectedEntries = [
       ...documents.map((document) => ({
         category: itemCashFlowCategory(itemCategories, "received", document.id),
         amount: documentAmountById.get(document.id) ?? 0,
       })),
       ...directPayables.map((payable) => ({
-        category: itemCashFlowCategory(itemCategories, "payable", payable.id),
+        category: payableCashFlowCategory(payable),
         amount: payableAmountById.get(payable.id) ?? 0,
       })),
     ];
@@ -2199,11 +2283,7 @@ export async function POST(request: NextRequest) {
             payable.invoice_number ?? payable.payable_number,
           due_date_snapshot: payable.due_date,
           amount: payableAmountById.get(payable.id) ?? 0,
-          cash_flow_category: itemCashFlowCategory(
-            itemCategories,
-            "payable",
-            payable.id,
-          ),
+          cash_flow_category: payableCashFlowCategory(payable),
           ...paymentProposalItemAuthorization(
             batch.id,
             payableAmountById.get(payable.id) ?? 0,
@@ -2355,17 +2435,44 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   if (action === "set_direct_payable_beneficiary") {
     const beneficiaryName = text(body?.beneficiaryName, 300, true);
-    if (!beneficiaryName)
+    // RUT opcional: sólo se modifica cuando viene en la solicitud ("" lo borra).
+    const taxIdProvided = typeof body?.beneficiaryTaxId === "string";
+    const beneficiaryTaxInput = text(body?.beneficiaryTaxId, 20);
+    const beneficiaryTaxId = beneficiaryTaxInput ? formatRut(beneficiaryTaxInput) : null;
+    if (!beneficiaryName || (beneficiaryTaxInput && !beneficiaryTaxId))
       return NextResponse.json({ error: "invalid_direct_payable_beneficiary" }, { status: 400 });
-    const { data, error } = await context.supabase
+    const { data: current, error: currentError } = await context.supabase
       .from("direct_payables")
-      .update({ beneficiary_name: beneficiaryName })
+      .select("id, category")
       .eq("id", id)
       .eq("organization_id", organizationId)
-      .select("id, beneficiary_name")
+      .maybeSingle();
+    if (currentError || !current)
+      return NextResponse.json({ error: "unable_to_update_direct_payable_beneficiary" }, { status: 409 });
+    // En remuneraciones la persona beneficiaria es el acreedor que se muestra
+    // en bandejas, propuestas y órdenes de pago.
+    const payroll = isPayrollCategory(current.category);
+    const { data, error } = await context.supabase
+      .from("direct_payables")
+      .update({
+        beneficiary_name: beneficiaryName,
+        ...(taxIdProvided ? { beneficiary_tax_id: beneficiaryTaxId } : {}),
+        ...(payroll ? { supplier_name: beneficiaryName } : {}),
+      })
+      .eq("id", id)
+      .eq("organization_id", organizationId)
+      .select("id, beneficiary_name, supplier_name")
       .maybeSingle();
     if (error || !data)
       return NextResponse.json({ error: "unable_to_update_direct_payable_beneficiary" }, { status: 409 });
+    if (payroll) {
+      const { error: syncError } = await context.supabase.rpc("sync_direct_payable_payment_snapshots", {
+        p_organization_id: organizationId,
+        p_direct_payable_id: id,
+      });
+      if (syncError && syncError.code !== "PGRST202")
+        return NextResponse.json({ error: "unable_to_sync_payable_payment_items", item: data }, { status: 409 });
+    }
     return NextResponse.json({ item: data });
   }
   if (action === "link_direct_payable_document") {

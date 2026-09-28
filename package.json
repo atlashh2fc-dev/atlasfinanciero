@@ -18,6 +18,7 @@
     "test:payment-capabilities": "node --experimental-strip-types --test tests/payment-capabilities.test.ts",
     "test:rut": "node --experimental-strip-types --test tests/rut.test.ts",
     "test:pending-documents": "node --experimental-strip-types --test tests/pending-documents.test.ts",
+    "test:expense-categories": "node --experimental-strip-types --test tests/expense-categories.test.ts",
     "test:search": "node --experimental-strip-types --test tests/search.test.ts",
     "verify:crm": "node scripts/verify-crm-workspace.mjs",
     "verify:contrast": "node scripts/verify-evolution-total-contrast.mjs",

@@ -4,6 +4,7 @@ import {
   requireOrganizationFinanceAccess,
   requireOrganizationProcurementAccess,
 } from "@/lib/admin-access";
+import { isPayrollCategory } from "@/lib/expense-categories";
 import { duplicateFolioMessage, parseDuplicateFolioError } from "@/lib/pending-documents";
 
 const allowedMimeTypes = new Set([
@@ -136,9 +137,24 @@ export async function PATCH(request: NextRequest) {
   const context = await requireOrganizationFinanceAccess(organizationId);
   if (context.error || !context.supabase)
     return NextResponse.json({ error: context.error }, { status: context.status });
+  const { data: current, error: currentError } = await context.supabase
+    .from("direct_payables")
+    .select("id, category")
+    .eq("id", payableId)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+  if (currentError || !current)
+    return NextResponse.json({ error: "unable_to_update_payable_invoice" }, { status: 409 });
+  // Una remuneración no tiene folio de factura: el nombre corregido es el de
+  // la persona beneficiaria (acreedor), no el de un proveedor.
+  const payroll = isPayrollCategory(current.category);
   const { data, error } = await context.supabase
     .from("direct_payables")
-    .update({ invoice_number: invoiceNumber || null, supplier_name: supplierName })
+    .update(
+      payroll
+        ? { supplier_name: supplierName, beneficiary_name: supplierName }
+        : { invoice_number: invoiceNumber || null, supplier_name: supplierName },
+    )
     .eq("id", payableId)
     .eq("organization_id", organizationId)
     .select("id, invoice_number, supplier_name")

@@ -3,6 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { SiiDteIntegration } from "@/components/sii-dte-integration";
 import { matchesSearch } from "@/lib/search";
+import {
+  directPayableCategoryLabel,
+  expenseGroup,
+  PAYROLL_GROUP_KEY,
+  PAYROLL_GROUP_LABEL,
+  payrollBreakdown,
+  type ExpenseGroup,
+} from "@/lib/expense-categories";
 
 type ReceivedDocument = {
   id: string;
@@ -48,6 +56,7 @@ type DirectPayable = {
   payable_number: string;
   supplier_counterparty_id: string | null;
   supplier_name: string;
+  beneficiary_name?: string | null;
   invoice_number: string | null;
   category: string;
   category_detail: string | null;
@@ -83,6 +92,11 @@ type DocumentLink = {
 type Payable = {
   id: string;
   source: "received" | "direct";
+  // Remuneraciones (sueldos, leyes sociales, finiquitos) no son gasto de
+  // proveedores: se agrupan aparte como "Remuneraciones".
+  expense_group: ExpenseGroup;
+  category: string | null;
+  category_detail: string | null;
   supplier_counterparty_id: string | null;
   supplier_name: string;
   supplier_tax_id: string | null;
@@ -207,10 +221,15 @@ const countsAsExpense = (item: Payable) =>
 const supplierKey = (
   item: Pick<
     Payable,
-    "supplier_counterparty_id" | "supplier_tax_id" | "supplier_name"
+    | "expense_group"
+    | "supplier_counterparty_id"
+    | "supplier_tax_id"
+    | "supplier_name"
   >,
 ) =>
-  item.supplier_counterparty_id || item.supplier_tax_id || item.supplier_name;
+  item.expense_group === "payroll"
+    ? PAYROLL_GROUP_KEY
+    : item.supplier_counterparty_id || item.supplier_tax_id || item.supplier_name;
 type Queue =
   | "todo"
   | "decidir"
@@ -394,6 +413,9 @@ export function ExpensesDashboard({
         .map((document) => ({
         ...document,
         source: "received" as const,
+        expense_group: "supplier" as const,
+        category: null,
+        category_detail: null,
         currency_code: "CLP",
         workflow_status: null,
         factoring_issued_document_id: null,
@@ -401,69 +423,81 @@ export function ExpensesDashboard({
         reference_settled_at: null,
         reference_settlement_note: null,
       })),
-      ...directPayables.map((payable) => ({
-        id: payable.id,
-        source: "direct" as const,
-        supplier_counterparty_id: payable.supplier_counterparty_id,
-        supplier_name: payable.supplier_name,
-        supplier_tax_id: null,
-        document_number: payable.invoice_number || payable.payable_number,
-        payable_number: payable.payable_number,
-        issue_date: payable.issue_date,
-        document_type: payable.is_reference
-          ? "Referencia de factoring"
-          : payable.document_status === "pending_document"
-            ? `Gasto con documento pendiente${payable.expected_document_type ? ` (${payable.expected_document_type.toLowerCase()})` : ""}`
-            : payable.document_status === "documented"
-              ? "Cuenta directa documentada"
-              : "Cuenta por pagar directa",
-        net_amount: payable.total_amount,
-        vat_amount: 0,
-        additional_tax_amount: 0,
-        total_amount: payable.total_amount,
-        paid_amount: payable.paid_amount,
-        outstanding_amount: payable.outstanding_amount,
-        currency_code: payable.currency_code,
-        notes: payable.notes || payable.description,
-        payment_term_days: null,
-        due_date: payable.due_date,
-        payment_status: payable.is_reference
-          ? payable.reference_settled_at
-            ? "Liquidada (referencial)"
-            : "Pendiente de referencia"
-          : payable.status === "paid"
-            ? "Pagada"
-            : amount(payable.paid_amount ?? 0) > 0
-              ? "Abono registrado"
-              : directStatusLabel[payable.status],
-        payment_method: payable.is_reference
-          ? "Control de factoring"
-          : payable.status === "paid" || amount(payable.paid_amount ?? 0) > 0
-            ? "Orden de pago"
-            : null,
-        payment_bank: null,
-        payment_reference: payable.is_reference
-          ? payable.reference_settlement_note
-          : payable.payment_reference,
-        payment_date: payable.is_reference
-          ? (payable.reference_settled_at?.slice(0, 10) ?? null)
-          : (payable.paid_at?.slice(0, 10) ?? null),
-        attachment_path: null,
-        attachment_name: null,
-        attachment_mime_type: null,
-        attachment_size: null,
-        sii_document_type: null,
-        sii_folio: null,
-        sii_received_at: null,
-        sii_response_deadline: null,
-        sii_event_status: null,
-        sii_last_checked_at: null,
-        workflow_status: payable.status,
-        factoring_issued_document_id: payable.factoring_issued_document_id,
-        is_reference: payable.is_reference,
-        reference_settled_at: payable.reference_settled_at,
-        reference_settlement_note: payable.reference_settlement_note,
-      })),
+      ...directPayables.map((payable) => {
+        const group = expenseGroup(payable.category);
+        return {
+          id: payable.id,
+          source: "direct" as const,
+          expense_group: group,
+          category: payable.category,
+          category_detail: payable.category_detail,
+          supplier_counterparty_id: payable.supplier_counterparty_id,
+          // En remuneraciones el acreedor es la persona o institución beneficiaria.
+          supplier_name:
+            group === "payroll"
+              ? payable.beneficiary_name || payable.supplier_name
+              : payable.supplier_name,
+          supplier_tax_id: null,
+          document_number: payable.invoice_number || payable.payable_number,
+          payable_number: payable.payable_number,
+          issue_date: payable.issue_date,
+          document_type: payable.is_reference
+            ? "Referencia de factoring"
+            : group === "payroll"
+              ? `Remuneración · ${directPayableCategoryLabel(payable.category, payable.category_detail)}`
+              : payable.document_status === "pending_document"
+                ? `Gasto con documento pendiente${payable.expected_document_type ? ` (${payable.expected_document_type.toLowerCase()})` : ""}`
+                : payable.document_status === "documented"
+                  ? "Cuenta directa documentada"
+                  : "Cuenta por pagar directa",
+          net_amount: payable.total_amount,
+          vat_amount: 0,
+          additional_tax_amount: 0,
+          total_amount: payable.total_amount,
+          paid_amount: payable.paid_amount,
+          outstanding_amount: payable.outstanding_amount,
+          currency_code: payable.currency_code,
+          notes: payable.notes || payable.description,
+          payment_term_days: null,
+          due_date: payable.due_date,
+          payment_status: payable.is_reference
+            ? payable.reference_settled_at
+              ? "Liquidada (referencial)"
+              : "Pendiente de referencia"
+            : payable.status === "paid"
+              ? "Pagada"
+              : amount(payable.paid_amount ?? 0) > 0
+                ? "Abono registrado"
+                : directStatusLabel[payable.status],
+          payment_method: payable.is_reference
+            ? "Control de factoring"
+            : payable.status === "paid" || amount(payable.paid_amount ?? 0) > 0
+              ? "Orden de pago"
+              : null,
+          payment_bank: null,
+          payment_reference: payable.is_reference
+            ? payable.reference_settlement_note
+            : payable.payment_reference,
+          payment_date: payable.is_reference
+            ? (payable.reference_settled_at?.slice(0, 10) ?? null)
+            : (payable.paid_at?.slice(0, 10) ?? null),
+          attachment_path: null,
+          attachment_name: null,
+          attachment_mime_type: null,
+          attachment_size: null,
+          sii_document_type: null,
+          sii_folio: null,
+          sii_received_at: null,
+          sii_response_deadline: null,
+          sii_event_status: null,
+          sii_last_checked_at: null,
+          workflow_status: payable.status,
+          factoring_issued_document_id: payable.factoring_issued_document_id,
+          is_reference: payable.is_reference,
+          reference_settled_at: payable.reference_settled_at,
+          reference_settlement_note: payable.reference_settlement_note,
+        };
+      }),
     ],
     [documents, directPayables],
   );
@@ -627,13 +661,21 @@ export function ExpensesDashboard({
       (total, item) => total + signedTotal(item),
       0,
     );
+    const payroll = recognized
+      .filter((item) => item.expense_group === "payroll")
+      .reduce((total, item) => total + signedTotal(item), 0);
     return {
       expense,
+      payroll,
       paid,
       pending: expense - paid,
       invoices: invoices.length,
       credits: recognized.filter(isCredit).length,
-      suppliers: new Set(visible.map(supplierKey)).size,
+      suppliers: new Set(
+        visible
+          .filter((item) => item.expense_group === "supplier")
+          .map(supplierKey),
+      ).size,
       directPendingApproval: visible.filter(
         (item) => item.source === "direct" && item.workflow_status === "review",
       ).length,
@@ -646,7 +688,12 @@ export function ExpensesDashboard({
     >();
     for (const item of visible
       .filter(countsAsExpense)
-      .filter((item) => item.currency_code === "CLP" && !isGuide(item))) {
+      .filter(
+        (item) =>
+          item.currency_code === "CLP" &&
+          !isGuide(item) &&
+          item.expense_group === "supplier",
+      )) {
       const key = supplierKey(item);
       const current = bySupplier.get(key) ?? {
         name: item.supplier_name,
@@ -660,6 +707,21 @@ export function ExpensesDashboard({
     }
     return [...bySupplier.values()];
   }, [visible]);
+  // Sueldos, leyes sociales y finiquitos: cuenta 610200, fuera de la
+  // concentración de proveedores.
+  const payrollSummary = useMemo(
+    () =>
+      payrollBreakdown(
+        visible
+          .filter(countsAsExpense)
+          .filter(
+            (item) =>
+              item.currency_code === "CLP" && item.expense_group === "payroll",
+          )
+          .map((item) => ({ category: item.category, total: signedTotal(item) })),
+      ),
+    [visible],
+  );
 
   const todayValue = useMemo(() => {
     const now = new Date();
@@ -861,8 +923,8 @@ export function ExpensesDashboard({
       entries.push({
         group: {
           key,
-          name: item.supplier_name,
-          taxId: item.supplier_tax_id,
+          name: key === PAYROLL_GROUP_KEY ? PAYROLL_GROUP_LABEL : item.supplier_name,
+          taxId: key === PAYROLL_GROUP_KEY ? null : item.supplier_tax_id,
           items: groupItems,
           total: groupItems.reduce(
             (total, candidate) =>
@@ -1323,7 +1385,11 @@ export function ExpensesDashboard({
         <article className="kpi-card accent">
           <span>Pagado</span>
           <strong>{money.format(summary.paid)}</strong>
-          <small>Gasto del filtro: {money.format(summary.expense)}</small>
+          <small>
+            Gasto del filtro: {money.format(summary.expense)}
+            {summary.payroll !== 0 &&
+              ` · Remuneraciones: ${money.format(summary.payroll)}`}
+          </small>
         </article>
       </section>
       <section className="table-section">
@@ -1370,7 +1436,7 @@ export function ExpensesDashboard({
             <h2>Qué hay que hacer</h2>
             <p>
               Filtra por acción: decidir ante el SII, aprobar, pagar por
-              urgencia de vencimiento, o revisar lo referencial (guías
+              urgencia de vencimiento, o revisar lo que no genera pago (guías
               vinculadas, notas de crédito aplicadas y factoring).
             </p>
           </div>
@@ -1444,8 +1510,9 @@ export function ExpensesDashboard({
               <option value="all">Todos los proveedores</option>
               {suppliers.map((item) => (
                 <option key={supplierKey(item)} value={supplierKey(item)}>
-                  {item.supplier_name}
-                  {item.supplier_tax_id ? ` · ${item.supplier_tax_id}` : ""}
+                  {item.expense_group === "payroll"
+                    ? `${PAYROLL_GROUP_LABEL} (sueldos, leyes sociales y finiquitos)`
+                    : `${item.supplier_name}${item.supplier_tax_id ? ` · ${item.supplier_tax_id}` : ""}`}
                 </option>
               ))}
             </select>
@@ -1784,7 +1851,8 @@ export function ExpensesDashboard({
             <h2>Concentración de gasto registrado</h2>
             <p>
               Incluye documentos y cuentas directas aprobadas; las pendientes de
-              aprobación se exhiben arriba, pero aún no alteran el gasto.
+              aprobación se exhiben arriba, pero aún no alteran el gasto. Las
+              remuneraciones se muestran aparte: no son gasto de proveedores.
             </p>
           </div>
         </div>
@@ -1820,6 +1888,44 @@ export function ExpensesDashboard({
           </table>
         </div>
       </section>
+      {payrollSummary.length > 0 && (
+        <section className="table-section">
+          <div className="table-heading">
+            <div>
+              <span className="panel-label">REMUNERACIONES</span>
+              <h2>Sueldos, leyes sociales y finiquitos</h2>
+              <p>
+                Obligaciones con personas o instituciones previsionales. Se
+                imputan a 610200 Remuneraciones y cargas sociales y se pagan
+                como flujo operacional a empleados; no son facturas de
+                proveedor.
+              </p>
+            </div>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tipo</th>
+                  <th className="money-col">Registros</th>
+                  <th className="money-col">Gasto registrado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payrollSummary.map((item) => (
+                  <tr key={item.category}>
+                    <td>
+                      <strong>{item.label}</strong>
+                    </td>
+                    <td className="money-col">{item.records}</td>
+                    <td className="money-col">{money.format(item.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
       {selectedDocument && documentDraft && (
         <div
           className="modal-backdrop received-document-backdrop"
@@ -2225,7 +2331,11 @@ export function ExpensesDashboard({
           >
             <div className="modal-header">
               <div>
-                <span className="eyebrow">CUENTA POR PAGAR DIRECTA</span>
+                <span className="eyebrow">
+                  {directPayableDetail.expense_group === "payroll"
+                    ? "REMUNERACIÓN · CUENTA DIRECTA"
+                    : "CUENTA POR PAGAR DIRECTA"}
+                </span>
                 <h2 id="direct-payable-title">
                   {directPayableDetail.supplier_name}
                 </h2>
@@ -2307,7 +2417,9 @@ export function ExpensesDashboard({
                 </div>
                 <div className="form-grid">
                   <label>
-                    Proveedor
+                    {directPayableDetail.expense_group === "payroll"
+                      ? "Persona beneficiaria"
+                      : "Proveedor"}
                     <input
                       required
                       disabled={!canManage}
@@ -2342,18 +2454,20 @@ export function ExpensesDashboard({
                       value={displayDate(directPayableDetail.due_date)}
                     />
                   </label>
-                  <label>
-                    Folio de factura
-                    <input
-                      disabled={!canManage}
-                      value={directInvoiceNumber}
-                      maxLength={80}
-                      placeholder="Ingresa el folio del respaldo"
-                      onChange={(event) =>
-                        setDirectInvoiceNumber(event.target.value)
-                      }
-                    />
-                  </label>
+                  {directPayableDetail.expense_group !== "payroll" && (
+                    <label>
+                      Folio de factura
+                      <input
+                        disabled={!canManage}
+                        value={directInvoiceNumber}
+                        maxLength={80}
+                        placeholder="Ingresa el folio del respaldo"
+                        onChange={(event) =>
+                          setDirectInvoiceNumber(event.target.value)
+                        }
+                      />
+                    </label>
+                  )}
                   <label>
                     Agregar respaldo
                     <input
@@ -2379,9 +2493,9 @@ export function ExpensesDashboard({
                   </label>
                 </div>
                 <p className="form-note">
-                  Después de aprobación puedes corregir proveedor y folio, y
-                  adjuntar respaldos. El monto, fechas y aprobación se mantienen
-                  protegidos.
+                  {directPayableDetail.expense_group === "payroll"
+                    ? "Remuneración: no lleva folio de factura. Después de aprobación puedes corregir la persona beneficiaria y adjuntar respaldos (liquidación, finiquito firmado). El monto, fechas y aprobación se mantienen protegidos."
+                    : "Después de aprobación puedes corregir proveedor y folio, y adjuntar respaldos. El monto, fechas y aprobación se mantienen protegidos."}
                 </p>
                 <div className="form-actions">
                   <button

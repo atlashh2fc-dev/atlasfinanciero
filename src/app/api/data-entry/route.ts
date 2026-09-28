@@ -5,6 +5,7 @@ import {
 } from "@/lib/admin-access";
 import { findCounterpartyByRut, upsertCounterpartyRole } from "@/lib/counterparties";
 import { canonicalTaxId } from "@/lib/rut";
+import { PAYROLL_NOT_SUPPLIER_MESSAGE, payrollCategoryHint } from "@/lib/expense-categories";
 import {
   classifyDuplicates,
   documentKind,
@@ -466,6 +467,14 @@ export async function POST(request: NextRequest) {
       (confirmDuplicate && !duplicateReason) ||
       (upload !== null && !(upload instanceof File))
     ) return NextResponse.json({ error: "invalid_pending_expense" }, { status: 400 });
+    // Un finiquito, sueldo o cotización no es un gasto de proveedor que espera
+    // factura: se registra como remuneración en Cuentas por pagar.
+    if (category === "other" && payrollCategoryHint(categoryDetail))
+      return NextResponse.json({
+        error: "payroll_category_required",
+        message: PAYROLL_NOT_SUPPLIER_MESSAGE,
+        suggestedCategory: payrollCategoryHint(categoryDetail),
+      }, { status: 400 });
     if (upload instanceof File && (upload.size === 0 || upload.size > 52_428_800 || !acceptedFileTypes.has(upload.type))) {
       return NextResponse.json({ error: "invalid_document_attachment" }, { status: 400 });
     }

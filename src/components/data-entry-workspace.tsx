@@ -209,7 +209,7 @@ export function DataEntryWorkspace({ organizationId, organizationName, organizat
       if (payload?.error === "possible_duplicate" && payload.matches?.length) {
         setDuplicatePrompt({ mode, form, formElement, matches: payload.matches, reason: "" });
       } else {
-        setMessage(payload?.error === "duplicate_payable_folio" && payload.message
+        setMessage((payload?.error === "duplicate_payable_folio" || payload?.error === "payroll_category_required") && payload.message
           ? payload.message
           : payload?.error === "duplicate_received_document"
             ? "Esta factura ya está registrada para el mismo proveedor, tipo y folio."
