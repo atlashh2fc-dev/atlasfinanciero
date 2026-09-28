@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   PendingDocumentBadge,
   PendingDocumentLinkPanel,
@@ -971,6 +972,7 @@ export function ProcureToPayWorkbench({
             amount(item.outstanding_amount ?? item.authorized_amount ?? item.amount) > 0,
         ),
       }))
+      .filter(({ items }) => items.length > 0)
       .sort(
         (left, right) =>
           left.batch.scheduled_for.localeCompare(right.batch.scheduled_for) ||
@@ -3635,7 +3637,7 @@ export function ProcureToPayWorkbench({
           </form>
         </section>
       )}
-      {weekDetail && (
+      {weekDetail && createPortal(
         <div
           className="modal-backdrop p2p-week-backdrop"
           role="presentation"
@@ -3797,7 +3799,8 @@ export function ProcureToPayWorkbench({
               </button>
             </div>
           </section>
-        </div>
+        </div>,
+        document.body,
       )}
       {detail && (
         <div
