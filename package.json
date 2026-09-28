@@ -16,6 +16,9 @@
     "test:payment-execution": "node --experimental-strip-types --test tests/payment-execution.test.ts",
     "test:virtual-secretary": "node --experimental-strip-types --test tests/virtual-secretary.test.ts",
     "test:payment-capabilities": "node --experimental-strip-types --test tests/payment-capabilities.test.ts",
+    "test:rut": "node --experimental-strip-types --test tests/rut.test.ts",
+    "test:pending-documents": "node --experimental-strip-types --test tests/pending-documents.test.ts",
+    "test:search": "node --experimental-strip-types --test tests/search.test.ts",
     "verify:crm": "node scripts/verify-crm-workspace.mjs",
     "verify:contrast": "node scripts/verify-evolution-total-contrast.mjs",
     "verify:public-market": "node scripts/verify-public-market-intelligence.mjs"

@@ -22,6 +22,9 @@ export type RcvEntry = {
   vatAmount: number | null;
   otherTaxesAmount: number | null;
   totalAmount: number | null;
+  /** Documento citado por NC/ND (detTipoDocRef / detFolioDocRef). */
+  referenceDocumentType: number | null;
+  referenceFolio: string | null;
   raw: Record<string, unknown>;
 };
 
@@ -40,6 +43,11 @@ function numeric(value: unknown): number | null {
   if (!candidate) return null;
   const parsed = Number(candidate);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function positiveInteger(value: unknown) {
+  const parsed = numeric(value);
+  return parsed && parsed > 0 ? Math.trunc(parsed) : null;
 }
 
 // El SII entrega fechas como "dd/mm/yyyy" o "dd/mm/yyyy hh:mm:ss".
@@ -196,6 +204,8 @@ function detailEntries(response: unknown): RcvEntry[] {
       vatAmount: numeric(pick(row, "detMntIVA", "montoIva")),
       otherTaxesAmount: numeric(pick(row, "detMntTotalOtrosImp", "detMntImp", "otrosImpuestos")),
       totalAmount: numeric(pick(row, "detMntTotal", "montoTotal")),
+      referenceDocumentType: positiveInteger(pick(row, "detTipoDocRef")),
+      referenceFolio: positiveInteger(pick(row, "detFolioDocRef"))?.toString() ?? null,
       raw: row,
     });
   }
@@ -204,7 +214,11 @@ function detailEntries(response: unknown): RcvEntry[] {
 
 // Descarga el registro completo de un período: primero el resumen por tipo de
 // documento y luego el detalle de cada tipo con documentos.
-export async function fetchRcvPeriod(taxpayerRut: string, period: string, operation: RcvOperation, sharedToken?: string) {
+// Estado contable del RCV: REGISTRO (aceptados o con plazo vencido) y, sólo en
+// compras, PENDIENTE (dentro de los 8 días para aceptar o reclamar).
+export type RcvAccountingState = "REGISTRO" | "PENDIENTE";
+
+export async function fetchRcvPeriod(taxpayerRut: string, period: string, operation: RcvOperation, sharedToken?: string, accountingState: RcvAccountingState = "REGISTRO") {
   const rut = parseRut(taxpayerRut);
   if (!rut) throw new Error("sii_rcv_invalid_rut");
   if (!/^\d{6}$/.test(period)) throw new Error("sii_rcv_invalid_period");
@@ -214,7 +228,7 @@ export async function fetchRcvPeriod(taxpayerRut: string, period: string, operat
     rutEmisor: rut.body,
     dvEmisor: rut.dv,
     ptributario: period,
-    estadoContab: "REGISTRO",
+    estadoContab: accountingState,
     operacion: operation,
   };
   const summary = await callRcv("getResumen", token, baseData);

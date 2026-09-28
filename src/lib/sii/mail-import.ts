@@ -3,6 +3,9 @@ import { XMLParser } from "fast-xml-parser";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { syncCounterpartyRole } from "@/lib/counterparties";
+import { canonicalTaxId, rutKey, sameRut } from "@/lib/rut";
+import { parseDteReferences, purchaseOrderReference, type DteReference } from "@/lib/sii/dte-references";
 
 type ImportedLine = {
   lineNumber: number;
@@ -24,11 +27,13 @@ type ParsedDte = {
   dueDate: string | null;
   supplierName: string;
   supplierTaxId: string;
+  receiverTaxId: string | null;
   netAmount: number;
   vatAmount: number;
   additionalTaxAmount: number;
   totalAmount: number;
   purchaseOrderReference: string | null;
+  references: DteReference[];
   lines: ImportedLine[];
 };
 
@@ -95,16 +100,19 @@ function parseDte(xml: Buffer): ParsedDte {
   const header = item(document?.Encabezado);
   const id = item(header?.IdDoc);
   const issuer = item(header?.Emisor);
+  const receiver = item(header?.Receptor);
   const totals = item(header?.Totales);
   if (!document || !id || !issuer || !totals) throw new Error("sii_xml_structure_invalid");
   const documentType = Math.trunc(numberValue(id.TipoDTE));
   const folio = Math.trunc(numberValue(id.Folio));
   const issueDate = dateValue(id.FchEmis);
-  const supplierTaxId = text(issuer.RUTEmisor);
+  const supplierTaxId = canonicalTaxId(text(issuer.RUTEmisor)) ?? "";
   const supplierName = text(issuer.RznSoc) || text(issuer.RznSocEmisor);
   if (!documentType || !folio || !issueDate || !supplierTaxId || !supplierName) throw new Error("sii_xml_identity_invalid");
-  const references = list(document.Referencia);
-  const purchaseOrderReference = references.map((reference) => text(reference.FolioRef)).find(Boolean) ?? null;
+  // Todas las referencias se conservan; la OC sólo sale de una referencia
+  // tipo 801 (antes se tomaba el primer folio citado, aunque fuera una guía o
+  // la factura que anula una nota de crédito).
+  const references = parseDteReferences(document.Referencia);
   const lines = list(document.Detalle).map((detail, index) => ({
     lineNumber: Math.trunc(numberValue(detail.NroLinDet)) || index + 1,
     itemCode: text(detail.CdgItem && item(detail.CdgItem)?.VlrCodigo) || null,
@@ -124,13 +132,24 @@ function parseDte(xml: Buffer): ParsedDte {
     dueDate: dateValue(id.FchVenc),
     supplierName,
     supplierTaxId,
+    receiverTaxId: canonicalTaxId(text(receiver?.RUTRecep)),
     netAmount: numberValue(totals.MntNeto),
     vatAmount: numberValue(totals.IVA),
     additionalTaxAmount: numberValue(totals.MntImp),
     totalAmount: numberValue(totals.MntTotal),
-    purchaseOrderReference,
+    purchaseOrderReference: purchaseOrderReference(references),
+    references,
     lines,
   };
+}
+
+// Un XML sólo es una factura recibida por la organización si el receptor es
+// la propia organización y el emisor es un tercero. Sin RUT propio configurado
+// no se puede validar y se conserva el comportamiento anterior.
+function assertReceivedByOrganization(dte: ParsedDte, organizationTaxId: string | null) {
+  if (!rutKey(organizationTaxId)) return;
+  if (sameRut(dte.supplierTaxId, organizationTaxId)) throw new Error("sii_xml_issued_by_organization");
+  if (dte.receiverTaxId && !sameRut(dte.receiverTaxId, organizationTaxId)) throw new Error("sii_xml_receiver_mismatch");
 }
 
 function mailConfig() {
@@ -251,27 +270,24 @@ async function attachInvoiceFile(admin: SupabaseClient, organizationId: string, 
   if (updateError) throw new Error("sii_invoice_file_attach_failed");
 }
 
-async function importXml(admin: SupabaseClient, organizationId: string, xml: Buffer, messageId: string, attachmentIndex: number) {
+async function importXml(admin: SupabaseClient, organizationId: string, organizationTaxId: string | null, xml: Buffer, messageId: string, attachmentIndex: number) {
   const dte = parseDte(xml);
+  assertReceivedByOrganization(dte, organizationTaxId);
   const checksum = createHash("sha256").update(xml).digest("hex");
   const [{ data: byChecksum }, { data: byIdentity }, { data: byDocumentNumber }] = await Promise.all([
-    admin.from("received_documents").select("id").eq("organization_id", organizationId).eq("sii_xml_sha256", checksum).maybeSingle(),
-    admin.from("received_documents").select("id").eq("organization_id", organizationId).eq("supplier_tax_id", dte.supplierTaxId).eq("sii_document_type", dte.documentType).eq("sii_folio", dte.folio).maybeSingle(),
-    admin.from("received_documents").select("id").eq("organization_id", organizationId).eq("supplier_tax_id", dte.supplierTaxId).eq("document_number", String(dte.folio)).is("sii_document_type", null).maybeSingle(),
+    admin.from("received_documents").select("id, supplier_counterparty_id").eq("organization_id", organizationId).eq("sii_xml_sha256", checksum).maybeSingle(),
+    admin.from("received_documents").select("id, supplier_counterparty_id").eq("organization_id", organizationId).eq("supplier_tax_id", dte.supplierTaxId).eq("sii_document_type", dte.documentType).eq("sii_folio", dte.folio).maybeSingle(),
+    admin.from("received_documents").select("id, supplier_counterparty_id").eq("organization_id", organizationId).eq("supplier_tax_id", dte.supplierTaxId).eq("document_number", String(dte.folio)).is("sii_document_type", null).maybeSingle(),
   ]);
-  const existingId = byChecksum?.id ?? byIdentity?.id ?? byDocumentNumber?.id ?? null;
-  const { data: counterparty } = await admin.from("counterparties").upsert({
-    organization_id: organizationId,
-    legal_name: dte.supplierName,
-    trade_name: dte.supplierName,
-    tax_id: dte.supplierTaxId,
-    kind: "supplier",
-  }, { onConflict: "organization_id,tax_id" }).select("id").single();
+  const existing = byChecksum ?? byIdentity ?? byDocumentNumber ?? null;
+  const existingId = existing?.id ?? null;
+  // Un documento ya vinculado (p. ej. tras consolidar fichas) conserva su ficha.
+  const counterpartyId = existing?.supplier_counterparty_id ?? await syncCounterpartyRole(admin, organizationId, dte.supplierTaxId, dte.supplierName, "supplier");
   const storagePath = `${organizationId}/sii/${checksum}.xml`;
   await admin.storage.from("received-document-files").upload(storagePath, xml, { contentType: "application/xml", upsert: false }).catch(() => null);
   const documentData = {
     organization_id: organizationId,
-    supplier_counterparty_id: counterparty?.id ?? null,
+    ...(counterpartyId ? { supplier_counterparty_id: counterpartyId } : {}),
     supplier_name: dte.supplierName,
     supplier_tax_id: dte.supplierTaxId,
     document_number: String(dte.folio),
@@ -293,6 +309,7 @@ async function importXml(admin: SupabaseClient, organizationId: string, xml: Buf
     sii_xml_sha256: checksum,
     sii_mail_message_id: messageId,
     sii_purchase_order_reference: dte.purchaseOrderReference,
+    sii_references: dte.references,
   };
   const result = existingId
     ? await admin.from("received_documents").update(documentData).eq("id", existingId).eq("organization_id", organizationId).select("id").single()
@@ -317,6 +334,9 @@ async function importXml(admin: SupabaseClient, organizationId: string, xml: Buf
 
 export async function syncSiiMailbox(admin: SupabaseClient, organizationId: string, messageLimit = 25) {
   const config = mailConfig();
+  const { data: integration, error: integrationError } = await admin.from("sii_integrations").select("taxpayer_rut").eq("organization_id", organizationId).maybeSingle();
+  if (integrationError) throw new Error("sii_mail_integration_unavailable");
+  const organizationTaxId = (integration?.taxpayer_rut as string | null | undefined) ?? null;
   const client = imapClient(config);
   let created = 0;
   let updated = 0;
@@ -370,7 +390,7 @@ export async function syncSiiMailbox(admin: SupabaseClient, organizationId: stri
           for (const [index, attachment] of xmlAttachments.entries()) {
             try {
               stage = "import_xml";
-              const result = await importXml(admin, organizationId, attachment.content, messageId, index + 1);
+              const result = await importXml(admin, organizationId, organizationTaxId, attachment.content, messageId, index + 1);
               if (result.outcome === "created") created += 1;
               else updated += 1;
               const invoiceFile = matchingInvoiceFile(result.dte, (mail.attachments ?? []) as { contentType: string; filename?: string; content: Buffer; size?: number }[]);

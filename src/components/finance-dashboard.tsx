@@ -23,6 +23,8 @@ import { forecastMonthly2026 } from "@/data/forecast-2026";
 import { BillingOperations } from "@/components/billing-operations";
 import { AccountsReceivable } from "@/components/accounts-receivable";
 import { createClient } from "@/lib/supabase/client";
+import { matchesSearch, normalizeSearchText } from "@/lib/search";
+import { rutKey } from "@/lib/rut";
 import { AdministrationConsole } from "@/components/administration-console";
 import { PayrollDashboard } from "@/components/payroll-dashboard";
 import { PayrollProvisions } from "@/components/payroll-provisions";
@@ -1195,6 +1197,7 @@ function ExecutiveDashboard({
 }
 
 type CustomerEvolution = {
+  key: string;
   client: string;
   total: number;
   documents: number;
@@ -1259,20 +1262,51 @@ const customerWorkspaceViews: Array<{
   },
 ];
 
+// Un cliente es una ficha (counterparty_id), no un texto libre: "Link
+// Solution Kovacs", "Link Solution Telefonia" y "GRUPO LS SPA" son la misma
+// empresa. Sin ficha se agrupa por RUT (usando la ficha que ese RUT tenga en
+// otros documentos) y, en último caso, por nombre normalizado.
+function customerKeyResolver(records: InvoiceRecord[]) {
+  const counterpartyByRut = new Map<string, string>();
+  for (const record of records) {
+    const counterpartyId = (record as CanonicalInvoiceRecord).counterpartyId;
+    const rut = rutKey(record.recipientRut)?.replace(/^0+/, "");
+    if (counterpartyId && rut && !counterpartyByRut.has(rut)) counterpartyByRut.set(rut, counterpartyId);
+  }
+  return (record: InvoiceRecord) => {
+    const rut = rutKey(record.recipientRut)?.replace(/^0+/, "");
+    const counterpartyId = (record as CanonicalInvoiceRecord).counterpartyId ?? (rut ? counterpartyByRut.get(rut) : undefined);
+    if (counterpartyId) return `customer:${counterpartyId}`;
+    if (rut) return `rut:${rut}`;
+    return `name:${normalizeSearchText(record.client || record.recipient || "No informado")}`;
+  };
+}
+
 function buildCustomerEvolution(records: InvoiceRecord[]) {
+  const keyOf = customerKeyResolver(records);
+  // Nombre a mostrar: la razón social más frecuente del grupo (receptor del
+  // DTE); si no hay, el nombre comercial más frecuente.
+  const nameVotes = new Map<string, Map<string, number>>();
   const result = records.reduce<Record<string, CustomerEvolution>>(
     (accumulator, record) => {
       if (isPurchaseOrderDocument(record)) return accumulator;
-      const client = record.client || record.recipient || "No informado";
-      accumulator[client] ??= {
-        client,
+      const key = keyOf(record);
+      const votes = nameVotes.get(key) ?? new Map<string, number>();
+      const legalName = record.recipient?.trim();
+      const tradeName = record.client?.trim();
+      if (legalName) votes.set(`1:${legalName}`, (votes.get(`1:${legalName}`) ?? 0) + 1);
+      else if (tradeName) votes.set(`0:${tradeName}`, (votes.get(`0:${tradeName}`) ?? 0) + 1);
+      nameVotes.set(key, votes);
+      accumulator[key] ??= {
+        key,
+        client: "No informado",
         total: 0,
         documents: 0,
         withPaymentDate: 0,
         pendingNet: 0,
         byMonth: {},
       };
-      const current = accumulator[client];
+      const current = accumulator[key];
       const amount = recognizedNetAmount(record);
       current.total += amount;
       current.documents += 1;
@@ -1296,6 +1330,12 @@ function buildCustomerEvolution(records: InvoiceRecord[]) {
     },
     {},
   );
+  for (const customer of Object.values(result)) {
+    const [best] = [...(nameVotes.get(customer.key) ?? new Map<string, number>()).entries()]
+      .sort(([firstName, firstVotes], [secondName, secondVotes]) =>
+        secondName[0].localeCompare(firstName[0]) || secondVotes - firstVotes);
+    if (best) customer.client = best[0].slice(2);
+  }
   return Object.values(result).sort(
     (first, second) => second.total - first.total,
   );
@@ -1367,19 +1407,16 @@ function CustomerModule({
     (total, client) => total + client.withPaymentDate,
     0,
   );
-  const pendingClientDocuments = useMemo(
-    () =>
-      selectedPendingClient
-        ? customerRecords.filter(
-            (record) =>
-              !isPurchaseOrderDocument(record) &&
-              (record.client || record.recipient || "No informado") ===
-                selectedPendingClient.client &&
-              isOutstandingStatus(record.status),
-          )
-        : [],
-    [customerRecords, selectedPendingClient],
-  );
+  const pendingClientDocuments = useMemo(() => {
+    if (!selectedPendingClient) return [];
+    const keyOf = customerKeyResolver(customerRecords);
+    return customerRecords.filter(
+      (record) =>
+        !isPurchaseOrderDocument(record) &&
+        keyOf(record) === selectedPendingClient.key &&
+        isOutstandingStatus(record.status),
+    );
+  }, [customerRecords, selectedPendingClient]);
   const pendingWithoutDueDate = pendingClientDocuments.filter(
     (record) => !record.dueDate,
   );
@@ -1499,7 +1536,7 @@ function CustomerModule({
               </div>
               <div className="customer-workspace-ranking">
                 {customers.slice(0, 5).map((customer, index) => (
-                  <div key={customer.client}>
+                  <div key={customer.key}>
                     <span>{String(index + 1).padStart(2, "0")}</span>
                     <div><strong>{customer.client}</strong><small>{customer.documents} documento(s)</small></div>
                     <b>{formatMoney(customer.total)}<small>{totalNet ? `${number.format(customer.total / totalNet * 100)}%` : "0%"}</small></b>
@@ -1518,7 +1555,7 @@ function CustomerModule({
               </div>
               <div className="customer-workspace-ranking is-pending">
                 {customers.filter((customer) => customer.pendingNet > 0).sort((left, right) => right.pendingNet - left.pendingNet).slice(0, 5).map((customer) => (
-                  <button type="button" key={customer.client} onClick={() => setSelectedPendingClient(customer)}>
+                  <button type="button" key={customer.key} onClick={() => setSelectedPendingClient(customer)}>
                     <div><strong>{customer.client}</strong><small>Revisar documentos y vencimientos</small></div>
                     <b>{formatMoney(customer.pendingNet)}<small>Ver detalle →</small></b>
                   </button>
@@ -1636,7 +1673,7 @@ function CustomerModule({
               </thead>
               <tbody>
                 {evolutionCustomers.map((customer) => (
-                  <tr key={customer.client}>
+                  <tr key={customer.key}>
                     <td>
                       <strong>{customer.client}</strong>
                       <small>
@@ -1718,7 +1755,7 @@ function CustomerModule({
               </thead>
               <tbody>
                 {evolutionCustomers.map((customer) => (
-                  <tr key={customer.client}>
+                  <tr key={customer.key}>
                     <td>
                       <strong>{customer.client}</strong>
                     </td>
@@ -2194,14 +2231,6 @@ function normalizeDocumentType(value: string | null) {
   );
 }
 
-function normalizeSearchText(value: string | null | undefined) {
-  return (value ?? "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase("es-CL")
-    .trim();
-}
-
 function mapStoredDocument(
   document: StoredDocument,
   previous?: InvoiceRecord | null,
@@ -2471,20 +2500,20 @@ export function FinanceDashboard() {
       ),
     [yearFilteredRecords, month, status],
   );
+  const isSearchingIncome = normalizeSearchText(incomeSearch).length > 0;
   const incomeFiltered = useMemo(() => {
-    const search = normalizeSearchText(incomeSearch);
-    if (!search) return filtered;
+    if (!isSearchingIncome) return filtered;
     return filtered.filter((record) =>
-      normalizeSearchText([
+      matchesSearch(incomeSearch, [
         record.client,
         record.recipient,
         record.recipientRut,
         record.invoiceNumber,
         record.documentType,
         record.notes,
-      ].filter(Boolean).join(" ")).includes(search),
+      ]),
     );
-  }, [filtered, incomeSearch]);
+  }, [filtered, incomeSearch, isSearchingIncome]);
   const incomeCustomerGroups = useMemo(() => {
     const groups = new Map<string, {
       key: string;
@@ -3830,7 +3859,9 @@ export function FinanceDashboard() {
                   </thead>
                   <tbody>
                     {incomeCustomerGroups.map((group) => {
-                      const isExpanded = expandedIncomeCustomers.includes(group.key);
+                      // Al buscar, los clientes coincidentes se muestran abiertos para que
+                      // el documento encontrado quede visible sin clics adicionales.
+                      const isExpanded = isSearchingIncome || expandedIncomeCustomers.includes(group.key);
                       return <Fragment key={group.key}>
                         <tr>
                           <td><strong>{group.name}</strong><small>{group.rut ? `RUT ${group.rut}` : group.legalName || "Sin RUT informado"}</small></td>

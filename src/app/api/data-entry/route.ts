@@ -3,6 +3,18 @@ import {
   isUuid,
   requireOrganizationDataEntryAccess,
 } from "@/lib/admin-access";
+import { findCounterpartyByRut, upsertCounterpartyRole } from "@/lib/counterparties";
+import { canonicalTaxId } from "@/lib/rut";
+import {
+  classifyDuplicates,
+  documentKind,
+  duplicateFolioMessage,
+  isExpectedDocumentType,
+  isPendingExpenseCategory,
+  parseDuplicateFolioError,
+  validDuplicateReason,
+  type DuplicateMatch,
+} from "@/lib/pending-documents";
 
 const acceptedFileTypes = new Set(["application/pdf", "image/jpeg", "image/png"]);
 const receivedDocumentTypes = new Set([
@@ -61,12 +73,7 @@ function amount(value: FormDataEntryValue | null) {
 }
 
 function taxId(value: FormDataEntryValue | null) {
-  const raw = text(value, 40);
-  if (!raw) return null;
-  const compact = raw.replace(/[.\s-]+/g, "").toUpperCase();
-  return /^[0-9]{7,8}[0-9K]$/.test(compact)
-    ? `${compact.slice(0, -1)}-${compact.slice(-1)}`
-    : raw;
+  return canonicalTaxId(text(value, 40));
 }
 
 function dueMonth(value: string | null) {
@@ -74,6 +81,60 @@ function dueMonth(value: string | null) {
   return new Intl.DateTimeFormat("es-CL", { month: "long" })
     .format(new Date(`${value}T12:00:00`))
     .replace(/^./, (letter) => letter.toUpperCase());
+}
+
+type DataEntrySupabase = NonNullable<Awaited<ReturnType<typeof requireOrganizationDataEntryAccess>>["supabase"]>;
+
+const pendingExpenseStatusLabels: Record<string, string> = {
+  draft: "Borrador",
+  review: "En aprobación",
+  approved: "Aprobado · documento pendiente",
+  rejected: "Rechazado",
+  paid: "Pagado · documento pendiente",
+  cancelled: "Anulado",
+};
+
+/**
+ * Advertencia previa a crear un costo o gasto: un folio ya registrado para el
+ * proveedor (en documentos recibidos o cuentas directas) bloquea; un mismo
+ * proveedor y monto con fecha cercana exige confirmar con un motivo.
+ */
+async function duplicateResponse(
+  supabase: DataEntrySupabase,
+  params: {
+    organizationId: string;
+    supplier: { id: string; tax_id: string | null; legal_name: string; trade_name: string | null };
+    folio: string | null;
+    total: number;
+    issueDate: string;
+    confirmReason: string | null;
+  },
+) {
+  const { data, error } = await supabase.rpc("find_payable_duplicates", {
+    p_organization_id: params.organizationId,
+    p_supplier_counterparty_id: params.supplier.id,
+    p_supplier_tax_id: params.supplier.tax_id,
+    p_supplier_name: params.supplier.trade_name?.trim() || params.supplier.legal_name,
+    p_folio: params.folio,
+    p_total: params.total,
+    p_issue_date: params.issueDate,
+  });
+  // Si la función aún no existe en la base no se bloquea el registro: los
+  // triggers de folio siguen protegiendo el caso exacto.
+  if (error) return null;
+  const { sameFolio, sameAmount } = classifyDuplicates((data ?? []) as DuplicateMatch[]);
+  if (sameFolio.length) {
+    const first = sameFolio[0];
+    return NextResponse.json({
+      error: "duplicate_payable_folio",
+      message: duplicateFolioMessage({ source: first.source, id: first.id, number: first.number, label: first.source === "received" ? first.document_type : first.number }),
+      matches: sameFolio,
+    }, { status: 409 });
+  }
+  if (sameAmount.length && !params.confirmReason) {
+    return NextResponse.json({ error: "possible_duplicate", matches: sameAmount }, { status: 409 });
+  }
+  return null;
 }
 
 export async function GET(request: NextRequest) {
@@ -108,7 +169,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ signedUrl: signed.signedUrl, fileName });
   }
 
-  const [customers, suppliers, costCenters, ownSales, costs, incomeHistory, supportingDocuments] = await Promise.all([
+  const [customers, suppliers, costCenters, ownSales, costs, incomeHistory, supportingDocuments, pendingExpenses] = await Promise.all([
     context.supabase
       .from("counterparties")
       .select("id, legal_name, trade_name, tax_id")
@@ -149,6 +210,14 @@ export async function GET(request: NextRequest) {
       .from("data_entry_supporting_documents")
       .select("id, category, issued_document_id, issued_document_payment_id, notes, file_name, created_at")
       .eq("organization_id", organizationId)
+      .order("created_at", { ascending: false })
+      .limit(200),
+    context.supabase
+      .from("direct_payables")
+      .select("id, payable_number, supplier_name, invoice_number, description, issue_date, total_amount, status, document_status, expected_document_type, received_document_id, created_at")
+      .eq("organization_id", organizationId)
+      .eq("created_by", context.user?.id ?? "")
+      .neq("document_status", "not_required")
       .order("created_at", { ascending: false })
       .limit(200),
   ]);
@@ -230,6 +299,26 @@ export async function GET(request: NextRequest) {
           createdAt: document.created_at,
         };
       }),
+      // Antes de aplicar la migración de documentos pendientes la consulta
+      // falla; el historial se carga igual sin estos registros.
+      ...(pendingExpenses.error ? [] : pendingExpenses.data ?? []).map((payable) => ({
+        id: payable.id,
+        kind: "pending" as const,
+        number: payable.invoice_number || payable.payable_number,
+        documentType: payable.document_status === "documented"
+          ? "Documento vinculado"
+          : `${payable.expected_document_type ?? "Documento"} pendiente`,
+        counterpart: payable.supplier_name,
+        issuedOn: payable.issue_date,
+        amount: payable.total_amount,
+        status: payable.document_status === "documented"
+          ? "Documento vinculado"
+          : pendingExpenseStatusLabels[payable.status] ?? payable.status,
+        attachmentName: null,
+        hasAttachment: false,
+        existingProof: false,
+        createdAt: payable.created_at,
+      })),
     ].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
   });
 }
@@ -241,7 +330,7 @@ export async function POST(request: NextRequest) {
   const form = await request.formData();
   const organizationId = form.get("organizationId");
   const action = form.get("action");
-  if (!isUuid(organizationId) || !["cost", "support", "create_supplier"].includes(typeof action === "string" ? action : "")) return NextResponse.json({ error: "invalid_data_entry_action" }, { status: 400 });
+  if (!isUuid(organizationId) || !["cost", "support", "create_supplier", "pending_expense"].includes(typeof action === "string" ? action : "")) return NextResponse.json({ error: "invalid_data_entry_action" }, { status: 400 });
   const context = await requireOrganizationDataEntryAccess(organizationId);
   if (context.error || !context.supabase || !context.user) return NextResponse.json({ error: context.error }, { status: context.status });
 
@@ -255,13 +344,8 @@ export async function POST(request: NextRequest) {
     if (!legalName) return NextResponse.json({ error: "invalid_supplier" }, { status: 400 });
 
     if (supplierTaxId) {
-      const { data: existing, error: existingError } = await context.supabase
-        .from("counterparties")
-        .select("id, legal_name, trade_name, tax_id, kind, is_active")
-        .eq("organization_id", organizationId)
-        .eq("tax_id", supplierTaxId)
-        .is("merged_into_counterparty_id", null)
-        .maybeSingle();
+      // Búsqueda por RUT normalizado: "76.123.456-7" y "761234567" son la misma ficha.
+      const { data: existing, error: existingError } = await findCounterpartyByRut(context.supabase, organizationId, supplierTaxId);
       if (existingError) return NextResponse.json({ error: "unable_to_check_supplier" }, { status: 500 });
       if (existing && ["supplier", "both"].includes(existing.kind) && existing.is_active) {
         return NextResponse.json({
@@ -272,6 +356,16 @@ export async function POST(request: NextRequest) {
             tax_id: existing.tax_id,
           },
           created: false,
+        });
+      }
+      // Un cliente activo con el mismo RUT también pasa a ser proveedor ("both").
+      if (existing?.is_active) {
+        const { id, error: promoteError } = await upsertCounterpartyRole(context.supabase, organizationId, supplierTaxId, legalName, "supplier");
+        if (promoteError || id !== existing.id) return NextResponse.json({ error: "unable_to_create_supplier" }, { status: 409 });
+        return NextResponse.json({
+          supplier: { id: existing.id, legal_name: existing.legal_name, trade_name: existing.trade_name, tax_id: existing.tax_id },
+          created: false,
+          promoted: true,
         });
       }
       if (existing) return NextResponse.json({ error: "tax_id_already_registered" }, { status: 409 });
@@ -346,6 +440,103 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ supportingDocument: data }, { status: 201 });
   }
 
+  if (action === "pending_expense") {
+    // Gasto pagado o comprometido antes de recibir su documento tributario.
+    // Crea una cuenta directa "documento pendiente" que pasa por Aprobaciones
+    // y que Finanzas vincula a la factura cuando llega.
+    const supplierId = form.get("supplierId");
+    const costCenterId = form.get("costCenterId");
+    const category = form.get("category");
+    const categoryDetail = text(form.get("categoryDetail"), 120);
+    const description = text(form.get("description"), 2_000, true);
+    const totalAmount = amount(form.get("totalAmount"));
+    const issueDate = date(form.get("issueDate"));
+    const dueDate = form.get("dueDate") === "" || form.get("dueDate") === null ? null : date(form.get("dueDate"));
+    const expectedDocumentType = form.get("expectedDocumentType");
+    const notes = text(form.get("notes"), 2_000);
+    const confirmDuplicate = form.get("confirmDuplicate") === "true";
+    const duplicateReason = confirmDuplicate ? validDuplicateReason(form.get("duplicateReason")) : null;
+    const upload = form.get("file");
+    if (
+      !isUuid(supplierId) || !isUuid(costCenterId) || !isPendingExpenseCategory(category) ||
+      (category === "other" && (!categoryDetail || categoryDetail.length < 2)) ||
+      !description || !totalAmount || totalAmount <= 0 || !issueDate ||
+      (form.get("dueDate") && !dueDate) || (dueDate && dueDate < issueDate) ||
+      !isExpectedDocumentType(expectedDocumentType) ||
+      (confirmDuplicate && !duplicateReason) ||
+      (upload !== null && !(upload instanceof File))
+    ) return NextResponse.json({ error: "invalid_pending_expense" }, { status: 400 });
+    if (upload instanceof File && (upload.size === 0 || upload.size > 52_428_800 || !acceptedFileTypes.has(upload.type))) {
+      return NextResponse.json({ error: "invalid_document_attachment" }, { status: 400 });
+    }
+
+    const { data: supplier, error: supplierError } = await context.supabase
+      .from("counterparties")
+      .select("id, legal_name, trade_name, tax_id")
+      .eq("id", supplierId)
+      .eq("organization_id", organizationId)
+      .in("kind", ["supplier", "both"])
+      .eq("is_active", true)
+      .maybeSingle();
+    if (supplierError || !supplier) return NextResponse.json({ error: "supplier_or_cost_center_not_found" }, { status: 400 });
+
+    const duplicate = await duplicateResponse(context.supabase, {
+      organizationId,
+      supplier,
+      folio: null,
+      total: totalAmount,
+      issueDate,
+      confirmReason: duplicateReason,
+    });
+    if (duplicate) return duplicate;
+
+    const safeName = upload instanceof File
+      ? upload.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "respaldo"
+      : null;
+    const attachmentPath = safeName
+      ? `${organizationId}/pending-expenses/${context.user.id}/${crypto.randomUUID()}-${safeName}`
+      : null;
+    if (upload instanceof File && attachmentPath) {
+      const { error } = await context.supabase.storage
+        .from("direct-payable-files")
+        .upload(attachmentPath, upload, { contentType: upload.type, upsert: false });
+      if (error) return NextResponse.json({ error: "unable_to_upload_document_attachment" }, { status: 409 });
+    }
+
+    const { data, error } = await context.supabase.rpc("create_pending_document_expense", {
+      p_organization_id: organizationId,
+      p_supplier_counterparty_id: supplier.id,
+      p_cost_center_id: costCenterId,
+      p_category: category,
+      p_category_detail: category === "other" ? categoryDetail : null,
+      p_description: description,
+      p_total_amount: totalAmount,
+      p_issue_date: issueDate,
+      p_due_date: dueDate,
+      p_expected_document_type: expectedDocumentType,
+      p_notes: notes,
+      p_attachment_path: attachmentPath,
+      p_attachment_name: upload instanceof File ? upload.name.trim().slice(0, 300) || safeName : null,
+      p_attachment_mime_type: upload instanceof File ? upload.type : null,
+      p_attachment_size: upload instanceof File ? upload.size : null,
+      p_duplicate_reason: duplicateReason,
+    });
+    if (error || !data) {
+      if (attachmentPath) await context.supabase.storage.from("direct-payable-files").remove([attachmentPath]);
+      const message = error?.message ?? "";
+      return NextResponse.json({
+        error: message.includes("Duplicate pending document expense")
+          ? "duplicate_pending_expense"
+          : message.includes("No approval policy")
+            ? "approval_policy_missing"
+            : message.includes("Cost center") || message.includes("Supplier")
+              ? "supplier_or_cost_center_not_found"
+              : "unable_to_create_pending_expense",
+      }, { status: 409 });
+    }
+    return NextResponse.json({ pendingExpense: data }, { status: 201 });
+  }
+
   const supplierId = form.get("supplierId");
   const costCenterId = form.get("costCenterId");
   const documentNumber = text(form.get("documentNumber"), 80, true);
@@ -386,6 +577,23 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "supplier_or_cost_center_not_found" }, { status: 400 });
   }
 
+  // Notas de crédito y guías comparten montos con su factura por diseño; sólo
+  // los documentos de cargo se revisan contra duplicados.
+  const costConfirmDuplicate = form.get("confirmDuplicate") === "true";
+  const costDuplicateReason = costConfirmDuplicate ? validDuplicateReason(form.get("duplicateReason")) : null;
+  if (costConfirmDuplicate && !costDuplicateReason) return NextResponse.json({ error: "invalid_cost_entry" }, { status: 400 });
+  if (!["credit_note", "dispatch_guide"].includes(documentKind(documentType))) {
+    const duplicate = await duplicateResponse(context.supabase, {
+      organizationId,
+      supplier,
+      folio: documentNumber,
+      total: Math.round((netAmount + vatAmount + additionalTaxAmount) * 100) / 100,
+      issueDate,
+      confirmReason: costDuplicateReason,
+    });
+    if (duplicate) return duplicate;
+  }
+
   const safeName = upload instanceof File
     ? upload.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "documento"
     : null;
@@ -414,7 +622,9 @@ export async function POST(request: NextRequest) {
       vat_amount: vatAmount,
       additional_tax_amount: additionalTaxAmount,
       total_amount: Math.round((netAmount + vatAmount + additionalTaxAmount) * 100) / 100,
-      notes,
+      notes: costDuplicateReason
+        ? [notes, `Posible duplicado confirmado: ${costDuplicateReason}`].filter(Boolean).join("\n")
+        : notes,
       due_date: dueDate,
       due_month: dueMonth(dueDate),
       payment_status: "Pendiente",
@@ -435,6 +645,10 @@ export async function POST(request: NextRequest) {
     if (attachmentPath) await context.supabase.storage.from("received-document-files").remove([attachmentPath]);
     if (error?.code === "23505" && error.message.includes("received_documents_business_identity_key")) {
       return NextResponse.json({ error: "duplicate_received_document" }, { status: 409 });
+    }
+    const folioDuplicate = parseDuplicateFolioError(error);
+    if (folioDuplicate) {
+      return NextResponse.json({ error: "duplicate_payable_folio", message: duplicateFolioMessage(folioDuplicate) }, { status: 409 });
     }
     return NextResponse.json({ error: "unable_to_create_cost_entry" }, { status: 409 });
   }

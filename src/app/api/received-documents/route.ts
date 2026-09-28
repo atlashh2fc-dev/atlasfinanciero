@@ -4,6 +4,8 @@ import {
   requireOrganizationExpenseReadAccess,
   requireOrganizationFinanceAccess,
 } from "@/lib/admin-access";
+import { fetchAllRows } from "@/lib/supabase/fetch-all-rows";
+import { coveredDocumentMap } from "@/lib/pending-documents";
 
 function yearFrom(value: string | null) {
   if (!value) return null;
@@ -71,33 +73,76 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ signedUrl: signed.signedUrl });
   }
 
-  let documentsQuery = context.supabase
-    .from("received_documents")
-    .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_method, payment_bank, payment_reference, payment_notes, payment_date, payment_recorded_at, payment_recorded_by, attachment_path, attachment_name, attachment_mime_type, attachment_size, payment_proof_path, payment_proof_name, payment_proof_mime_type, payment_proof_size, source_file_name, source_sheet_name, source_row, sii_document_type, sii_folio, sii_xml_path, sii_received_at, sii_response_deadline, sii_event_status, sii_last_checked_at")
-    .eq("organization_id", organizationId)
-    .order("issue_date", { ascending: false })
-    .order("source_row", { ascending: false });
-  let directPayablesQuery = context.supabase
-    .from("direct_payables")
-    .select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, status, notes, payment_reference, paid_at, factoring_issued_document_id, is_reference, reference_settled_at, reference_settlement_note, reference_settled_by")
-    .eq("organization_id", organizationId)
-    .neq("status", "cancelled")
-    .order("issue_date", { ascending: false });
-  if (year !== null) {
-    documentsQuery = documentsQuery.gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`);
-    directPayablesQuery = directPayablesQuery.gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`);
-  }
-
-  const [documents, directPayables, directPayableExecutions] = await Promise.all([
-    documentsQuery,
-    directPayablesQuery,
-    context.supabase
-      .from("payment_executions")
-      .select("direct_payable_id, amount")
+  // PostgREST corta cada respuesta en 1000 filas; se pagina para que la
+  // búsqueda por folio encuentre también los documentos más antiguos.
+  const supabase = context.supabase;
+  const documentsPage = (from: number, to: number) => {
+    let query = supabase
+      .from("received_documents")
+      .select("id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, issue_date, document_type, net_amount, vat_amount, additional_tax_amount, total_amount, notes, payment_term_days, due_date, due_month, payment_status, payment_method, payment_bank, payment_reference, payment_notes, payment_date, payment_recorded_at, payment_recorded_by, attachment_path, attachment_name, attachment_mime_type, attachment_size, payment_proof_path, payment_proof_name, payment_proof_mime_type, payment_proof_size, source_file_name, source_sheet_name, source_row, sii_document_type, sii_folio, sii_xml_path, sii_received_at, sii_response_deadline, sii_event_status, sii_last_checked_at")
+      .eq("organization_id", organizationId);
+    if (year !== null) query = query.gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`);
+    return query
+      .order("issue_date", { ascending: false })
+      .order("source_row", { ascending: false })
+      .order("id", { ascending: true })
+      .range(from, to);
+  };
+  const directPayablesPage = (from: number, to: number) => {
+    let query = supabase
+      .from("direct_payables")
+      .select("id, payable_number, supplier_counterparty_id, supplier_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, status, notes, payment_reference, paid_at, factoring_issued_document_id, is_reference, reference_settled_at, reference_settlement_note, reference_settled_by")
       .eq("organization_id", organizationId)
-      .not("direct_payable_id", "is", null),
+      .neq("status", "cancelled");
+    if (year !== null) query = query.gte("issue_date", `${year}-01-01`).lte("issue_date", `${year}-12-31`);
+    return query
+      .order("issue_date", { ascending: false })
+      .order("id", { ascending: true })
+      .range(from, to);
+  };
+
+  const [documents, directPayables, directPayableExecutions, documentLinks] = await Promise.all([
+    fetchAllRows(documentsPage),
+    fetchAllRows(directPayablesPage),
+    fetchAllRows((from, to) =>
+      supabase
+        .from("payment_executions")
+        .select("direct_payable_id, amount")
+        .eq("organization_id", organizationId)
+        .not("direct_payable_id", "is", null)
+        .order("id", { ascending: true })
+        .range(from, to),
+    ),
+    // Flujo documental persistente (NC/ND → factura, guía → factura, OC).
+    fetchAllRows((from, to) =>
+      supabase
+        .from("received_document_links")
+        .select("id, source_document_id, target_document_id, vendor_purchase_order_id, link_type, reference_folio, origin, status")
+        .eq("organization_id", organizationId)
+        .neq("status", "rejected")
+        .order("id", { ascending: true })
+        .range(from, to),
+    ),
   ]);
   if (documents.error || directPayables.error || directPayableExecutions.error) return NextResponse.json({ error: "unable_to_load_accounts_payable" }, { status: 500 });
+  // Gastos con documento pendiente: estado documental de cada cuenta directa y
+  // documentos recibidos que ya están cubiertos por una cuenta (sin filtro de
+  // año, porque la cuenta y su factura pueden caer en años distintos). Se
+  // consulta aparte para no romper esta vista antes de aplicar la migración
+  // 20260928183206; en ese caso todo queda como "not_required".
+  const payableDocumentsResult = await fetchAllRows((from, to) =>
+    supabase
+      .from("direct_payables")
+      .select("id, payable_number, status, document_status, expected_document_type, received_document_id, document_linked_at")
+      .eq("organization_id", organizationId)
+      .neq("document_status", "not_required")
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
+  const payableDocuments = new Map(
+    (payableDocumentsResult.error ? [] : payableDocumentsResult.data ?? []).map((link) => [link.id, link]),
+  );
+  const coveredDocuments = coveredDocumentMap([...payableDocuments.values()]);
   const paidByDirectPayable = new Map<string, number>();
   for (const execution of directPayableExecutions.data ?? []) {
     if (!execution.direct_payable_id) continue;
@@ -107,14 +152,29 @@ export async function GET(request: NextRequest) {
     );
   }
   return NextResponse.json({
-    documents: documents.data ?? [],
+    documents: (documents.data ?? []).map((document) => {
+      const coveredBy = coveredDocuments.get(document.id) ?? null;
+      return {
+        ...document,
+        covered_by_direct_payable_id: coveredBy?.id ?? null,
+        covered_by_direct_payable_number: coveredBy?.payable_number ?? null,
+        covered_by_direct_payable_status: coveredBy?.status ?? null,
+      };
+    }),
+    // Si la tabla aún no existe en un ambiente, la vista sigue funcionando.
+    documentLinks: documentLinks.error ? [] : documentLinks.data ?? [],
     directPayables: (directPayables.data ?? []).map((payable) => {
       const paidAmount = Math.min(
         Math.max(0, paidByDirectPayable.get(payable.id) ?? 0),
         Math.max(0, Number(payable.total_amount ?? 0)),
       );
+      const payableDocument = payableDocuments.get(payable.id) ?? null;
       return {
         ...payable,
+        document_status: payableDocument?.document_status ?? "not_required",
+        expected_document_type: payableDocument?.expected_document_type ?? null,
+        received_document_id: payableDocument?.received_document_id ?? null,
+        document_linked_at: payableDocument?.document_linked_at ?? null,
         paid_amount: paidAmount,
         outstanding_amount: Math.max(0, Number(payable.total_amount ?? 0) - paidAmount),
       };

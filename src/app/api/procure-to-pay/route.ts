@@ -5,7 +5,19 @@ import {
   requireOrganizationPaymentCapability,
   requireOrganizationProcurementAccess,
 } from "@/lib/admin-access";
+import { upsertCounterpartyRole } from "@/lib/counterparties";
 import { paymentProposalItemAuthorization } from "@/lib/payment-execution";
+import { canonicalTaxId, rutKey, sameRut } from "@/lib/rut";
+import { fetchAllRows } from "@/lib/supabase/fetch-all-rows";
+import {
+  classifyDuplicates,
+  coveredDocumentMap,
+  duplicateFolioMessage,
+  isExpectedDocumentType,
+  parseDuplicateFolioError,
+  validDuplicateReason,
+  type DuplicateMatch,
+} from "@/lib/pending-documents";
 
 type Line = {
   description?: unknown;
@@ -227,6 +239,7 @@ async function resolveCanonicalSupplier(
   organizationId: string,
   submittedSupplierId: unknown,
   submittedSupplierName: string,
+  submittedTaxId?: string | null,
 ) {
   if (
     submittedSupplierId !== undefined &&
@@ -253,13 +266,23 @@ async function resolveCanonicalSupplier(
     ? null
     : await baseQuery.order("legal_name").limit(1_000);
   if (selectedResult?.error || listResult?.error) return null;
+  // Sin ficha elegida: primero por RUT normalizado; luego por razón social o
+  // nombre de fantasía, descartando fichas cuyo RUT contradice el ingresado.
+  const hasTaxId = Boolean(rutKey(submittedTaxId));
+  const candidates = listResult?.data ?? [];
+  const submittedNameKey = normalizedSupplierName(submittedSupplierName);
   const supplier = selectedId
     ? (selectedResult?.data ?? null)
-    : (listResult?.data ?? []).find(
+    : ((hasTaxId
+        ? candidates.find((candidate) => sameRut(candidate.tax_id, submittedTaxId))
+        : undefined) ??
+      candidates.find(
         (candidate) =>
-          normalizedSupplierName(supplierDisplayName(candidate)) ===
-          normalizedSupplierName(submittedSupplierName),
-      );
+          (!hasTaxId || !rutKey(candidate.tax_id)) &&
+          [candidate.legal_name, candidate.trade_name].some(
+            (name) => Boolean(name) && normalizedSupplierName(name!) === submittedNameKey,
+          ),
+      ));
   if (!supplier)
     return selectedId
       ? null
@@ -330,6 +353,7 @@ export async function GET(request: NextRequest) {
       p_organization_id: organizationId,
     });
 
+  const supabase = context.supabase;
   const [
     requests,
     orders,
@@ -415,22 +439,30 @@ export async function GET(request: NextRequest) {
       .eq("organization_id", organizationId)
       .order("executed_on", { ascending: false })
       .limit(1_000),
-    context.supabase
-      .from("received_documents")
-      .select(
-        "id, supplier_counterparty_id, supplier_name, document_number, issue_date, due_date, net_amount, total_amount, payment_status, vendor_purchase_order_id, purchase_match_status, purchase_match_approved_at, purchase_match_approved_by",
-      )
-      .eq("organization_id", organizationId)
-      .order("due_date", { ascending: true })
-      .limit(500),
-    context.supabase
-      .from("direct_payables")
-      .select(
-        "id, payable_number, supplier_counterparty_id, supplier_name, beneficiary_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, cost_center_id, status, notes, payment_reference, is_reference, reference_settled_at",
-      )
-      .eq("organization_id", organizationId)
-      .order("due_date", { ascending: true })
-      .limit(500),
+    // Se pagina para no perder documentos: un límite fijo (antes 500) o el
+    // tope de 1000 filas de PostgREST ocultaba facturas en la búsqueda.
+    fetchAllRows((from, to) =>
+      supabase
+        .from("received_documents")
+        .select(
+          "id, supplier_counterparty_id, supplier_name, supplier_tax_id, document_number, document_type, sii_document_type, sii_folio, issue_date, due_date, net_amount, total_amount, payment_status, vendor_purchase_order_id, purchase_match_status, purchase_match_approved_at, purchase_match_approved_by",
+        )
+        .eq("organization_id", organizationId)
+        .order("due_date", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+    ),
+    fetchAllRows((from, to) =>
+      supabase
+        .from("direct_payables")
+        .select(
+          "id, payable_number, supplier_counterparty_id, supplier_name, beneficiary_name, invoice_number, category, category_detail, description, issue_date, due_date, total_amount, currency_code, cost_center_id, status, notes, payment_reference, is_reference, reference_settled_at",
+        )
+        .eq("organization_id", organizationId)
+        .order("due_date", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+    ),
     context.supabase
       .from("asset_financing_plans")
       .select(
@@ -500,6 +532,40 @@ export async function GET(request: NextRequest) {
       { error: "unable_to_load_procure_to_pay" },
       { status: 500 },
     );
+  // Un documento recibido que respalda una cuenta directa vigente se paga y
+  // se cuenta por esa cuenta: no es elegible para propuestas ni suma deuda.
+  // Se consulta aparte y sin bloquear la bandeja: antes de aplicar la
+  // migración 20260928183206 estas columnas y la RPC aún no existen.
+  const canSeeSuggestions = ["administrator", "finance", "auditor"].includes(
+    context.membership?.role ?? "",
+  );
+  const [documentLinksResult, suggestionsResult] = await Promise.all([
+    fetchAllRows((from, to) =>
+      supabase
+        .from("direct_payables")
+        .select(
+          "id, payable_number, status, document_status, expected_document_type, received_document_id, document_linked_at",
+        )
+        .eq("organization_id", organizationId)
+        .neq("document_status", "not_required")
+        .order("id", { ascending: true })
+        .range(from, to),
+    ),
+    canSeeSuggestions
+      ? supabase.rpc("suggest_pending_document_matches", {
+          p_organization_id: organizationId,
+        })
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  const documentLinks = new Map(
+    (documentLinksResult.error ? [] : documentLinksResult.data ?? []).map(
+      (link) => [link.id, link],
+    ),
+  );
+  const coveredDocuments = coveredDocumentMap([...documentLinks.values()]);
+  const pendingDocumentSuggestions = suggestionsResult.error
+    ? []
+    : ((suggestionsResult.data ?? []) as Array<Record<string, unknown>>);
   const activeBatchIds = new Set(
     (batches.data ?? [])
       .filter((batch) => !["cancelled", "paid"].includes(batch.status))
@@ -575,18 +641,24 @@ export async function GET(request: NextRequest) {
           : false;
       const isDirectDocument = !document.vendor_purchase_order_id;
       const activePayment = activePaymentByDocumentId.get(document.id) ?? null;
+      const coveredBy = coveredDocuments.get(document.id) ?? null;
       const paymentEligible =
-        isDirectDocument || document.purchase_match_status === "not_required"
+        !coveredBy &&
+        (isDirectDocument || document.purchase_match_status === "not_required"
           ? !activePayment
           : approvedException
             ? !activePayment
-            : matchedOrder && !activePayment;
+            : matchedOrder && !activePayment);
       return {
         ...document,
         active_payment_batch: activePayment,
+        covered_by_direct_payable_id: coveredBy?.id ?? null,
+        covered_by_direct_payable_number: coveredBy?.payable_number ?? null,
         payment_eligible: paymentEligible,
         payment_block_reason: paymentEligible
           ? null
+          : coveredBy
+            ? "covered_by_direct_payable"
           : activePayment
             ? "already_in_payment_batch"
             : document.purchase_match_status === "pending"
@@ -785,8 +857,25 @@ export async function GET(request: NextRequest) {
         payable.status === "approved" &&
         outstandingAmount > 0.01 &&
         !activePayment;
+      const documentLink = documentLinks.get(payable.id) ?? null;
+      const linkedDocument = documentLink?.received_document_id
+        ? documentsById.get(documentLink.received_document_id) ?? null
+        : null;
       return {
       ...payable,
+      document_status: documentLink?.document_status ?? "not_required",
+      expected_document_type: documentLink?.expected_document_type ?? null,
+      received_document_id: documentLink?.received_document_id ?? null,
+      document_linked_at: documentLink?.document_linked_at ?? null,
+      linked_document: linkedDocument
+        ? {
+            id: linkedDocument.id,
+            document_number: linkedDocument.document_number,
+            document_type: linkedDocument.document_type,
+            issue_date: linkedDocument.issue_date,
+            total_amount: linkedDocument.total_amount,
+          }
+        : null,
       active_payment_batch: activePayment,
       paid_amount: paidAmount,
       outstanding_amount: outstandingAmount,
@@ -809,6 +898,7 @@ export async function GET(request: NextRequest) {
                 : "not_approved",
     };
     }),
+    pendingDocumentSuggestions,
     financingPlans: financingPlans.data ?? [],
     suppliers: suppliers.data ?? [],
     bankAccounts: bankAccounts.data ?? [],
@@ -856,7 +946,7 @@ export async function POST(request: NextRequest) {
   if (action === "create_purchase_request") {
     const requestNumber = text(body?.requestNumber, 100);
     const supplierName = text(body?.supplierName, 300, true);
-    const supplierTaxId = text(body?.supplierTaxId, 40);
+    const supplierTaxId = canonicalTaxId(text(body?.supplierTaxId, 40));
     const description = text(body?.description, 2_000, true);
     const estimatedAmount = positive(body?.estimatedAmount);
     const requestedOn =
@@ -873,6 +963,7 @@ export async function POST(request: NextRequest) {
           organizationId,
           body?.supplierId,
           supplierName,
+          supplierTaxId,
         )
       : null;
     if (
@@ -889,18 +980,31 @@ export async function POST(request: NextRequest) {
       );
     let resolvedSupplier = supplier;
     if (!resolvedSupplier.id && body?.createSupplier === true) {
-      const { data: createdSupplier, error: createdSupplierError } =
-        await context.supabase
-          .from("counterparties")
-          .insert({
-            organization_id: organizationId,
-            legal_name: supplierName,
-            tax_id: supplierTaxId,
-            kind: "supplier",
-            created_by: context.user.id,
-          })
-          .select("id, legal_name, trade_name, tax_id")
-          .single();
+      // Con RUT: la ficha se crea o, si el RUT ya existe como cliente, se le
+      // suma el rol de proveedor ("both") en vez de fallar por duplicado.
+      const registered = supplierTaxId && rutKey(supplierTaxId)
+        ? await upsertCounterpartyRole(context.supabase, organizationId, supplierTaxId, supplierName, "supplier")
+        : null;
+      const { data: createdSupplier, error: createdSupplierError } = registered
+        ? registered.id
+          ? await context.supabase
+              .from("counterparties")
+              .select("id, legal_name, trade_name, tax_id")
+              .eq("id", registered.id)
+              .eq("organization_id", organizationId)
+              .single()
+          : { data: null, error: registered.error }
+        : await context.supabase
+            .from("counterparties")
+            .insert({
+              organization_id: organizationId,
+              legal_name: supplierName,
+              tax_id: supplierTaxId,
+              kind: "supplier",
+              created_by: context.user.id,
+            })
+            .select("id, legal_name, trade_name, tax_id")
+            .single();
       if (createdSupplierError || !createdSupplier)
         return NextResponse.json(
           { error: "unable_to_create_request_supplier" },
@@ -1346,6 +1450,12 @@ export async function POST(request: NextRequest) {
         ? body.category
         : "other";
     const categoryDetail = text(body?.categoryDetail, 120);
+    // Gasto pagado o comprometido antes de recibir su factura/boleta: queda
+    // "documento pendiente" hasta que Finanzas lo vincule al documento real.
+    const pendingDocument = body?.pendingDocument === true;
+    const expectedDocumentType = pendingDocument ? body?.expectedDocumentType : null;
+    const confirmDuplicate = body?.confirmDuplicate === true;
+    const duplicateReason = confirmDuplicate ? validDuplicateReason(body?.duplicateReason) : null;
     const payableNumber = `CXP-${issueDate.replaceAll("-", "")}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
     const supplier = supplierName
       ? await resolveCanonicalSupplier(
@@ -1364,7 +1474,9 @@ export async function POST(request: NextRequest) {
       (category === "termination" && !beneficiaryName) ||
       (category === "other" && !categoryDetail) ||
       (body?.dueDate && !dueDate) ||
-      (dueDate && dueDate < issueDate)
+      (dueDate && dueDate < issueDate) ||
+      (pendingDocument && !isExpectedDocumentType(expectedDocumentType)) ||
+      (confirmDuplicate && !duplicateReason)
     )
       return NextResponse.json(
         { error: "invalid_direct_payable" },
@@ -1393,6 +1505,46 @@ export async function POST(request: NextRequest) {
         { error: "duplicate_direct_payable", payableNumber: duplicate.payable_number },
         { status: 409 },
       );
+    // La misma factura registrada antes como documento recibido (o como otra
+    // cuenta) bloquea; mismo proveedor + monto + fecha cercana pide confirmar.
+    const { data: duplicateMatches, error: duplicateError } =
+      await context.supabase.rpc("find_payable_duplicates", {
+        p_organization_id: organizationId,
+        p_supplier_counterparty_id: supplier.id,
+        p_supplier_tax_id: supplier.taxId,
+        p_supplier_name: supplier.name,
+        p_folio: invoiceNumber,
+        p_total: totalAmount,
+        p_issue_date: issueDate,
+      });
+    if (!duplicateError) {
+      const { sameFolio, sameAmount } = classifyDuplicates(
+        (duplicateMatches ?? []) as DuplicateMatch[],
+      );
+      if (sameFolio.length)
+        return NextResponse.json(
+          {
+            error: "duplicate_payable_folio",
+            message: duplicateFolioMessage({
+              source: sameFolio[0].source,
+              id: sameFolio[0].id,
+              number: sameFolio[0].number,
+              label:
+                sameFolio[0].source === "received"
+                  ? sameFolio[0].document_type
+                  : sameFolio[0].number,
+            }),
+            matches: sameFolio,
+          },
+          { status: 409 },
+        );
+      if (sameAmount.length && !duplicateReason)
+        return NextResponse.json(
+          { error: "possible_duplicate", matches: sameAmount },
+          { status: 409 },
+        );
+    }
+    const payableNotes = text(body?.notes, 2_000);
     const { data, error } = await context.supabase
       .from("direct_payables")
       .insert({
@@ -1410,16 +1562,33 @@ export async function POST(request: NextRequest) {
         total_amount: totalAmount,
         currency_code: "CLP",
         cost_center_id: costCenterId,
-        notes: text(body?.notes, 2_000),
+        notes: duplicateReason
+          ? [payableNotes, `Posible duplicado confirmado: ${duplicateReason}`]
+              .filter(Boolean)
+              .join("\n")
+          : payableNotes,
+        ...(pendingDocument
+          ? {
+              document_status: "pending_document",
+              expected_document_type: expectedDocumentType,
+            }
+          : {}),
         created_by: context.user.id,
       })
       .select("id")
       .single();
-    if (error || !data)
+    if (error || !data) {
+      const folioDuplicate = parseDuplicateFolioError(error);
       return NextResponse.json(
-        { error: "unable_to_create_direct_payable" },
+        folioDuplicate
+          ? {
+              error: "duplicate_payable_folio",
+              message: duplicateFolioMessage(folioDuplicate),
+            }
+          : { error: "unable_to_create_direct_payable" },
         { status: 409 },
       );
+    }
     const { error: submitError } = await context.supabase
       .from("direct_payables")
       .update({ status: "review" })
@@ -2099,6 +2268,8 @@ export async function PATCH(request: NextRequest) {
     "submit_direct_payable",
     "set_direct_payable_beneficiary",
     "cancel_direct_payable",
+    "link_direct_payable_document",
+    "unlink_direct_payable_document",
     "submit_asset_financing_plan",
     "reschedule_payment_items",
     "cancel_payment_items",
@@ -2196,6 +2367,59 @@ export async function PATCH(request: NextRequest) {
     if (error || !data)
       return NextResponse.json({ error: "unable_to_update_direct_payable_beneficiary" }, { status: 409 });
     return NextResponse.json({ item: data });
+  }
+  if (action === "link_direct_payable_document") {
+    const receivedDocumentId = body?.receivedDocumentId;
+    if (!isUuid(receivedDocumentId))
+      return NextResponse.json({ error: "invalid_document_link" }, { status: 400 });
+    const { data, error } = await context.supabase.rpc("link_direct_payable_document", {
+      p_direct_payable_id: id,
+      p_received_document_id: receivedDocumentId,
+      p_allow_amount_difference: body?.allowAmountDifference === true,
+    });
+    if (error) {
+      const folioDuplicate = parseDuplicateFolioError(error);
+      const detail = error.message;
+      const code = folioDuplicate
+        ? "duplicate_payable_folio"
+        : detail.includes("amount differs")
+          ? "document_amount_mismatch"
+          : detail.includes("supplier does not match")
+            ? "document_supplier_mismatch"
+            : detail.includes("invoice number does not match")
+              ? "document_folio_mismatch"
+              : detail.includes("already linked") || detail.includes("already has a linked")
+                ? "document_already_linked"
+                : detail.includes("recorded payments") || detail.includes("active payment batch")
+                  ? "document_already_in_payment"
+                  : detail.includes("charge documents")
+                    ? "document_type_not_allowed"
+                    : "unable_to_link_document";
+      return NextResponse.json(
+        {
+          error: code,
+          message: folioDuplicate ? duplicateFolioMessage(folioDuplicate) : undefined,
+          detail,
+        },
+        { status: 409 },
+      );
+    }
+    return NextResponse.json({ result: data });
+  }
+  if (action === "unlink_direct_payable_document") {
+    const reason = text(body?.reason, 500, true);
+    if (!reason || reason.length < 3)
+      return NextResponse.json({ error: "invalid_document_unlink" }, { status: 400 });
+    const { data, error } = await context.supabase.rpc("unlink_direct_payable_document", {
+      p_direct_payable_id: id,
+      p_reason: reason,
+    });
+    if (error)
+      return NextResponse.json(
+        { error: "unable_to_unlink_document", detail: error.message },
+        { status: 409 },
+      );
+    return NextResponse.json({ result: data });
   }
   if (action === "cancel_direct_payable") {
     const reason = text(body?.reason, 500, true);
