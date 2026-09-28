@@ -463,6 +463,7 @@ export function ProcureToPayWorkbench({
     kind: string;
     item: Record<string, any>;
   } | null>(null);
+  const [weekDetailDate, setWeekDetailDate] = useState<string | null>(null);
   const [request, setRequest] = useState({
     supplierId: "",
     supplierName: "",
@@ -622,6 +623,7 @@ export function ProcureToPayWorkbench({
       setPaymentConfirmation(null);
       setOrderDraft((current) => ({ ...current, requestId: "" }));
       setDetail(null);
+      setWeekDetailDate(null);
       setReceiptDraft((current) => ({ ...current, purchaseOrderId: "" }));
     }
     window.addEventListener("keydown", closeModal);
@@ -950,6 +952,32 @@ export function ProcureToPayWorkbench({
       ),
     [data?.paymentBatches, data?.paymentBatchItems, paymentWeekDates],
   );
+  const weekDetail = useMemo(() => {
+    const week = paymentWeeks.find(
+      (candidate) => candidate.scheduledFor === weekDetailDate,
+    );
+    if (!week) return null;
+    // Mismo criterio que la tarjeta semanal: solo líneas vigentes con saldo.
+    const batches = week.batchIds
+      .map((id) => data?.paymentBatches.find((batch) => batch.id === id))
+      .filter((batch): batch is PaymentBatch => Boolean(batch))
+      .map((batch) => ({
+        batch,
+        isCarryover: batch.scheduled_for < week.scheduledFor,
+        items: (data?.paymentBatchItems ?? []).filter(
+          (item) =>
+            item.payment_batch_id === batch.id &&
+            !["cancelled", "paid"].includes(paymentItemStatus(item)) &&
+            amount(item.outstanding_amount ?? item.authorized_amount ?? item.amount) > 0,
+        ),
+      }))
+      .sort(
+        (left, right) =>
+          left.batch.scheduled_for.localeCompare(right.batch.scheduled_for) ||
+          left.batch.batch_number.localeCompare(right.batch.batch_number),
+      );
+    return { week, batches };
+  }, [weekDetailDate, paymentWeeks, data?.paymentBatches, data?.paymentBatchItems]);
   const openPaymentAlerts = useMemo(
     () => data?.paymentScheduleAlerts ?? [],
     [data?.paymentScheduleAlerts],
@@ -2249,7 +2277,20 @@ export function ProcureToPayWorkbench({
                     </button>
                   </article>
                   {paymentWeeks.map((week) => (
-                    <article className="p2p-week-card" key={week.scheduledFor}>
+                    <article
+                      className="p2p-week-card is-clickable"
+                      key={week.scheduledFor}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Ver detalle del viernes ${displayDate(week.scheduledFor)}`}
+                      onClick={() => setWeekDetailDate(week.scheduledFor)}
+                      onKeyDown={(event) => {
+                        if (event.target !== event.currentTarget) return;
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.preventDefault();
+                        setWeekDetailDate(week.scheduledFor);
+                      }}
+                    >
                       <span>Viernes {displayDate(week.scheduledFor)}</span>
                       <strong>{money.format(week.totalAmount)}</strong>
                       <small>{week.itemCount} pago(s) seleccionado(s)</small>
@@ -2271,7 +2312,8 @@ export function ProcureToPayWorkbench({
                       <button
                         type="button"
                         className="text-button"
-                        onClick={() => {
+                        onClick={(event) => {
+                          event.stopPropagation();
                           setBatch((current) => ({ ...current, scheduledFor: week.scheduledFor }));
                           setTab("payables");
                         }}
@@ -3592,6 +3634,170 @@ export function ProcureToPayWorkbench({
             </button>
           </form>
         </section>
+      )}
+      {weekDetail && (
+        <div
+          className="modal-backdrop p2p-week-backdrop"
+          role="presentation"
+          onMouseDown={() => setWeekDetailDate(null)}
+        >
+          <section
+            className="entry-modal p2p-week-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Detalle del viernes ${displayDate(weekDetail.week.scheduledFor)}`}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-heading">
+              <div>
+                <span className="eyebrow">AGENDA DE TESORERÍA · DETALLE SEMANAL</span>
+                <h2>Viernes {displayDate(weekDetail.week.scheduledFor)}</h2>
+                <p>
+                  {weekDetail.week.itemCount} pago(s) en{" "}
+                  {weekDetail.batches.length} propuesta(s)
+                </p>
+              </div>
+              <button
+                className="modal-close"
+                type="button"
+                aria-label="Cerrar"
+                onClick={() => setWeekDetailDate(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="p2p-week-modal-totals">
+              <article className="is-total">
+                <span>Total semana</span>
+                <strong>{money.format(weekDetail.week.totalAmount)}</strong>
+              </article>
+              <article>
+                <span>Planificación</span>
+                <strong>{money.format(weekDetail.week.draftAmount)}</strong>
+              </article>
+              <article>
+                <span>Por aprobar</span>
+                <strong>{money.format(weekDetail.week.reviewAmount)}</strong>
+              </article>
+              <article>
+                <span>Autorizado</span>
+                <strong>
+                  {money.format(
+                    weekDetail.week.approvedAmount + weekDetail.week.processingAmount,
+                  )}
+                </strong>
+              </article>
+            </div>
+            {weekDetail.week.carryoverAmount > 0 && (
+              <p className="p2p-week-modal-note">
+                Incluye {weekDetail.week.carryoverItemCount} pendiente(s) de semanas
+                anteriores por {money.format(weekDetail.week.carryoverAmount)}.
+              </p>
+            )}
+            {weekDetail.batches.map(({ batch, isCarryover, items }) => (
+              <section className="p2p-week-modal-batch" key={batch.id}>
+                <header>
+                  <div>
+                    <strong>{batch.batch_number}</strong>
+                    <span className={`p2p-week-modal-status is-${batch.status}`}>
+                      {paymentOrderStatusLabel(batch.status)}
+                    </span>
+                    {isCarryover && (
+                      <small>Arrastrado desde {displayDate(batch.scheduled_for)}</small>
+                    )}
+                  </div>
+                  <div>
+                    <strong>
+                      {money.format(
+                        items.reduce(
+                          (sum, item) =>
+                            sum +
+                            amount(item.outstanding_amount ?? item.authorized_amount ?? item.amount),
+                          0,
+                        ),
+                      )}
+                    </strong>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => {
+                        setWeekDetailDate(null);
+                        setDetail({ kind: "batch", item: batch });
+                      }}
+                    >
+                      Abrir expediente
+                    </button>
+                  </div>
+                </header>
+                <div className="table-scroll">
+                  <table className="p2p-dense-table">
+                    <thead>
+                      <tr>
+                        <th>Proveedor</th>
+                        <th>Documento</th>
+                        <th>Vence</th>
+                        <th>Flujo</th>
+                        <th>Saldo a pagar</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((item) => (
+                        <tr key={item.id}>
+                          <td>{item.supplier_name_current || item.supplier_name_snapshot}</td>
+                          <td>
+                            {item.document_number_current ||
+                              item.document_number_snapshot ||
+                              "Sin folio"}
+                          </td>
+                          <td>
+                            {displayDate(item.due_date_current ?? item.due_date_snapshot)}
+                          </td>
+                          <td>{cashFlowLabel(item.cash_flow_category)}</td>
+                          <td>
+                            {money.format(
+                              amount(item.outstanding_amount ?? item.authorized_amount ?? item.amount),
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {!items.length && (
+                        <tr>
+                          <td colSpan={5}>Sin líneas pendientes en esta propuesta.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ))}
+            {!weekDetail.batches.length && (
+              <p className="p2p-week-modal-empty">
+                No hay pagos programados para este viernes.
+              </p>
+            )}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setWeekDetailDate(null)}
+              >
+                Cerrar
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => {
+                  const scheduledFor = weekDetail.week.scheduledFor;
+                  setWeekDetailDate(null);
+                  setBatch((current) => ({ ...current, scheduledFor }));
+                  setTab("payables");
+                }}
+              >
+                Agregar pagos
+              </button>
+            </div>
+          </section>
+        </div>
       )}
       {detail && (
         <div
