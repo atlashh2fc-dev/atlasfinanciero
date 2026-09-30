@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { costCenterDepth, costCenterGroupKey, costCenterGroupName } from "@/lib/cost-center-codes";
+import { costCenterDepth, costCenterGroupKey, costCenterGroupName, nextChildCostCenterCode, nextRootCostCenterCode } from "@/lib/cost-center-codes";
 
 export type CostCenterOption = {
   id: string;
@@ -15,6 +15,9 @@ type Props = {
   onChange: (value: string) => void;
   required?: boolean;
   disabled?: boolean;
+  /** Con ambos, el popover permite crear un centro sin salir del formulario. */
+  organizationId?: string | null;
+  onCreated?: (center: CostCenterOption) => void;
 };
 
 function groupCenters(centers: CostCenterOption[]) {
@@ -41,12 +44,18 @@ export function CostCenterPicker({
   onChange,
   required = false,
   disabled = false,
+  organizationId = null,
+  onCreated,
 }: Props) {
+  const canCreate = Boolean(organizationId && onCreated);
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<string[]>([]);
+  const [draft, setDraft] = useState<{ parentId: string; name: string } | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const selected = centers.find((center) => center.id === value) ?? null;
   const groups = useMemo(() => groupCenters(centers), [centers]);
   const normalizedSearch = search.trim().toLocaleLowerCase("es-CL");
@@ -92,7 +101,55 @@ export function CostCenterPicker({
   function selectCenter(center: CostCenterOption) {
     onChange(center.id);
     setSearch("");
+    setDraft(null);
     setOpen(false);
+  }
+
+  const sortedCenters = useMemo(
+    () =>
+      [...centers].sort((left, right) =>
+        left.code.localeCompare(right.code, "es", { numeric: true }),
+      ),
+    [centers],
+  );
+  const draftParent = sortedCenters.find((center) => center.id === draft?.parentId) ?? null;
+  // Mismo cálculo que en Centros de costo: el nuevo centro queda anidado.
+  const draftCode = useMemo(() => {
+    const codes = sortedCenters.map((center) => center.code);
+    return draftParent
+      ? nextChildCostCenterCode(draftParent.code, codes)
+      : nextRootCostCenterCode(codes);
+  }, [sortedCenters, draftParent]);
+
+  async function createCenter() {
+    if (!draft || !organizationId || !onCreated || creating) return;
+    const name = draft.name.trim();
+    if (!name) {
+      setCreateError("Escribe el nombre del centro.");
+      return;
+    }
+    setCreating(true);
+    setCreateError(null);
+    const response = await fetch("/api/cost-centers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ organizationId, action: "create_center", code: draftCode, name }),
+    });
+    const payload = (await response.json().catch(() => null)) as {
+      center?: CostCenterOption;
+      error?: string;
+    } | null;
+    setCreating(false);
+    if (!response.ok || !payload?.center) {
+      setCreateError(
+        payload?.error === "duplicate_center_code"
+          ? "Ese código ya existe. Vuelve a intentarlo."
+          : "No se pudo crear el centro. Verifica tus permisos.",
+      );
+      return;
+    }
+    onCreated(payload.center);
+    selectCenter(payload.center);
   }
 
   return (
@@ -181,10 +238,76 @@ export function CostCenterPicker({
             })}
             {!visibleGroups.length && (
               <p className="p2p-cost-center-empty">
-                No encontramos centros con esa búsqueda.
+                {centers.length
+                  ? "No encontramos centros con esa búsqueda."
+                  : "Aún no hay centros de costo."}
               </p>
             )}
           </div>
+          {canCreate && !draft && (
+            <button
+              type="button"
+              className="p2p-cost-center-create-toggle"
+              onClick={() => {
+                setDraft({ parentId: "", name: search.trim() });
+                setCreateError(null);
+              }}
+            >
+              + Crear centro de costo{search.trim() ? ` «${search.trim()}»` : ""}
+            </button>
+          )}
+          {canCreate && draft && (
+            <div className="p2p-cost-center-create" role="group" aria-label="Crear centro de costo">
+              <label>
+                Depende de
+                <select
+                  value={draft.parentId}
+                  onChange={(event) => setDraft({ ...draft, parentId: event.target.value })}
+                >
+                  <option value="">Ninguno · grupo principal nuevo</option>
+                  {sortedCenters.map((center) => (
+                    <option key={center.id} value={center.id}>
+                      {"\u00a0\u00a0".repeat(costCenterDepth(center.code) - 1)}
+                      {center.code} · {center.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Nombre *
+                <input
+                  autoFocus
+                  value={draft.name}
+                  maxLength={160}
+                  placeholder={draftParent ? "Subcentro, proyecto o gasto" : "Área o grupo"}
+                  onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+                  onKeyDown={(event) => {
+                    // Está dentro del formulario del gasto: Enter crea el
+                    // centro en vez de enviar el formulario completo.
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void createCenter();
+                    }
+                  }}
+                />
+              </label>
+              <small>Código {draftCode}</small>
+              {createError && <small className="p2p-cost-center-create-error" role="alert">{createError}</small>}
+              <div className="p2p-cost-center-create-actions">
+                <button type="button" className="secondary-button" onClick={() => setDraft(null)}>
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={creating || !draft.name.trim()}
+                  onClick={() => void createCenter()}
+                >
+                  {creating ? "Creando…" : "Crear y seleccionar"}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

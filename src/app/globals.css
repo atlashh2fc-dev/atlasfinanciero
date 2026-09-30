@@ -2679,6 +2679,31 @@ td small {
 .p2p-cost-center-options strong { color: inherit; }
 .p2p-cost-center-options span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .p2p-cost-center-empty { margin: 0; padding: 18px 12px; color: #7c889a; font-size: 11px; text-align: center; }
+.p2p-cost-center-create-toggle {
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  border-top: 1px solid #e6eaf2;
+  padding: 10px 14px;
+  background: #f8faff;
+  color: #3f4fc0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+}
+.p2p-cost-center-create-toggle:hover { background: #eef1ff; }
+.p2p-cost-center-create {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid #e6eaf2;
+  padding: 12px 14px 14px;
+  background: #f8faff;
+}
+.p2p-cost-center-create label { display: grid; gap: 5px; color: #526077; font-size: 11px; font-weight: 700; }
+.p2p-cost-center-create small { color: #7d8ba0; font-size: 10px; }
+.p2p-cost-center-create .p2p-cost-center-create-error { color: #b42318; }
+.p2p-cost-center-create-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .p2p-form-wide { grid-column: span 2; }
 .p2p-board {
   margin-bottom: 18px;

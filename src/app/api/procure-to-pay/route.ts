@@ -1800,12 +1800,14 @@ export async function POST(request: NextRequest) {
         (usefulLifeMonths ?? 0) < 1 ||
         (usefulLifeMonths ?? 0) > 600 ||
         !amortizationStartMonth);
-    const supplier = supplierName
+    const supplierTaxId = canonicalTaxId(text(body?.supplierTaxId, 40));
+    let supplier = supplierName
       ? await resolveCanonicalSupplier(
           context.supabase,
           organizationId,
           body?.supplierId,
           supplierName,
+          supplierTaxId,
         )
       : null;
     if (
@@ -1829,6 +1831,23 @@ export async function POST(request: NextRequest) {
         { error: "invalid_financing_plan" },
         { status: 400 },
       );
+    // Proveedor o acreedor nuevo escrito en el mismo formulario: se crea su
+    // ficha para que el plan quede vinculado al maestro.
+    if (supplier && supplierName && !supplier.id && body?.createSupplier === true) {
+      const createdSupplier = await registerSupplier(
+        context.supabase,
+        organizationId,
+        context.user.id,
+        supplierName,
+        supplierTaxId,
+      );
+      if (!createdSupplier)
+        return NextResponse.json(
+          { error: "unable_to_create_financing_supplier" },
+          { status: 409 },
+        );
+      supplier = createdSupplier;
+    }
     const { data: plan, error: planError } = await context.supabase
       .from("asset_financing_plans")
       .insert({

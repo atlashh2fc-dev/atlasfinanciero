@@ -498,6 +498,9 @@ export function ProcureToPayWorkbench({
     notes: string;
     lines: Record<string, string>;
   }>({ purchaseOrderId: "", receivedOn: today(), notes: "", lines: {} });
+  // "Crear tipo nuevo" dentro del combobox Tipo (se guarda como category
+  // "other" + category_detail, que es lo que alimenta los tipos propios).
+  const [creatingPayableType, setCreatingPayableType] = useState(false);
   const [directPayable, setDirectPayable] = useState({
     costCenterId: "",
     supplierId: "",
@@ -528,6 +531,7 @@ export function ProcureToPayWorkbench({
     planNumber: "",
     supplierId: "",
     supplierName: "",
+    supplierTaxId: "",
     costCenterId: "",
     assetName: "",
     currencyCode: "CLP",
@@ -1056,12 +1060,43 @@ export function ProcureToPayWorkbench({
       supplierTaxId: "",
     }));
   }
+  // Tipos de gasto creados por la empresa: los "Otro · detalle" ya usados.
+  const customPayableTypes = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const payable of data?.directPayables ?? []) {
+      const name = payable.category === "other" ? payable.category_detail?.trim() : "";
+      if (name && !payrollCategoryHint(name) && !names.has(name.toLocaleLowerCase("es-CL")))
+        names.set(name.toLocaleLowerCase("es-CL"), name);
+    }
+    return [...names.values()].sort((left, right) => left.localeCompare(right, "es"));
+  }, [data]);
+  const directPayableTypeValue =
+    directPayable.category !== "other"
+      ? directPayable.category
+      : creatingPayableType ||
+          !customPayableTypes.includes(directPayable.categoryDetail)
+        ? "__new__"
+        : `custom:${directPayable.categoryDetail}`;
+  function addCostCenter(center: { id: string; code: string; name: string }) {
+    setData((current) =>
+      current
+        ? {
+            ...current,
+            costCenters: [
+              ...current.costCenters.filter((item) => item.id !== center.id),
+              center,
+            ],
+          }
+        : current,
+    );
+  }
   function selectFinancingSupplier(supplierId: string) {
     const supplier = data?.suppliers.find((item) => item.id === supplierId);
     setFinancing((current) => ({
       ...current,
       supplierId,
       supplierName: supplier ? supplier.trade_name || supplier.legal_name : "",
+      supplierTaxId: "",
     }));
   }
   async function postWithResult(
@@ -1391,6 +1426,7 @@ export function ProcureToPayWorkbench({
     setSaving(false);
     await load();
     {
+      setCreatingPayableType(false);
       setDirectPayable({
         costCenterId: "",
         supplierId: "",
@@ -1495,12 +1531,20 @@ export function ProcureToPayWorkbench({
       setMessage("Selecciona un centro de costo para crear el financiamiento.");
       return;
     }
-    if (await post({ action: "create_asset_financing_plan", ...financing })) {
+    if (
+      await post({
+        action: "create_asset_financing_plan",
+        ...financing,
+        // Sin ficha elegida, el proveedor o acreedor escrito se crea.
+        createSupplier: !financing.supplierId,
+      })
+    ) {
       setFinancing({
         planKind: "asset_financing",
         planNumber: "",
         supplierId: "",
         supplierName: "",
+        supplierTaxId: "",
         costCenterId: "",
         assetName: "",
         currencyCode: "CLP",
@@ -2580,6 +2624,8 @@ export function ProcureToPayWorkbench({
             <CostCenterPicker
               required
               centers={data?.costCenters ?? []}
+              organizationId={canManagePayments ? organizationId : null}
+              onCreated={addCostCenter}
               value={request.costCenterId}
               onChange={(costCenterId) =>
                 setRequest((current) => ({ ...current, costCenterId }))
@@ -2725,6 +2771,8 @@ export function ProcureToPayWorkbench({
             <CostCenterPicker
               required
               centers={data?.costCenters ?? []}
+              organizationId={canManagePayments ? organizationId : null}
+              onCreated={addCostCenter}
               value={directPayable.costCenterId}
               onChange={(costCenterId) =>
                 setDirectPayable((current) => ({ ...current, costCenterId }))
@@ -2733,19 +2781,22 @@ export function ProcureToPayWorkbench({
             <label>
               Tipo
               <select
-                value={directPayable.category}
+                value={directPayableTypeValue}
                 onChange={(event) => {
-                  const category = event.target.value;
+                  const value = event.target.value;
+                  const customType = value.startsWith("custom:")
+                    ? value.slice("custom:".length)
+                    : null;
+                  const category =
+                    customType !== null || value === "__new__" ? "other" : value;
+                  setCreatingPayableType(value === "__new__");
                   // Sueldos, leyes sociales y finiquitos son remuneraciones:
                   // sin proveedor, sin folio de factura ni documento pendiente.
                   const payroll = isPayrollCategory(category);
                   setDirectPayable((current) => ({
                     ...current,
                     category,
-                    categoryDetail:
-                      category === "other" && current.category === "other"
-                        ? current.categoryDetail
-                        : "",
+                    categoryDetail: customType ?? "",
                     ...(payroll
                       ? {
                           supplierId: "",
@@ -2763,8 +2814,17 @@ export function ProcureToPayWorkbench({
                   <option value="taxes">Impuestos / contribuciones</option>
                   <option value="insurance">Seguros</option>
                   <option value="subscriptions">Suscripciones</option>
-                  <option value="other">Otro</option>
                 </optgroup>
+                {customPayableTypes.length > 0 && (
+                  <optgroup label="Tipos propios">
+                    {customPayableTypes.map((name) => (
+                      <option key={name} value={`custom:${name}`}>
+                        {name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <option value="__new__">+ Crear tipo nuevo…</option>
                 <optgroup label="Remuneraciones (no son facturas)">
                   <option value="payroll">Sueldos y remuneraciones</option>
                   <option value="social_security">Leyes sociales / cotizaciones</option>
@@ -2772,9 +2832,9 @@ export function ProcureToPayWorkbench({
                 </optgroup>
               </select>
             </label>
-            {directPayable.category === "other" && (
+            {directPayableTypeValue === "__new__" && (
               <label>
-                Especifica el tipo *
+                Nombre del tipo nuevo *
                 <input
                   required
                   minLength={2}
@@ -2786,7 +2846,7 @@ export function ProcureToPayWorkbench({
                       categoryDetail: event.target.value,
                     }))
                   }
-                  placeholder="Ej. Mantención, asesoría o licencia"
+                  placeholder="Ej. Colegio, cementerio, mantención"
                 />
               </label>
             )}
@@ -3196,6 +3256,8 @@ export function ProcureToPayWorkbench({
             <CostCenterPicker
               required
               centers={data?.costCenters ?? []}
+              organizationId={canManagePayments ? organizationId : null}
+              onCreated={addCostCenter}
               value={financing.costCenterId}
               onChange={(costCenterId) =>
                 setFinancing((current) => ({ ...current, costCenterId }))
@@ -3209,7 +3271,9 @@ export function ProcureToPayWorkbench({
                   selectFinancingSupplier(event.target.value)
                 }
               >
-                <option value="">No registrado</option>
+                <option value="">
+                  {financing.planKind === "credit" ? "Crear acreedor nuevo" : "Crear proveedor nuevo"}
+                </option>
                 {data?.suppliers.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.trade_name || item.legal_name}
@@ -3218,11 +3282,14 @@ export function ProcureToPayWorkbench({
               </select>
             </label>
             <label>
-              Nombre{" "}
-              {financing.planKind === "credit" ? "acreedor" : "proveedor"} *
+              {financing.supplierId ? "Nombre" : "Razón social"}{" "}
+              {financing.planKind === "credit" ? "acreedor" : "proveedor"}
+              {financing.supplierId ? "" : " nuevo"} *
               <input
                 required
+                maxLength={300}
                 value={financing.supplierName}
+                readOnly={Boolean(financing.supplierId)}
                 onChange={(event) =>
                   setFinancing((current) => ({
                     ...current,
@@ -3231,6 +3298,23 @@ export function ProcureToPayWorkbench({
                 }
               />
             </label>
+            {!financing.supplierId && (
+              <label>
+                RUT (opcional)
+                <input
+                  maxLength={40}
+                  value={financing.supplierTaxId}
+                  placeholder="Ej. 76.123.456-7"
+                  onChange={(event) =>
+                    setFinancing((current) => ({
+                      ...current,
+                      supplierTaxId: event.target.value,
+                    }))
+                  }
+                />
+                <small>Se crea en el maestro de proveedores al guardar.</small>
+              </label>
+            )}
             <label>
               Moneda
               <select
