@@ -502,6 +502,7 @@ export function ProcureToPayWorkbench({
     costCenterId: "",
     supplierId: "",
     supplierName: "",
+    supplierTaxId: "",
     beneficiaryName: "",
     beneficiaryTaxId: "",
     invoiceNumber: "",
@@ -1052,6 +1053,7 @@ export function ProcureToPayWorkbench({
       ...current,
       supplierId,
       supplierName: supplier ? supplier.trade_name || supplier.legal_name : "",
+      supplierTaxId: "",
     }));
   }
   function selectFinancingSupplier(supplierId: string) {
@@ -1337,6 +1339,10 @@ export function ProcureToPayWorkbench({
         organizationId,
         action: "create_direct_payable",
         ...directPayable,
+        // Sin ficha elegida, el proveedor escrito se crea en el maestro.
+        createSupplier:
+          !isPayrollCategory(directPayable.category) &&
+          !directPayable.supplierId,
         ...(directPayableDuplicate && directPayableDuplicate.reason.trim().length >= 3
           ? { confirmDuplicate: true, duplicateReason: directPayableDuplicate.reason.trim() }
           : {}),
@@ -1359,7 +1365,9 @@ export function ProcureToPayWorkbench({
       setMessage(
         payload?.error === "duplicate_direct_payable"
           ? `Esta cuenta ya está registrada (${payload.payableNumber ?? "mismo proveedor y folio"}). No se creó un duplicado; búscala en la bandeja.`
-          : (payload?.error === "duplicate_payable_folio" ||
+          : payload?.error === "unable_to_create_payable_supplier"
+            ? "No se pudo crear el proveedor. Si el RUT ya pertenece a otra ficha, selecciónala en la lista."
+            : (payload?.error === "duplicate_payable_folio" ||
                 payload?.error === "payroll_category_required") &&
               payload.message
             ? payload.message
@@ -1387,6 +1395,7 @@ export function ProcureToPayWorkbench({
         costCenterId: "",
         supplierId: "",
         supplierName: "",
+        supplierTaxId: "",
         beneficiaryName: "",
         beneficiaryTaxId: "",
         invoiceNumber: "",
@@ -2891,7 +2900,7 @@ export function ProcureToPayWorkbench({
                       selectDirectPayableSupplier(event.target.value)
                     }
                   >
-                    <option value="">Proveedor no registrado</option>
+                    <option value="">Crear proveedor nuevo</option>
                     {data?.suppliers.map((item) => (
                       <option key={item.id} value={item.id}>
                         {item.trade_name || item.legal_name}
@@ -2900,10 +2909,12 @@ export function ProcureToPayWorkbench({
                   </select>
                 </label>
                 <label>
-                  Nombre proveedor *
+                  {directPayable.supplierId ? "Nombre proveedor *" : "Razón social proveedor nuevo *"}
                   <input
                     required
+                    maxLength={300}
                     value={directPayable.supplierName}
+                    readOnly={Boolean(directPayable.supplierId)}
                     onChange={(event) =>
                       setDirectPayable((current) => ({
                         ...current,
@@ -2912,6 +2923,23 @@ export function ProcureToPayWorkbench({
                     }
                   />
                 </label>
+                {!directPayable.supplierId && (
+                  <label>
+                    RUT proveedor (opcional)
+                    <input
+                      maxLength={40}
+                      value={directPayable.supplierTaxId}
+                      placeholder="Ej. 76.123.456-7"
+                      onChange={(event) =>
+                        setDirectPayable((current) => ({
+                          ...current,
+                          supplierTaxId: event.target.value,
+                        }))
+                      }
+                    />
+                    <small>Se crea en el maestro de proveedores al registrar el gasto.</small>
+                  </label>
+                )}
                 <label className="p2p-form-wide p2p-inline-check">
                   <input
                     type="checkbox"

@@ -302,6 +302,50 @@ async function resolveCanonicalSupplier(
     taxId: supplier.tax_id,
   };
 }
+/**
+ * Crea la ficha de proveedor pedida desde un formulario (solicitud o cuenta
+ * por pagar). Con RUT: la ficha se crea o, si el RUT ya existe como cliente,
+ * se le suma el rol de proveedor ("both") en vez de fallar por duplicado.
+ */
+async function registerSupplier(
+  supabase: NonNullable<
+    Awaited<ReturnType<typeof requireOrganizationProcurementAccess>>["supabase"]
+  >,
+  organizationId: string,
+  userId: string,
+  supplierName: string,
+  supplierTaxId: string | null,
+) {
+  const registered = supplierTaxId && rutKey(supplierTaxId)
+    ? await upsertCounterpartyRole(supabase, organizationId, supplierTaxId, supplierName, "supplier")
+    : null;
+  const { data: createdSupplier, error: createdSupplierError } = registered
+    ? registered.id
+      ? await supabase
+          .from("counterparties")
+          .select("id, legal_name, trade_name, tax_id")
+          .eq("id", registered.id)
+          .eq("organization_id", organizationId)
+          .single()
+      : { data: null, error: registered.error }
+    : await supabase
+        .from("counterparties")
+        .insert({
+          organization_id: organizationId,
+          legal_name: supplierName,
+          tax_id: supplierTaxId,
+          kind: "supplier",
+          created_by: userId,
+        })
+        .select("id, legal_name, trade_name, tax_id")
+        .single();
+  if (createdSupplierError || !createdSupplier) return null;
+  return {
+    id: createdSupplier.id as string,
+    name: supplierDisplayName(createdSupplier),
+    taxId: createdSupplier.tax_id as string | null,
+  };
+}
 function lines(value: unknown):
   | {
       description: string;
@@ -1004,41 +1048,19 @@ export async function POST(request: NextRequest) {
       );
     let resolvedSupplier = supplier;
     if (!resolvedSupplier.id && body?.createSupplier === true) {
-      // Con RUT: la ficha se crea o, si el RUT ya existe como cliente, se le
-      // suma el rol de proveedor ("both") en vez de fallar por duplicado.
-      const registered = supplierTaxId && rutKey(supplierTaxId)
-        ? await upsertCounterpartyRole(context.supabase, organizationId, supplierTaxId, supplierName, "supplier")
-        : null;
-      const { data: createdSupplier, error: createdSupplierError } = registered
-        ? registered.id
-          ? await context.supabase
-              .from("counterparties")
-              .select("id, legal_name, trade_name, tax_id")
-              .eq("id", registered.id)
-              .eq("organization_id", organizationId)
-              .single()
-          : { data: null, error: registered.error }
-        : await context.supabase
-            .from("counterparties")
-            .insert({
-              organization_id: organizationId,
-              legal_name: supplierName,
-              tax_id: supplierTaxId,
-              kind: "supplier",
-              created_by: context.user.id,
-            })
-            .select("id, legal_name, trade_name, tax_id")
-            .single();
-      if (createdSupplierError || !createdSupplier)
+      const createdSupplier = await registerSupplier(
+        context.supabase,
+        organizationId,
+        context.user.id,
+        supplierName,
+        supplierTaxId,
+      );
+      if (!createdSupplier)
         return NextResponse.json(
           { error: "unable_to_create_request_supplier" },
           { status: 409 },
         );
-      resolvedSupplier = {
-        id: createdSupplier.id,
-        name: supplierDisplayName(createdSupplier),
-        taxId: createdSupplier.tax_id,
-      };
+      resolvedSupplier = createdSupplier;
     }
     const insertValues = {
         organization_id: organizationId,
@@ -1455,6 +1477,9 @@ export async function POST(request: NextRequest) {
     // no llevan folio de factura ni documento tributario pendiente.
     const payroll = isPayrollCategory(category);
     const supplierName = payroll ? null : text(body?.supplierName, 300, true);
+    const supplierTaxId = payroll
+      ? null
+      : canonicalTaxId(text(body?.supplierTaxId, 40));
     const beneficiaryName = text(body?.beneficiaryName, 300);
     const beneficiaryTaxInput = text(body?.beneficiaryTaxId, 20);
     const beneficiaryTaxId = beneficiaryTaxInput
@@ -1491,12 +1516,13 @@ export async function POST(request: NextRequest) {
     const confirmDuplicate = body?.confirmDuplicate === true;
     const duplicateReason = confirmDuplicate ? validDuplicateReason(body?.duplicateReason) : null;
     const payableNumber = `CXP-${issueDate.replaceAll("-", "")}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-    const supplier = supplierName
+    let supplier = supplierName
       ? await resolveCanonicalSupplier(
           context.supabase,
           organizationId,
           body?.supplierId,
           supplierName,
+          supplierTaxId,
         )
       : null;
     if (
@@ -1517,6 +1543,23 @@ export async function POST(request: NextRequest) {
         { error: "invalid_direct_payable" },
         { status: 400 },
       );
+    // Proveedor nuevo escrito en el mismo gasto: se crea su ficha (con RUT si
+    // se informó) para que quede en el maestro y la cuenta quede vinculada.
+    if (supplier && supplierName && !supplier.id && body?.createSupplier === true) {
+      const createdSupplier = await registerSupplier(
+        context.supabase,
+        organizationId,
+        context.user.id,
+        supplierName,
+        supplierTaxId,
+      );
+      if (!createdSupplier)
+        return NextResponse.json(
+          { error: "unable_to_create_payable_supplier" },
+          { status: 409 },
+        );
+      supplier = createdSupplier;
+    }
     if (payroll) {
       // Misma persona beneficiaria, monto y fecha en otra remuneración
       // vigente: probable doble registro; se confirma con un motivo.

@@ -48,7 +48,7 @@ export async function POST(request: NextRequest) {
     const code = bodyValue(body, "code"); const name = bodyValue(body, "name");
     if (typeof code !== "string" || !code.trim() || code.trim().length > 40 || typeof name !== "string" || !name.trim() || name.trim().length > 160) return NextResponse.json({ error: "invalid_center" }, { status: 400 });
     const { data, error } = await supabase.from("cost_centers").insert({ organization_id: organizationId, code: code.trim().toUpperCase(), name: name.trim() }).select("id, code, name, is_active").single();
-    if (error) return NextResponse.json({ error: "unable_to_create_center" }, { status: 422 });
+    if (error) return NextResponse.json({ error: error.code === "23505" ? "duplicate_center_code" : "unable_to_create_center" }, { status: error.code === "23505" ? 409 : 422 });
     return NextResponse.json({ center: data }, { status: 201 });
   }
 

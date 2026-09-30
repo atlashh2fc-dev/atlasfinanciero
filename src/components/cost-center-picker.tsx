@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { costCenterDepth, costCenterGroupKey, costCenterGroupName } from "@/lib/cost-center-codes";
 
 export type CostCenterOption = {
   id: string;
@@ -19,7 +20,7 @@ type Props = {
 function groupCenters(centers: CostCenterOption[]) {
   const values = new Map<string, CostCenterOption[]>();
   for (const center of centers) {
-    const key = center.code.split(".")[0] || "Otros";
+    const key = costCenterGroupKey(center.code);
     values.set(key, [...(values.get(key) ?? []), center]);
   }
   return [...values.entries()]
@@ -30,13 +31,7 @@ function groupCenters(centers: CostCenterOption[]) {
       const sorted = [...groupedCenters].sort((left, right) =>
         left.code.localeCompare(right.code, "es", { numeric: true }),
       );
-      return {
-        key,
-        name:
-          sorted.find((center) => center.code === `${key}.0.0.0`)?.name ??
-          `Grupo ${key}`,
-        centers: sorted,
-      };
+      return { key, name: costCenterGroupName(key, sorted), centers: sorted };
     });
 }
 
@@ -74,7 +69,7 @@ export function CostCenterPicker({
 
   useEffect(() => {
     if (!open) return;
-    const selectedGroup = selected?.code.split(".")[0];
+    const selectedGroup = selected ? costCenterGroupKey(selected.code) : undefined;
     if (selectedGroup)
       setExpandedGroups((current) =>
         current.includes(selectedGroup) ? current : [...current, selectedGroup],
@@ -169,6 +164,9 @@ export function CostCenterPicker({
                           type="button"
                           key={center.id}
                           className={center.id === value ? "is-selected" : ""}
+                          style={{
+                            paddingLeft: `${9 + (costCenterDepth(center.code) - 1) * 12}px`,
+                          }}
                           aria-current={center.id === value ? "true" : undefined}
                           onClick={() => selectCenter(center)}
                         >
