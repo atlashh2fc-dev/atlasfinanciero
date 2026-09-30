@@ -3114,6 +3114,16 @@ export function FinanceDashboard() {
     access?.membership.role === "finance" ||
     access?.membership.role === "auditor";
   const canReadProcurement = access !== null;
+  // Secretaria Virtual y la proyección 2026 fija (src/data/forecast-2026.ts)
+  // son datos propios de Geimser: otra empresa no debe verlos.
+  const isGeimserOrganization = Boolean(
+    access?.membership.organizationName
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]/gi, "")
+      .toLowerCase()
+      .includes("geimser"),
+  );
   const visibleNavigationGroups = navigationGroups
     .map((group) => ({
       ...group,
@@ -3121,8 +3131,8 @@ export function FinanceDashboard() {
         (item) =>
           (item !== "Administración" && item !== "Bitácora de actividad" ||
             access?.membership.role === "administrator") &&
-          (item !== "Secretaria Virtual" ||
-            access?.membership.organizationName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/gi, "").toLowerCase().includes("geimser")) &&
+          (item !== "Secretaria Virtual" || isGeimserOrganization) &&
+          (item !== "Proyecciones" || isGeimserOrganization) &&
           (item !== "Control SaaS" || access?.isSuperAdmin) &&
           (item !== "Centros de costo" || canManageCostCenters) &&
           (item !== "Imputaciones pendientes" || canManageCostCenters) &&
@@ -3357,7 +3367,20 @@ export function FinanceDashboard() {
             canManage={hasEditPermission}
           />
         ) : activeModule === "Proyecciones" ? (
-          <ForecastModule />
+          isGeimserOrganization ? (
+            <ForecastModule />
+          ) : (
+            <main className="dashboard">
+              <section className="panel">
+                <span className="panel-label">PROYECCIONES</span>
+                <h2>Sin proyección cargada</h2>
+                <p>
+                  Esta empresa parte en blanco. Arma su presupuesto y flujo
+                  proyectado desde Planificación financiera.
+                </p>
+              </section>
+            </main>
+          )
         ) : activeModule === "Planificación financiera" ? (
           canReadExpenses ? (
             <FinancialPlanningDashboard

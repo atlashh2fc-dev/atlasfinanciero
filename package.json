@@ -20,6 +20,7 @@
     "test:pending-documents": "node --experimental-strip-types --test tests/pending-documents.test.ts",
     "test:expense-categories": "node --experimental-strip-types --test tests/expense-categories.test.ts",
     "test:search": "node --experimental-strip-types --test tests/search.test.ts",
+    "test:cost-center-codes": "node --experimental-strip-types --test tests/cost-center-codes.test.ts",
     "verify:crm": "node scripts/verify-crm-workspace.mjs",
     "verify:contrast": "node scripts/verify-evolution-total-contrast.mjs",
     "verify:public-market": "node scripts/verify-public-market-intelligence.mjs"

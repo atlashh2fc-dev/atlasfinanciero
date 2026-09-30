@@ -1760,6 +1760,11 @@ button {
 .cost-center-management-panel .admin-grid {
   padding: 16px;
 }
+.cost-center-form-hint {
+  color: #7d8ba0;
+  font-size: 10px;
+  font-weight: 500;
+}
 .cost-center-group {
   overflow: hidden;
   border: 1px solid #e1e6ee;
