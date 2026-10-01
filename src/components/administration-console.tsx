@@ -17,6 +17,8 @@ const roleLabels: Record<OrganizationRole, string> = {
   data_entry: "Digitador",
 };
 
+const MIN_PASSWORD_LENGTH = 12;
+
 function readError(payload: unknown) {
   if (!payload || typeof payload !== "object" || !("error" in payload)) return null;
   return typeof payload.error === "string" ? payload.error : null;
@@ -45,6 +47,7 @@ export function AdministrationConsole({ activeOrganizationId, isSuperAdmin }: { 
   const [newUserPassword, setNewUserPassword] = useState("");
   const [showNewUserPassword, setShowNewUserPassword] = useState(false);
   const [newUserRole, setNewUserRole] = useState<OrganizationRole>("auditor");
+  const [newUserFeedback, setNewUserFeedback] = useState<{ tone: "error" | "success"; text: string } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [recoveryLink, setRecoveryLink] = useState<{ email: string; url: string } | null>(null);
   const [passwordMember, setPasswordMember] = useState<Member | null>(null);
@@ -54,6 +57,7 @@ export function AdministrationConsole({ activeOrganizationId, isSuperAdmin }: { 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
+  const newUserPasswordMissing = newUserPassword.length > 0 ? Math.max(0, MIN_PASSWORD_LENGTH - newUserPassword.length) : 0;
   const current = useMemo(() => organizations.find((item) => item.id === organizationId)?.organization ?? null, [organizations, organizationId]);
 
   async function loadOrganizations() {
@@ -156,19 +160,22 @@ export function AdministrationConsole({ activeOrganizationId, isSuperAdmin }: { 
 
   async function createUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!organizationId || !newUserName.trim() || !newUserEmail.trim() || newUserPassword.length < 12) return;
+    if (!organizationId) return setNewUserFeedback({ tone: "error", text: "Selecciona una organización antes de crear el usuario." });
+    if (!newUserName.trim() || !newUserEmail.trim()) return setNewUserFeedback({ tone: "error", text: "Completa el nombre y el correo del usuario." });
+    if (newUserPassword.length < MIN_PASSWORD_LENGTH) return setNewUserFeedback({ tone: "error", text: `La contraseña inicial debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres; tiene ${newUserPassword.length}.` });
+    setNewUserFeedback(null);
     setIsSaving(true);
     const response = await fetch("/api/admin/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, fullName: newUserName, email: newUserEmail, password: newUserPassword, role: newUserRole }) });
     const payload = await response.json().catch(() => null);
     setIsSaving(false);
     if (!response.ok) {
       const error = readError(payload);
-      return setMessage(error === "admin_provisioning_not_configured" ? "Para crear cuentas falta configurar SUPABASE_SECRET_KEY en el servidor. La clave nunca va al navegador." : "No fue posible crear la cuenta. Revisa el correo, la contraseña o si ya existe.");
+      return setNewUserFeedback({ tone: "error", text: error === "admin_provisioning_not_configured" ? "Para crear cuentas falta configurar SUPABASE_SECRET_KEY en el servidor. La clave nunca va al navegador." : error === "unable_to_create_user" ? "No fue posible crear la cuenta. Es probable que ya exista un usuario con ese correo; si es así, usa la invitación para darle acceso." : response.status === 403 ? "No tienes rol de Administrador en esta organización." : "No fue posible crear la cuenta. Revisa el correo y la contraseña e inténtalo de nuevo." });
     }
     setNewUserName("");
     setNewUserEmail("");
     setNewUserPassword("");
-    setMessage("Cuenta creada y acceso asignado. La persona ya puede iniciar sesión con la contraseña definida.");
+    setNewUserFeedback({ tone: "success", text: "Cuenta creada y acceso asignado. La persona ya puede iniciar sesión con la contraseña definida." });
     await loadMembers(organizationId);
   }
 
@@ -307,12 +314,13 @@ export function AdministrationConsole({ activeOrganizationId, isSuperAdmin }: { 
 
         <section className="panel admin-invite-panel">
           <div className="panel-heading"><div><span className="panel-label">ALTA DIRECTA</span><h2>Crear usuario y asignar acceso</h2><p>Para incorporaciones controladas: crea la cuenta, define su contraseña inicial y asígnala inmediatamente a esta organización.</p></div></div>
-          <form className="admin-invite-form" onSubmit={createUser}>
+          <form className="admin-invite-form" onSubmit={createUser} noValidate>
             <label>Nombre completo<input value={newUserName} maxLength={160} onChange={(event) => setNewUserName(event.target.value)} placeholder="Nombre y apellido" required /></label>
             <label>Correo<input type="email" value={newUserEmail} onChange={(event) => setNewUserEmail(event.target.value)} placeholder="nombre@empresa.cl" required /></label>
-            <label>Contraseña inicial<div className="password-field"><input type={showNewUserPassword ? "text" : "password"} minLength={12} value={newUserPassword} onChange={(event) => setNewUserPassword(event.target.value)} placeholder="Mínimo 12 caracteres" autoComplete="new-password" required /><PasswordVisibilityButton visible={showNewUserPassword} onClick={() => setShowNewUserPassword((visible) => !visible)} /></div></label>
+            <label>Contraseña inicial<div className="password-field"><input type={showNewUserPassword ? "text" : "password"} minLength={MIN_PASSWORD_LENGTH} maxLength={256} value={newUserPassword} onChange={(event) => { setNewUserPassword(event.target.value); setNewUserFeedback(null); }} placeholder="Mínimo 12 caracteres" autoComplete="new-password" aria-describedby="new-user-status" aria-invalid={newUserPasswordMissing > 0} required /><PasswordVisibilityButton visible={showNewUserPassword} onClick={() => setShowNewUserPassword((visible) => !visible)} /></div></label>
             <label>Rol<select value={newUserRole} onChange={(event) => setNewUserRole(event.target.value as OrganizationRole)}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-            <button className="primary-button" type="submit" disabled={isSaving || !organizationId}>Crear usuario</button>
+            <button className="primary-button" type="submit" disabled={isSaving || !organizationId}>{isSaving ? "Creando…" : "Crear usuario"}</button>
+            <p id="new-user-status" className={`admin-form-status ${newUserFeedback?.tone ?? (newUserPasswordMissing > 0 ? "error" : "")}`} role="status" aria-live="polite">{newUserFeedback?.text ?? (newUserPasswordMissing > 0 ? `Contraseña inicial: mínimo ${MIN_PASSWORD_LENGTH} caracteres. Faltan ${newUserPasswordMissing}.` : "")}</p>
           </form>
         </section>
 

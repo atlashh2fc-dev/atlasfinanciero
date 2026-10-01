@@ -3154,6 +3154,21 @@ td small {
   align-items: end;
   margin-top: 18px;
 }
+.admin-form-status {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #627087;
+  font-size: 12px;
+}
+.admin-form-status:empty {
+  display: none;
+}
+.admin-form-status.error {
+  color: #b42318;
+}
+.admin-form-status.success {
+  color: #18794e;
+}
 .password-field {
   position: relative;
 }
