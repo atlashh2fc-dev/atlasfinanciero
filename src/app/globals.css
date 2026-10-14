@@ -2355,6 +2355,11 @@ td small {
   outline-color: #6c79e5;
   font-size: 12px;
 }
+.form-grid input[aria-invalid="true"],
+.form-grid select[aria-invalid="true"] {
+  border-color: #ad5061;
+  background: #fff8f9;
+}
 .form-error {
   margin: 0 0 12px;
   padding: 9px 10px;

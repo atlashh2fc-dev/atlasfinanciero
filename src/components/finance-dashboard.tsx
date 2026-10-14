@@ -25,6 +25,7 @@ import { AccountsReceivable } from "@/components/accounts-receivable";
 import { createClient } from "@/lib/supabase/client";
 import { matchesSearch, normalizeSearchText } from "@/lib/search";
 import { rutKey } from "@/lib/rut";
+import { isInvoiceType, missingIssuedDocumentFields, missingIssuedDocumentMessage, type IssuedDocumentField } from "@/lib/issued-document-form";
 import { AdministrationConsole } from "@/components/administration-console";
 import { PayrollDashboard } from "@/components/payroll-dashboard";
 import { PayrollProvisions } from "@/components/payroll-provisions";
@@ -2349,6 +2350,7 @@ export function FinanceDashboard() {
   const [isRegisteringPayment, setIsRegisteringPayment] = useState(false);
   const [isSavingEntry, setIsSavingEntry] = useState(false);
   const [duplicateEntryId, setDuplicateEntryId] = useState<string | null>(null);
+  const [missingEntryFields, setMissingEntryFields] = useState<IssuedDocumentField[]>([]);
   const [payablesToPropose, setPayablesToPropose] = useState<PayablePaymentSelection | null>(null);
   const [formError, setFormError] = useState("");
   const [sessionRecords, setSessionRecords] = useState<InvoiceRecord[]>([]);
@@ -2787,6 +2789,9 @@ export function FinanceDashboard() {
 
   function updateDraft(field: keyof InvoiceDraft, value: string) {
     setDraft((current) => ({ ...current, [field]: value }));
+    // Al pasar a nota de crédito/débito, vencimiento y condición dejan de ser obligatorios.
+    const cleared = field === "documentType" && !isInvoiceType(value) ? ["documentType", "dueDate", "paymentCondition"] : [field];
+    setMissingEntryFields((current) => current.filter((item) => !cleared.includes(item)));
   }
 
   function startDocumentEdit(record: InvoiceRecord) {
@@ -2941,20 +2946,12 @@ export function FinanceDashboard() {
 
   async function submitEntry(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (
-      !draft.invoiceNumber.trim() ||
-      !draft.issueDate ||
-      !draft.documentType ||
-      !draft.issuerName.trim() ||
-      !draft.clientId ||
-      !draft.netAmount ||
-      !draft.status ||
-      (draft.documentType.toLocaleLowerCase().includes("factura") &&
-        (!draft.paymentCondition || !draft.dueDate))
-    ) {
-      setFormError(
-        "Para registrar una factura debes indicar su folio. Si el ingreso aún no tiene documento emitido, crea primero una prefactura.",
-      );
+    const missing = missingIssuedDocumentFields(draft);
+    setMissingEntryFields(missing);
+    if (missing.length) {
+      setFormError(missingIssuedDocumentMessage(missing));
+      const firstMissing = event.currentTarget.elements.namedItem(missing[0]);
+      if (firstMissing instanceof HTMLElement) firstMissing.focus();
       return;
     }
     // Un doble clic enviaba el mismo documento dos veces.
@@ -3612,6 +3609,7 @@ export function FinanceDashboard() {
                       });
                       setFormError("");
                       setDuplicateEntryId(null);
+                      setMissingEntryFields([]);
                       setShowEntry(true);
                     }}
                   >
@@ -4022,6 +4020,8 @@ export function FinanceDashboard() {
                 <label>
                   N° documento *
                   <input
+                    name="invoiceNumber"
+                    aria-invalid={missingEntryFields.includes("invoiceNumber")}
                     value={draft.invoiceNumber}
                     onChange={(event) =>
                       updateDraft("invoiceNumber", event.target.value)
@@ -4032,6 +4032,8 @@ export function FinanceDashboard() {
                 <label>
                   Fecha emisión *
                   <input
+                    name="issueDate"
+                    aria-invalid={missingEntryFields.includes("issueDate")}
                     type="date"
                     value={draft.issueDate}
                     onChange={(event) =>
@@ -4042,6 +4044,8 @@ export function FinanceDashboard() {
                 <label>
                   Fecha vencimiento (facturas) *
                   <input
+                    name="dueDate"
+                    aria-invalid={missingEntryFields.includes("dueDate")}
                     type="date"
                     value={draft.dueDate}
                     onChange={(event) =>
@@ -4052,6 +4056,8 @@ export function FinanceDashboard() {
                 <label>
                   Tipo documento *
                   <select
+                    name="documentType"
+                    aria-invalid={missingEntryFields.includes("documentType")}
                     value={draft.documentType}
                     onChange={(event) =>
                       updateDraft("documentType", event.target.value)
@@ -4061,6 +4067,8 @@ export function FinanceDashboard() {
                 <label>
                   Estado *
                   <select
+                    name="status"
+                    aria-invalid={missingEntryFields.includes("status")}
                     value={draft.status}
                     onChange={(event) =>
                       updateDraft("status", event.target.value)
@@ -4070,6 +4078,8 @@ export function FinanceDashboard() {
                 <label>
                   Condición del servicio (facturas) *
                   <select
+                    name="paymentCondition"
+                    aria-invalid={missingEntryFields.includes("paymentCondition")}
                     value={draft.paymentCondition}
                     onChange={(event) =>
                       updateDraft("paymentCondition", event.target.value)
@@ -4084,7 +4094,7 @@ export function FinanceDashboard() {
                 </label>
                 <label>
                   Empresa emisora *
-                  <input value={draft.issuerName} onChange={(event) => updateDraft("issuerName", event.target.value)} placeholder="Empresa emisora" required />
+                  <input name="issuerName" aria-invalid={missingEntryFields.includes("issuerName")} value={draft.issuerName} onChange={(event) => updateDraft("issuerName", event.target.value)} placeholder="Empresa emisora" required />
                 </label>
                 <label>
                   RUT emisor
@@ -4092,7 +4102,7 @@ export function FinanceDashboard() {
                 </label>
                 <label>
                   Cliente *
-                  <select value={draft.clientId} disabled={loadingDocumentSources} onChange={(event) => { updateDraft("clientId", event.target.value); updateDraft("contactId", ""); }} required><option value="">{loadingDocumentSources ? "Cargando clientes…" : "Selecciona cliente"}</option>{documentCustomers.map((customer) => <option key={customer.id} value={customer.id}>{customer.trade_name || customer.legal_name}{customer.tax_id ? ` · ${customer.tax_id}` : ""}</option>)}</select>
+                  <select name="clientId" aria-invalid={missingEntryFields.includes("clientId")} value={draft.clientId} disabled={loadingDocumentSources} onChange={(event) => { updateDraft("clientId", event.target.value); updateDraft("contactId", ""); }} required><option value="">{loadingDocumentSources ? "Cargando clientes…" : "Selecciona cliente"}</option>{documentCustomers.map((customer) => <option key={customer.id} value={customer.id}>{customer.trade_name || customer.legal_name}{customer.tax_id ? ` · ${customer.tax_id}` : ""}</option>)}</select>
                 </label>
                 <label>
                   Destinatario
@@ -4105,6 +4115,8 @@ export function FinanceDashboard() {
                 <label>
                   Monto neto *
                   <input
+                    name="netAmount"
+                    aria-invalid={missingEntryFields.includes("netAmount")}
                     type="number"
                     min="0"
                     step="1"
@@ -4128,7 +4140,7 @@ export function FinanceDashboard() {
                   <small>PDF, JPG o PNG · máximo 50 MB</small>
                 </label>
               </div>
-              {formError && <p className="form-error">{formError}</p>}
+              {formError && <p className="form-error" role="alert">{formError}</p>}
               {duplicateEntryId && (
                 <button type="button" className="secondary-button" onClick={() => openExistingDocument(duplicateEntryId)}>
                   Abrir documento existente
