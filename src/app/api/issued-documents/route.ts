@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient, hasSupabaseAdminKey } from "@/lib/supabase/admin";
 import {
   calculateClpInvoiceAmounts,
   normalizeClpAmount,
@@ -71,6 +72,55 @@ function readDocumentType(value: unknown, required = false) {
       "nota de debito": "Nota de débito",
     } as Record<string, string>)[normalized] ?? null
   );
+}
+
+// Tipo DTE comparable: el RCV guarda "Factura" y el registro manual
+// "Factura afecta", pero ambos son el mismo folio tipo 33.
+function siiDocumentType(value: string | null) {
+  const type = (value ?? "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLocaleLowerCase("es-CL");
+  if (type.includes("nota de credito")) return 61;
+  if (type.includes("nota de debito")) return 56;
+  if (/exportacion|compra|liquidacion/.test(type)) return null;
+  if (type.includes("exenta")) return 34;
+  if (type.includes("factura")) return 33;
+  return null;
+}
+
+function rutDigits(value: string | null) {
+  return (value ?? "").replace(/[^0-9k]/gi, "").toUpperCase();
+}
+
+// Un folio existe una sola vez por tipo y cliente. El RCV puede haberlo creado
+// antes que el registro manual; duplicarlo infla ventas y cuentas por cobrar.
+// Digitación solo lee sus propios documentos, por eso se consulta con la
+// clave de servidor cuando está disponible.
+async function findExistingIssuedDocument(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  organizationId: string,
+  documentNumber: string,
+  documentType: string,
+  client: { id: string; tax_id: string | null },
+) {
+  const reader = hasSupabaseAdminKey() ? createAdminClient() : supabase;
+  const { data, error } = await reader
+    .from("issued_documents")
+    .select("id, document_type, sii_document_type, recipient_tax_id, counterparty_id, payment_status, source_sheet_name")
+    .eq("organization_id", organizationId)
+    .eq("document_number", documentNumber);
+  if (error) return { error };
+  const type = siiDocumentType(documentType);
+  const clientRut = rutDigits(client.tax_id);
+  const match = (data ?? []).find((row) => {
+    const rowType = row.sii_document_type ?? siiDocumentType(row.document_type);
+    const sameClient =
+      row.counterparty_id === client.id ||
+      (clientRut !== "" && rutDigits(row.recipient_tax_id) === clientRut);
+    return type !== null && rowType === type && sameClient;
+  });
+  return { match: match ?? null };
 }
 
 function isUuid(value: unknown): value is string {
@@ -162,6 +212,21 @@ export async function POST(request: NextRequest) {
   if (organizationError || clientError || !organization || !client) return NextResponse.json({ error: "issuer_or_customer_not_found" }, { status: 400 });
   const { data: contact, error: contactError } = contactId ? await supabase.from("counterparty_contacts").select("id, full_name").eq("id", contactId).eq("counterparty_id", client.id).eq("organization_id", membership.organization_id).maybeSingle() : { data: null, error: null };
   if (contactError || (contactId && !contact)) return NextResponse.json({ error: "customer_contact_not_found" }, { status: 400 });
+  const existing = await findExistingIssuedDocument(supabase, membership.organization_id, invoiceNumber, documentType, client);
+  if (existing.error) return NextResponse.json({ error: "unable_to_check_duplicate_document" }, { status: 500 });
+  if (existing.match) {
+    return NextResponse.json(
+      {
+        error: "duplicate_issued_document",
+        existing: {
+          id: existing.match.id,
+          status: existing.match.payment_status,
+          source: existing.match.source_sheet_name,
+        },
+      },
+      { status: 409 },
+    );
+  }
 
   const { vatAmount, totalAmount } = calculateClpInvoiceAmounts(
     netAmount,

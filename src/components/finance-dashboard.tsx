@@ -2347,6 +2347,8 @@ export function FinanceDashboard() {
   const [paymentDraft, setPaymentDraft] = useState<PaymentDraft>(blankPaymentDraft);
   const [paymentInstallmentProof, setPaymentInstallmentProof] = useState<File | null>(null);
   const [isRegisteringPayment, setIsRegisteringPayment] = useState(false);
+  const [isSavingEntry, setIsSavingEntry] = useState(false);
+  const [duplicateEntryId, setDuplicateEntryId] = useState<string | null>(null);
   const [payablesToPropose, setPayablesToPropose] = useState<PayablePaymentSelection | null>(null);
   const [formError, setFormError] = useState("");
   const [sessionRecords, setSessionRecords] = useState<InvoiceRecord[]>([]);
@@ -2955,6 +2957,18 @@ export function FinanceDashboard() {
       );
       return;
     }
+    // Un doble clic enviaba el mismo documento dos veces.
+    if (isSavingEntry) return;
+    setIsSavingEntry(true);
+    setDuplicateEntryId(null);
+    try {
+      await saveEntry();
+    } finally {
+      setIsSavingEntry(false);
+    }
+  }
+
+  async function saveEntry() {
     const formData = new FormData();
     formData.set("invoiceNumber", draft.invoiceNumber);
     formData.set("issueDate", draft.issueDate);
@@ -2975,7 +2989,18 @@ export function FinanceDashboard() {
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as {
         error?: string;
+        existing?: { id: string; status: string | null; source: string | null };
       } | null;
+      if (payload?.error === "duplicate_issued_document") {
+        const existingRecord = hasEditPermission
+          ? databaseRecords?.find((record) => record.id === payload.existing?.id)
+          : undefined;
+        setDuplicateEntryId(existingRecord?.id ?? null);
+        setFormError(
+          `${draft.documentType} N° ${draft.invoiceNumber.trim()} ya está registrada para este cliente (${payload.existing?.source ?? "Atlas"}, estado ${payload.existing?.status ?? "sin estado"}). No se creó otra: ${existingRecord ? "ábrela para cambiar su estado o adjuntar el PDF." : "pide a Finanzas que actualice la existente."}`,
+        );
+        return;
+      }
       setFormError(
         payload?.error === "authentication_required"
           ? "Inicia sesión con un usuario autorizado para guardar el documento."
@@ -3069,6 +3094,14 @@ export function FinanceDashboard() {
     setFormError("");
     setShowEntry(false);
     setActiveModule("Facturas");
+  }
+
+  function openExistingDocument(documentId: string) {
+    const record = databaseRecords?.find((item) => item.id === documentId);
+    if (!record) return;
+    setDuplicateEntryId(null);
+    setShowEntry(false);
+    startDocumentEdit(record);
   }
 
   async function openDocumentAttachment(documentId: string) {
@@ -3577,6 +3610,8 @@ export function FinanceDashboard() {
                         issuerName: access?.membership.organizationName ?? "",
                         issuerTaxId: access?.membership.organizationTaxId ?? "",
                       });
+                      setFormError("");
+                      setDuplicateEntryId(null);
                       setShowEntry(true);
                     }}
                   >
@@ -4094,6 +4129,11 @@ export function FinanceDashboard() {
                 </label>
               </div>
               {formError && <p className="form-error">{formError}</p>}
+              {duplicateEntryId && (
+                <button type="button" className="secondary-button" onClick={() => openExistingDocument(duplicateEntryId)}>
+                  Abrir documento existente
+                </button>
+              )}
               <div className="form-actions">
                 <button
                   type="button"
@@ -4112,8 +4152,8 @@ export function FinanceDashboard() {
                 >
                   Cancelar
                 </button>
-                <button type="submit" className="primary-button">
-                  Guardar documento
+                <button type="submit" className="primary-button" disabled={isSavingEntry}>
+                  {isSavingEntry ? "Guardando…" : "Guardar documento"}
                 </button>
               </div>
             </form>
