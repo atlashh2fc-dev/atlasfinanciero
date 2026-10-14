@@ -22,6 +22,7 @@
     "test:search": "node --experimental-strip-types --test tests/search.test.ts",
     "test:cost-center-codes": "node --experimental-strip-types --test tests/cost-center-codes.test.ts",
     "test:issued-document-form": "node --experimental-strip-types --test tests/issued-document-form.test.ts",
+    "test:reminders": "node --experimental-strip-types --test tests/reminders.test.ts",
     "verify:crm": "node scripts/verify-crm-workspace.mjs",
     "verify:contrast": "node scripts/verify-evolution-total-contrast.mjs",
     "verify:public-market": "node scripts/verify-public-market-intelligence.mjs"

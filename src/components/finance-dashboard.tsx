@@ -46,6 +46,7 @@ import { FinancialCloseWorkbench } from "@/components/financial-close-workbench"
 import { ActivityAuditLog } from "@/components/activity-audit-log";
 import { SupplierConsolidation } from "@/components/supplier-consolidation";
 import { AtlasAssistant } from "@/components/atlas-assistant";
+import { ReminderCenter } from "@/components/reminder-center";
 import { ManagementCenter } from "@/components/management-center";
 import { PlatformSuperAdminDashboard } from "@/components/platform-super-admin-dashboard";
 import { AccountingWorkbench } from "@/components/accounting-workbench";
@@ -4425,6 +4426,7 @@ export function FinanceDashboard() {
           </section>
         </div>
       )}
+      {access && <ReminderCenter />}
       {access && <AtlasAssistant organizationId={access.membership.organizationId} />}
     </div>
   );
